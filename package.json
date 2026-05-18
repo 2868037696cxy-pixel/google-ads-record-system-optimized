@@ -1,0 +1,15 @@
+{
+  "name": "google-ads-record-system",
+  "version": "2.0.0",
+  "description": "谷歌广告记录系统 - 服务端 SQLite 独立数据库",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^9.0.0",
+    "@fastify/static": "^7.0.0",
+    "better-sqlite3": "^11.7.0",
+    "fastify": "^5.2.0"
+  }
+}
