@@ -1207,7 +1207,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
               <td><input class="ci" type="number" min="0" step="0.01" data-daily="revenue" data-id="${d.id}" value="${esc(d.revenue)}"></td>
               <td class="cost">€${fmt(d.orders ? d.spend / d.orders : 0)}</td>
               <td><input class="ci" data-daily="note" data-id="${d.id}" value="${esc(d.note)}"></td>
-              <td><button class="btn danger small" data-act="delDaily" data-ad="${ad.id}" data-id="${d.id}">删</button></td>
+              <td><button class="btn ghost-danger small" data-act="delDaily" data-ad="${ad.id}" data-id="${d.id}">删</button></td>
             </tr>
           `).join('')}
         </tbody>
