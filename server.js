@@ -145,7 +145,14 @@ function parseProxies(text) {
     if (line.includes('.')) {
       if (cur && cur.host) flush();
       if (!cur) cur = newItem();
-      cur.host = line.replace(/^https?:\/\//, '');
+      const h = line.replace(/^https?:\/\//, '');
+      const hp = h.match(/^(\[[^\]]+\]|[^\s:]+):(\d{1,5})$/);
+      if (hp && Number(hp[2]) <= 65535) {
+        cur.host = hp[1];
+        cur.port = hp[2];
+      } else {
+        cur.host = h;
+      }
       continue;
     }
   }
@@ -321,6 +328,7 @@ function createRecords(body) {
     };
     db.records.push(rec);
     if (email) email.status = '已使用';
+    if (proxy) proxy.status = '已使用';
     if (card) card.status = '已使用';
     if (lic) lic.status = '已使用';
     created.push(rec);
@@ -346,7 +354,7 @@ function releaseIfUnused(prefix, oldId, excludeRecId) {
   if (oldId == null) return;
   const stillUsed = db.records.some((r) => r.id !== excludeRecId && r[`${prefix}_id`] === oldId);
   if (stillUsed) return;
-  const coll = prefix === 'email' ? 'emails' : prefix === 'card' ? 'cards' : 'licenses';
+  const coll = { email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' }[prefix];
   const it = db[coll].find((x) => x.id === oldId);
   if (it && it.status === '已使用') it.status = '未使用';
 }
@@ -389,7 +397,7 @@ function deleteRecords(ids) {
   const idSet = new Set(ids.map(Number));
   const removed = db.records.filter((r) => idSet.has(r.id));
   db.records = db.records.filter((r) => !idSet.has(r.id));
-  for (const prefix of ['email', 'card', 'license']) {
+  for (const prefix of ['email', 'proxy', 'card', 'license']) {
     for (const r of removed) releaseIfUnused(prefix, r[`${prefix}_id`], r.id);
   }
   saveDb();

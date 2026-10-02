@@ -143,18 +143,18 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 /* ============ 骨架渲染 ============ */
 
 function renderNav() {
-  const items = [
-    { key: 'workbench', label: '工作台', ico: '◧', count: state.records.length },
-    ...KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length })),
-  ];
-  document.getElementById('nav').innerHTML = items
-    .map(
-      (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}">
+  const main = [{ key: 'workbench', label: '工作台', ico: '◧', count: state.records.length }];
+  const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
+  const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}">
         <span class="ico">${it.ico}</span>${it.label}
         <span class="count">${it.count}</span>
-      </button>`
-    )
-    .join('');
+      </button>`;
+  document.getElementById('nav').innerHTML = `
+    <div class="nav-label">总览</div>
+    ${main.map(item).join('')}
+    <div class="nav-label">资源库</div>
+    ${pools.map(item).join('')}
+  `;
   document.getElementById('revealLabel').textContent = state.reveal ? '敏感信息：显示中' : '敏感信息：已隐藏';
   document.querySelector('.dot-eye').classList.toggle('on', state.reveal);
 }
@@ -225,11 +225,38 @@ function renderWorkbench() {
 
   const filtered = getFilteredRecords();
 
+  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date().getDay()];
+  const todayCN = `${new Date().getMonth() + 1}月${new Date().getDate()}日 · ${week}`;
+
   main.innerHTML = `
     <div class="page-head">
       <div>
         <h1>工作台</h1>
-        <p class="sub">已记录 <b>${state.records.length}</b> 条环境 · 可用资源：邮箱 <b>${avail.emails}</b> / 信用卡 <b>${avail.cards}</b> / 营业执照 <b>${avail.licenses}</b> / 代理 <b>${state.pools.proxies.length}</b></p>
+        <p class="sub">指纹名称按今日日期自动生成，资源按状态分组、自动分配</p>
+      </div>
+      <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
+    </div>
+
+    <div class="hstats">
+      <div class="hstat hi">
+        <span class="v">${state.records.length}</span>
+        <span class="k"><span class="dot lime"></span>记录总数</span>
+      </div>
+      <div class="hstat">
+        <span class="v">${avail.emails}<em>/ ${state.pools.emails.length}</em></span>
+        <span class="k"><span class="dot green"></span>可用邮箱</span>
+      </div>
+      <div class="hstat">
+        <span class="v">${avail.cards}<em>/ ${state.pools.cards.length}</em></span>
+        <span class="k"><span class="dot blue"></span>可用信用卡</span>
+      </div>
+      <div class="hstat">
+        <span class="v">${avail.licenses}<em>/ ${state.pools.licenses.length}</em></span>
+        <span class="k"><span class="dot amber"></span>可用营业执照</span>
+      </div>
+      <div class="hstat">
+        <span class="v">${poolCount('proxies')}<em>/ ${state.pools.proxies.length}</em></span>
+        <span class="k"><span class="dot"></span>可用代理</span>
       </div>
     </div>
 
@@ -372,14 +399,14 @@ function renderRecordsTable(list) {
     </tr></thead>
     <tbody>
       ${list
-        .map((r) => {
+        .map((r, i) => {
           const proxy = r.proxy_host
             ? `${esc(r.proxy_host)}:${esc(r.proxy_port)}<br><span class="faint mono">${esc(r.proxy_sn || '')}${r.proxy_country ? ' · ' + esc(r.proxy_country) : ''}${r.proxy_ip ? ' · ' + esc(r.proxy_ip) : ''}</span>`
             : '<span class="faint">—</span>';
           const card = r.card_number
             ? `${sens(r.card_number)}<br><span class="faint mono">${esc(r.card_expiry || '')}${r.card_cvv ? ' · ' + sens(r.card_cvv) : ''}</span>`
             : '<span class="faint">—</span>';
-          return `<tr class="${state.sel.has(r.id) ? 'selected' : ''}" data-id="${r.id}">
+          return `<tr class="${state.sel.has(r.id) ? 'selected' : ''}" data-id="${r.id}" style="--i:${i}">
             <td><input type="checkbox" data-action="sel-row" data-id="${r.id}" ${state.sel.has(r.id) ? 'checked' : ''}></td>
             <td class="mono cell-fp copyable" data-copy="${esc(r.fingerprint)}" title="点击复制">${esc(r.fingerprint)}</td>
             <td class="cell-name">${esc(r.name)}</td>
@@ -564,14 +591,14 @@ function renderPool(kind) {
               <thead><tr>${tableConf.cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
               <tbody>
                 ${list
-                  .map((item) => {
+                  .map((item, i) => {
                     const cells = tableConf.row(item);
                     const statusIdx = tableConf.cols.indexOf('状态');
                     const rest = [...cells];
                     let statusHtml = `<select class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
                       ${['未使用', '已使用', '停用'].map((s) => `<option ${item.status === s ? 'selected' : ''}>${s}</option>`).join('')}
                     </select>`;
-                    return `<tr>${rest
+                    return `<tr style="--i:${i}">${rest
                       .slice(0, statusIdx)
                       .concat([statusHtml, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
                       .join('')}</tr>`;
