@@ -241,7 +241,10 @@ function renderWorkbench() {
         <h1>工作台</h1>
         <p class="sub">指纹名称按今日日期自动生成，资源按状态分组、自动分配</p>
       </div>
-      <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
+      <div class="head-actions">
+        <button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>
+        <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
+      </div>
     </div>
 
     <div class="hstats">
@@ -569,6 +572,7 @@ function renderPool(kind) {
         <p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p>
       </div>
       <div class="head-actions">
+        ${kind === 'emails' || kind === 'proxies' ? `<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>` : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">批量导入</button>
       </div>
     </div>
@@ -682,6 +686,111 @@ async function openImportModal(kind) {
       closeModal();
       await refresh();
     } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
+
+  ta.focus();
+}
+
+/* ============ 智能导入（自动识别邮箱 / 代理） ============ */
+
+function openAutoImport() {
+  openModal(`
+    <div class="modal-head"><h3>智能导入 · 邮箱 + 代理</h3><button class="modal-close" data-action="close-modal">✕</button></div>
+    <div class="modal-body">
+      <div class="auto-hint">粘贴任意格式，自动识别并拆分（可混合）：<b>AdsPower 导入 TXT</b>（key=value，星号线分块）、邮箱「账号——密码——2FA」、代理商文本块、<span class="mono">主机：端口：账号：密码</span> 一行代理。识别后邮箱进「邮箱库」、代理进「代理库」，重复自动跳过。</div>
+      <div class="auto-toolbar">
+        <button type="button" class="btn btn-ghost btn-sm" id="auto-file-btn">选择 TXT 文件</button>
+        <input type="file" id="auto-file" accept=".txt,.csv,text/plain" hidden>
+        <span class="mini faint" id="auto-file-name"></span>
+      </div>
+      <textarea id="auto-text" class="mono" rows="9" style="width:100%" placeholder="粘贴 AdsPower TXT / 邮箱 / 代理，任意混合…"></textarea>
+      <div class="parse-result" id="auto-result">等待粘贴内容…</div>
+    </div>
+    <div class="modal-foot">
+      <span class="grow"></span>
+      <button class="btn btn-ghost" data-action="close-modal">取消</button>
+      <button class="btn btn-primary" id="auto-ok" disabled>确认导入</button>
+    </div>`, { large: true });
+
+  const ta = document.getElementById('auto-text');
+  const resultBox = document.getElementById('auto-result');
+  const okBtn = document.getElementById('auto-ok');
+  const fileInput = document.getElementById('auto-file');
+  const fileName = document.getElementById('auto-file-name');
+  let parsed = { emails: [], proxies: [] };
+
+  const renderPreview = () => {
+    const { emails, proxies } = parsed;
+    if (!emails.length && !proxies.length) {
+      resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
+      okBtn.disabled = true;
+      okBtn.textContent = '确认导入';
+      return;
+    }
+    const sec = (title, ico, items, fmt) => (!items.length ? '' : `
+      <div class="auto-section">
+        <div class="auto-sec-head"><span class="ico">${ico}</span>${title} <b>${items.length}</b> 条${items.length > 5 ? '<span class="mini faint">（预览前 5 条）</span>' : ''}</div>
+        <ul class="parse-preview-list">${items.slice(0, 5).map((it) => `<li>${esc(fmt(it))}</li>`).join('')}</ul>
+      </div>`);
+    resultBox.innerHTML =
+      sec('邮箱', '✉', emails, (e) => [e.user, e.pass, e.fakey].filter(Boolean).join(' · ')) +
+      sec('代理', '⇅', proxies, (p) => [p.host ? `${p.host}:${p.port}` : '', p.user, p.sn, p.ip].filter(Boolean).join(' · '));
+    okBtn.disabled = false;
+    okBtn.textContent = `确认导入（邮箱 ${emails.length} · 代理 ${proxies.length}）`;
+  };
+
+  const doParse = async () => {
+    const text = ta.value;
+    if (!text.trim()) {
+      parsed = { emails: [], proxies: [] };
+      resultBox.innerHTML = '等待粘贴内容…';
+      okBtn.disabled = true;
+      okBtn.textContent = '确认导入';
+      return;
+    }
+    try {
+      parsed = await api('/api/parse/auto', { method: 'POST', body: { text } });
+      renderPreview();
+    } catch (e) {
+      resultBox.textContent = e.message;
+      okBtn.disabled = true;
+    }
+  };
+
+  let timer = null;
+  ta.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(doParse, 350);
+  });
+
+  document.getElementById('auto-file-btn').onclick = () => fileInput.click();
+  fileInput.addEventListener('change', () => {
+    const f = fileInput.files[0];
+    if (!f) return;
+    fileName.textContent = f.name;
+    const rd = new FileReader();
+    rd.onload = () => {
+      ta.value = String(rd.result || '');
+      doParse();
+    };
+    rd.readAsText(f);
+  });
+
+  okBtn.onclick = async () => {
+    if (!parsed.emails.length && !parsed.proxies.length) return;
+    okBtn.disabled = true;
+    try {
+      const res = await api('/api/import/auto', { method: 'POST', body: parsed });
+      const parts = [];
+      if (parsed.emails.length) parts.push(`邮箱 +${res.emails.added}${res.emails.skipped ? `（重复 ${res.emails.skipped}）` : ''}`);
+      if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${res.proxies.skipped ? `（重复 ${res.proxies.skipped}）` : ''}`);
+      toast(`✅ 导入成功：${parts.join('，')}`);
+      closeModal();
+      await refresh();
+    } catch (e) {
+      okBtn.disabled = false;
       toast(e.message, 'error');
     }
   };
@@ -868,6 +977,9 @@ document.addEventListener('click', async (e) => {
         break;
       case 'open-import':
         openImportModal(t.dataset.kind);
+        break;
+      case 'open-auto-import':
+        openAutoImport();
         break;
       case 'open-picker':
         openPicker(t.dataset.kind);

@@ -1066,6 +1066,37 @@ tbody tr:last-child td { border-bottom: none; }
   text-overflow: ellipsis;
 }
 
+/* ---- 智能导入 ---- */
+.auto-hint {
+  font-size: 12px;
+  line-height: 1.75;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--accent-line);
+  border-radius: var(--r-sm);
+  padding: 10px 14px;
+}
+
+.auto-hint b { color: var(--accent-strong); font-weight: 600; }
+
+.auto-toolbar { display: flex; align-items: center; gap: 10px; }
+
+.auto-section { margin-top: 2px; }
+
+.auto-sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.auto-sec-head .ico { color: var(--accent-strong); }
+
+.auto-sec-head b { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
+
 /* ---- 选择器 ---- */
 .picker-list {
   display: flex;

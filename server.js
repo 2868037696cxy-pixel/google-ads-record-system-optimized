@@ -160,6 +160,117 @@ function parseProxies(text) {
   return items;
 }
 
+// 一行代理：主机:端口:账号:密码 或 账号:密码@主机:端口（支持 IPv6 [主机]:端口:…）
+function parseProxyStr(s) {
+  const t = String(s || '').trim();
+  if (!t) return null;
+  let m = t.match(/^(?:([^:@\s]+):([^@\s]+))?@(\[[^\]]+\]|[^\s:]+):(\d{1,5})$/);
+  if (m && Number(m[4]) <= 65535) {
+    return { host: m[3], port: m[4], user: m[1] || '', pass: m[2] || '' };
+  }
+  m = t.match(/^(\[[^\]]+\]|(?=[^\s:]*\.)[a-zA-Z\d][a-zA-Z\d.-]*):(\d{1,5})(?::([^:@\s]*):([^:@\s]*))?$/);
+  if (m && Number(m[2]) <= 65535) {
+    return { host: m[1], port: m[2], user: m[3] || '', pass: m[4] || '' };
+  }
+  return null;
+}
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// AdsPower 导入 TXT：key=value，块之间用星号线分隔（name= 也视为新块开始）
+const ADSPOWER_KV_RE = /^(?:name|remark|tab|platform|username|password|fakey|cookie|proxytype|ipchecker|proxy|proxyurl|ip|countrycode|regioncode|citycode|proxyid|ua|resolution)\s*=/i;
+
+function firstToken(s) {
+  return String(s || '').split(',')[0].trim().replace(/^"+|"+$/g, '');
+}
+
+function parseAdspowerBlocks(text) {
+  const emails = [];
+  const proxies = [];
+  const blocks = [];
+  let cur = null;
+  const flush = () => {
+    if (cur) blocks.push(cur);
+    cur = null;
+  };
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    if (/^\*{3,}$/.test(line)) { flush(); continue; }
+    const m = line.match(/^([a-z_]+)\s*=\s*(.*)$/i);
+    if (m && ADSPOWER_KV_RE.test(line)) {
+      const key = m[1].toLowerCase();
+      if (key === 'name' && cur) flush();
+      if (!cur) cur = {};
+      cur[key] = m[2].trim();
+      continue;
+    }
+    flush();
+  }
+  flush();
+  for (const b of blocks) {
+    const user = firstToken(b.username);
+    if (EMAIL_RE.test(user)) {
+      const passRaw = String(b.password || '');
+      const quoted = passRaw.match(/"([^"]*)"/);
+      emails.push({ user, pass: quoted ? quoted[1] : firstToken(passRaw), fakey: firstToken(b.fakey) });
+    }
+    const ptype = String(b.proxytype || '').trim().toLowerCase();
+    if (b.proxy && ptype !== 'noproxy') {
+      const p = parseProxyStr(b.proxy);
+      if (p) proxies.push({ sn: '', type: ptype || 'socks5', country: '', ...p, ip: String(b.ip || '').trim() });
+    }
+  }
+  return { emails, proxies };
+}
+
+// 智能自动识别：AdsPower TXT / 邮箱行 / 一行代理 / 代理商文本块，可任意混合
+function parseAuto(text) {
+  const raw = String(text || '');
+  const lines = raw.split(/\r?\n/);
+  const isSep = (l) => /^\*{3,}$/.test(l.trim());
+  const isKv = (l) => ADSPOWER_KV_RE.test(l.trim());
+  const isEmailLine = (l) => EMAIL_RE.test(l.trim().split(/\s*(?:——|—|--|\t|\|)\s*/)[0] || '');
+
+  const fromBlocks = parseAdspowerBlocks(raw);
+  const emails = fromBlocks.emails.slice();
+  const proxies = fromBlocks.proxies.slice();
+
+  const rest = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || isSep(line) || isKv(line)) continue;
+    if (isEmailLine(line)) continue;
+    const one = parseProxyStr(t);
+    if (one) {
+      proxies.push({ sn: '', type: '', country: '', ip: '', ...one });
+      continue;
+    }
+    rest.push(line);
+  }
+  const plain = lines.filter((l) => !isSep(l) && !isKv(l)).join('\n');
+  emails.push(...parseEmails(plain));
+  proxies.push(...parseProxies(rest.join('\n')));
+
+  const seenE = new Set();
+  const outE = emails.filter((e) => {
+    if (!e.user) return false;
+    const k = e.user.toLowerCase();
+    if (seenE.has(k)) return false;
+    seenE.add(k);
+    return true;
+  });
+  const seenP = new Set();
+  const outP = proxies.filter((p) => {
+    if (!p.host) return false;
+    const k = `${p.host}|${p.port}|${p.user}`.toLowerCase();
+    if (seenP.has(k)) return false;
+    seenP.add(k);
+    return true;
+  });
+  return { emails: outE, proxies: outP };
+}
+
 // 信用卡：卡号 有效期 CVV（分隔符支持空格/Tab/逗号/|），可只填卡号
 function parseCards(text) {
   const out = [];
@@ -464,6 +575,30 @@ fastify.get('/api/bootstrap', async () => {
     records: [...db.records].sort((a, b) => b.id - a.id),
     next: { fingerprint: `${todayKey()}ads${nextSeq()}`, seq: nextSeq(), date_key: todayKey() },
   };
+});
+
+fastify.post('/api/parse/auto', async (req) => {
+  return parseAuto(req.body?.text);
+});
+
+fastify.post('/api/import/auto', async (req) => {
+  let emails = Array.isArray(req.body?.emails)
+    ? req.body.emails.filter((e) => e && e.user).map((x) => ({ user: String(x.user).trim(), pass: String(x.pass || ''), fakey: String(x.fakey || '') }))
+    : null;
+  let proxies = Array.isArray(req.body?.proxies)
+    ? req.body.proxies.filter((p) => p && p.host).map((x) => ({
+        sn: String(x.sn || ''), type: String(x.type || ''), host: String(x.host), port: String(x.port || ''),
+        user: String(x.user || ''), pass: String(x.pass || ''), country: String(x.country || ''), ip: String(x.ip || ''),
+      }))
+    : null;
+  if (!emails || !proxies) {
+    const r = parseAuto(req.body?.text);
+    emails = r.emails;
+    proxies = r.proxies;
+  }
+  const emailRes = importItems('emails', emails);
+  const proxyRes = importItems('proxies', proxies);
+  return { emails: emailRes, proxies: proxyRes };
 });
 
 fastify.post('/api/parse/:type', async (req) => {
