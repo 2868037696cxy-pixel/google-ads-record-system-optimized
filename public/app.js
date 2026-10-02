@@ -12,10 +12,13 @@ function esc(s) {
 }
 
 async function api(path, opts = {}) {
+  const hasBody = opts.body !== undefined;
+  const headers = { ...(opts.headers || {}) };
+  if (hasBody) headers['Content-Type'] = 'application/json';
   const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     ...opts,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    body: hasBody ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || data.error || `请求失败 (${res.status})`);
@@ -109,7 +112,7 @@ function openModal(html, { large = false } = {}) {
   closeModal();
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-overlay" data-action="modal-overlay">
-    <div class="modal ${large ? 'modal-lg' : ''}" onclick="event.stopPropagation()">
+    <div class="modal ${large ? 'modal-lg' : ''}">
       ${html}
     </div>
   </div>`;
@@ -135,8 +138,12 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
       <button class="btn btn-danger" id="confirm-ok-btn">${esc(okLabel)}</button>
     </div>`);
   document.getElementById('confirm-ok-btn').onclick = async () => {
-    await onOk();
-    closeModal();
+    try {
+      await onOk();
+      closeModal();
+    } catch (err) {
+      toast(err.message || '操作失败', 'error');
+    }
   };
 }
 
