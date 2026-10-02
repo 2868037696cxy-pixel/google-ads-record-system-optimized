@@ -27,12 +27,12 @@
 
   const STATUS = ['未铺市场', '已铺市场', '测试中', '继续跑', '观察', '暂停'];
 
-  const MARKETS = [
+  const DEFAULT_MARKETS = [
     '德国', '意大利', '西班牙', '波兰', '罗马尼亚', '保加利亚',
     '斯洛伐克', '奥地利', '匈牙利', '葡萄牙', '捷克'
   ];
 
-  const PRODUCTS = [
+  const DEFAULT_PRODUCTS = [
     '索尼助听器', '呼吸机', '紧索套件', '汽车读卡器', '卡车导航',
     '自行车码表', '高速棘轮扳手', '电子翻译机', '血糖仪', '胶卷',
     'W55水分', '激光水平仪', '光伏检测仪', '手持电锯', '挖机水平仪'
@@ -84,8 +84,18 @@
     undoStack: [],
     redoStack: [],
     searchHistory: [],
-    filterPreset: null
+    filterPreset: null,
+    rev: 0,                 // 服务端数据版本号（乐观锁）
+    options: null,          // { product: [], market: [] } 服务端可配置选项
+    authToken: (function() { try { return sessionStorage.getItem('ads_token') || ''; } catch { return ''; } })(),
+    chartSeries: { spend: true, orders: true, revenue: true }
   };
+
+  // 产品/市场选项：优先服务端配置，失败时用内置默认
+  const getProducts = () => (State.options && State.options.product && State.options.product.length
+    ? State.options.product : DEFAULT_PRODUCTS);
+  const getMarkets = () => (State.options && State.options.market && State.options.market.length
+    ? State.options.market : DEFAULT_MARKETS);
 
   // ============================================
   // 工具函数
@@ -206,9 +216,10 @@
 
   function pack(scope = 'frontend-save', data = State.ads) {
     return {
-      schema: 'ads-record-server-sqlite-v2',
+      schema: 'ads-record-v3',
       storage: 'server-sqlite',
       scope,
+      rev: State.rev,
       exportedAt: new Date().toISOString(),
       count: data.length,
       ads: data.map(normalizeAd)
@@ -223,24 +234,75 @@
       ? path
       : (window.ADS_API_BASE || '') + path;
 
-    const response = await fetch(url, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(options.headers || {})
-      },
-      ...options
-    });
+    const headers = {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    };
+    if (State.authToken) headers['x-app-token'] = State.authToken;
+
+    const response = await fetch(url, { ...options, headers });
 
     const contentType = response.headers.get('content-type') || '';
     const data = contentType.includes('application/json')
       ? await response.json()
       : await response.text();
 
+    if (response.status === 401 && data && data.authRequired) {
+      renderLoginGate();
+      throw new Error('需要登录');
+    }
+
     if (!response.ok) {
-      throw new Error(data.error || data.message || `HTTP ${response.status}`);
+      const err = new Error(data.error || data.message || `HTTP ${response.status}`);
+      err.status = response.status;
+      err.conflict = !!data.conflict;
+      err.serverRev = data.serverRev;
+      throw err;
     }
 
     return data;
+  }
+
+  // ---- 登录遮罩（仅服务端启用 APP_PASSWORD 时出现）----
+  function renderLoginGate() {
+    if ($('#loginGate')) return;
+    const div = document.createElement('div');
+    div.id = 'loginGate';
+    div.innerHTML = `
+      <div class="login-card">
+        <div class="login-title">🔒 谷歌广告记录系统</div>
+        <div class="login-sub">请输入访问密码</div>
+        <input id="loginPwd" type="password" class="inp" placeholder="访问密码" autocomplete="current-password">
+        <div id="loginErr" class="login-err"></div>
+        <button class="btn primary" id="loginBtn">登录</button>
+      </div>`;
+    document.body.appendChild(div);
+    const go = () => doLogin();
+    $('#loginBtn').addEventListener('click', go);
+    $('#loginPwd').addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    setTimeout(() => $('#loginPwd')?.focus(), 50);
+  }
+
+  async function doLogin() {
+    const pwd = $('#loginPwd')?.value || '';
+    if (!pwd) return;
+    try {
+      const r = await fetch((window.ADS_API_BASE || '') + '/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwd })
+      });
+      const data = await r.json();
+      if (!r.ok) throw new Error(data.error || '登录失败');
+      State.authToken = data.token || '';
+      try { sessionStorage.setItem('ads_token', State.authToken); } catch {}
+      $('#loginGate')?.remove();
+      toast('登录成功', 'success');
+      loadFromServer();
+    } catch (err) {
+      const el = $('#loginErr');
+      if (el) el.textContent = err.message;
+    }
   }
 
   // ============================================
@@ -317,7 +379,20 @@
       });
 
       State.ads = (payload.ads || []).map(normalizeAd);
+      State.rev = typeof payload.rev === 'number' ? payload.rev : 0;
       State.dirty = false;
+
+      // 获取产品/市场可配置选项（失败则用内置默认，不阻塞）
+      try {
+        const opt = await api('/api/options', { signal: AbortSignal.timeout(CONFIG.API_TIMEOUT) });
+        if (opt && Array.isArray(opt.product)) State.options = { product: opt.product, market: opt.market || [] };
+      } catch (e) {
+        console.warn('[Options]', e.message);
+      }
+
+      // 选项加载后刷新侧边栏市场快捷按钮
+      const mn = $('#marketNav');
+      if (mn) mn.innerHTML = marketNavHTML();
 
       updateDbStatus(
         '服务端 SQLite 已连接',
@@ -358,6 +433,7 @@
       });
 
       State.dirty = false;
+      if (typeof result.rev === 'number') State.rev = result.rev;
 
       // 更新健康状态
       try {
@@ -382,11 +458,51 @@
 
     } catch (err) {
       console.error('[Save Error]', err);
+      if (err.conflict) {
+        conflictBox(err.serverRev);
+        return;
+      }
       updateDbStatus('保存失败', '服务端数据库不可写', 'warn');
       toast(`保存失败：${err.message}`, 'warn');
     } finally {
       setLoading(false);
     }
+  }
+
+  // ---- 保存冲突：服务端版本已变化（专用双按钮弹窗）----
+  function conflictBox(serverRev) {
+    closeChoice();
+    const div = document.createElement('div');
+    div.id = 'choiceBox';
+    div.className = 'overlay open';
+    div.innerHTML = `
+      <div class="dialog">
+        <h3>⚠️ 保存冲突</h3>
+        <p>当前数据版本 v${State.rev}，服务端已是 v${serverRev}（可能其他窗口刚保存过）。</p>
+        <p style="margin-top:8px;color:var(--muted)">「重新加载」会丢弃你未保存的修改，载入服务端最新数据；「强制覆盖」会用你的数据覆盖服务端（对方修改将丢失）。</p>
+        <div class="dialog-btns">
+          <button class="btn small" id="choiceReload">重新加载</button>
+          <button class="btn danger small" id="choiceForce">强制覆盖</button>
+        </div>
+      </div>`;
+    document.body.appendChild(div);
+    $('#choiceReload').addEventListener('click', async () => {
+      closeChoice();
+      await loadFromServer();
+      toast('已重新加载服务端数据', 'success');
+    });
+    $('#choiceForce').addEventListener('click', async () => {
+      closeChoice();
+      try {
+        const latest = await api('/api/ads');
+        State.rev = latest.rev;
+        await saveNow(true);
+      } catch (e) { toast(`强制覆盖失败：${e.message}`, 'error'); }
+    });
+  }
+
+  function closeChoice() {
+    $('#choiceBox')?.remove();
   }
 
   async function diagnose() {
@@ -752,6 +868,8 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
         renderStatsPage();
       } else if (State.view === 'keywords') {
         renderKeywordsPage();
+      } else if (State.view === 'settings') {
+        renderSettingsPage();
       }
 
       updateNav();
@@ -779,9 +897,9 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     $('#bc1').textContent = State.view === 'market' ? '市场' : '工作台';
     $('#bc2').textContent = title;
 
-    const productOptions = PRODUCTS.map((p) => `<option>${esc(p)}</option>`).join('');
+    const productOptions = getProducts().map((p) => `<option>${esc(p)}</option>`).join('');
     const statusOptions = STATUS.map((s) => `<option>${esc(s)}</option>`).join('');
-    const marketOptions = MARKETS.map((m) => `<option>${esc(m)}</option>`).join('');
+    const marketOptions = getMarkets().map((m) => `<option>${esc(m)}</option>`).join('');
 
     $('#content').innerHTML = `
       <div class="grid">
@@ -950,10 +1068,10 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     if (!ad) return;
 
     const c = calc(ad);
-    const productOptions = PRODUCTS.map((p) =>
+    const productOptions = getProducts().map((p) =>
       `<option ${p === ad.product ? 'selected' : ''}>${esc(p)}</option>`
     ).join('');
-    const marketOptions = MARKETS.map((m) =>
+    const marketOptions = getMarkets().map((m) =>
       `<option ${m === ad.market ? 'selected' : ''}>${esc(m)}</option>`
     ).join('');
     const statusOptions = STATUS.map((s) =>
@@ -993,8 +1111,14 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
         </section>
 
         <section class="panel">
-          <div class="ph">消耗趋势</div>
-          <div class="pb"><canvas id="trendChart" class="chart" width="800" height="260"></canvas></div>
+          <div class="ph">消耗趋势
+            <span class="chart-legend" id="trendLegend">
+              <button class="lg ${State.chartSeries.spend ? 'on' : ''}" data-act="toggleSeries" data-series="spend"><i style="background:var(--primary)"></i>消耗</button>
+              <button class="lg ${State.chartSeries.revenue ? 'on' : ''}" data-act="toggleSeries" data-series="revenue"><i style="background:var(--green)"></i>收入</button>
+              <button class="lg ${State.chartSeries.orders ? 'on' : ''}" data-act="toggleSeries" data-series="orders"><i style="background:var(--blue)"></i>单量</button>
+            </span>
+          </div>
+          <div class="pb"><canvas id="trendChart" class="chart"></canvas></div>
         </section>
 
         <section class="panel">
@@ -1006,6 +1130,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
             <div><label>收入€</label><input id="dRevenue" class="inp inp-sm" type="number" min="0" step="0.01"></div>
             <div><label>备注</label><input id="dNote" class="inp inp-sm"></div>
             <button class="btn primary small" data-act="addDaily" data-id="${ad.id}">添加</button>
+            <button class="btn small" data-act="copyYesterday" data-id="${ad.id}" title="复制昨天的数据行（消耗/单量/收入/备注），日期自动填今天">复制昨日</button>
           </div>
           ${dailyTable(ad)}
         </section>
@@ -1090,57 +1215,191 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     `;
   }
 
+  // 趋势图：多序列双轴（左轴金额/右轴单量），悬停十字线 + tooltip，图例可开关
+  function niceTicks(max, n) {
+    n = n || 4;
+    if (!(max > 0)) return [0];
+    const raw = max / n;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag;
+    const ticks = [];
+    for (let v = 0; v <= max * 1.001 + step * 0.5; v += step) ticks.push(Math.round(v * 100) / 100);
+    return ticks;
+  }
+
   function drawTrend(ad) {
     const canvas = $('#trendChart');
     if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
     const data = ad.daily.slice().sort((a, b) => a.date.localeCompare(b.date));
 
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.font = '14px sans-serif';
+    const dpr = window.devicePixelRatio || 1;
+    const W = 860, H = 280;
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+    canvas.style.width = '100%';
+    canvas.style.height = 'auto';
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const css = getComputedStyle(document.documentElement);
+    const cssVar = (n, f) => (css.getPropertyValue(n) || f).trim() || f;
+    const ink = cssVar('--text', '#1f1d18');
+    const muted = cssVar('--muted', '#77736c');
+    const gridCol = cssVar('--line', '#dedad2');
+
+    ctx.clearRect(0, 0, W, H);
+    ctx.font = '11px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
 
     if (!data.length) {
+      ctx.fillStyle = muted;
+      ctx.font = '14px sans-serif';
       ctx.fillText('暂无每日数据', 30, 50);
       return;
     }
 
-    const pad = 34;
-    const w = canvas.width - pad * 2;
-    const h = canvas.height - pad * 2;
-    const max = Math.max(...data.map((d) => d.spend), 1);
+    const SERIES = [
+      { key: 'spend', label: '消耗€', color: cssVar('--primary', '#01696f'), axis: 'l', fmt: (v) => '€' + fmt(v) },
+      { key: 'revenue', label: '收入€', color: cssVar('--green', '#437a22'), axis: 'l', fmt: (v) => '€' + fmt(v) },
+      { key: 'orders', label: '单量', color: cssVar('--blue', '#006494'), axis: 'r', fmt: (v) => fmtI(v) + ' 单' }
+    ].filter((s) => State.chartSeries[s.key]);
 
-    // 绘制坐标轴
-    ctx.strokeStyle = '#999';
-    ctx.beginPath();
-    ctx.moveTo(pad, pad);
-    ctx.lineTo(pad, pad + h);
-    ctx.lineTo(pad + w, pad + h);
-    ctx.stroke();
+    const padL = 52, padR = 44, padT = 14, padB = 30;
+    const iw = W - padL - padR, ih = H - padT - padB;
+    const maxL = Math.max(1, ...data.map((d) => Math.max(d.spend || 0, SERIES.some((s) => s.key === 'revenue') ? d.revenue || 0 : 0)));
+    const maxR = Math.max(1, ...data.map((d) => d.orders || 0));
+    const ticksL = niceTicks(maxL), ticksR = niceTicks(maxR);
+    const topL = ticksL[ticksL.length - 1] || 1, topR = ticksR[ticksR.length - 1] || 1;
+    const X = (i) => padL + (data.length === 1 ? iw / 2 : (i * iw) / (data.length - 1));
+    const YL = (v) => padT + ih - (v / topL) * ih;
+    const YR = (v) => padT + ih - (v / topR) * ih;
 
-    // 绘制折线
-    ctx.strokeStyle = '#01696f';
-    ctx.lineWidth = 3;
-    ctx.beginPath();
+    // 网格 + 纵轴刻度
+    ctx.lineWidth = 1;
+    ticksL.forEach((t) => {
+      const y = YL(t);
+      ctx.strokeStyle = gridCol;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + iw, y); ctx.stroke();
+      ctx.fillStyle = muted;
+      ctx.textAlign = 'right';
+      ctx.fillText(t >= 1000 ? (t / 1000) + 'k' : String(t), padL - 6, y + 4);
+    });
+    if (SERIES.some((s) => s.axis === 'r')) {
+      ctx.fillStyle = muted;
+      ctx.textAlign = 'left';
+      ticksR.forEach((t) => {
+        const y = YR(t);
+        ctx.fillText(String(t), padL + iw + 6, y + 4);
+      });
+    }
 
+    // 横轴日期（最多 6 个）
+    ctx.fillStyle = muted;
+    ctx.textAlign = 'center';
+    const step = Math.max(1, Math.ceil(data.length / 6));
     data.forEach((d, i) => {
-      const x = pad + (data.length === 1 ? w / 2 : i * w / (data.length - 1));
-      const y = pad + h - d.spend / max * h;
-      if (i) ctx.lineTo(x, y);
-      else ctx.moveTo(x, y);
+      if (i % step === 0 || i === data.length - 1) {
+        ctx.fillText(String(d.date).slice(5), X(i), padT + ih + 18);
+      }
     });
 
-    ctx.stroke();
-
-    // 绘制数据点
-    ctx.fillStyle = '#01696f';
-    data.forEach((d, i) => {
-      const x = pad + (data.length === 1 ? w / 2 : i * w / (data.length - 1));
-      const y = pad + h - d.spend / max * h;
+    // 序列折线 + 面积
+    SERIES.forEach((s) => {
+      const Y = s.axis === 'l' ? YL : YR;
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 2.5;
+      ctx.lineJoin = 'round';
       ctx.beginPath();
-      ctx.arc(x, y, 4, 0, Math.PI * 2);
-      ctx.fill();
+      data.forEach((d, i) => {
+        const x = X(i), y = Y(d[s.key] || 0);
+        if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      });
+      ctx.stroke();
+      // 面积填充（仅金额轴）
+      if (s.axis === 'l') {
+        ctx.lineTo(X(data.length - 1), padT + ih);
+        ctx.lineTo(X(0), padT + ih);
+        ctx.closePath();
+        ctx.globalAlpha = 0.08;
+        ctx.fillStyle = s.color;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+      // 数据点
+      ctx.fillStyle = s.color;
+      data.forEach((d, i) => {
+        ctx.beginPath();
+        ctx.arc(X(i), Y(d[s.key] || 0), 3, 0, Math.PI * 2);
+        ctx.fill();
+      });
     });
+
+    // 悬停：十字线 + tooltip
+    if (canvas._trendMove) canvas.removeEventListener('mousemove', canvas._trendMove);
+    if (canvas._trendLeave) canvas.removeEventListener('mouseleave', canvas._trendLeave);
+    const onMove = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (W / rect.width);
+      let bi = 0, bd = Infinity;
+      data.forEach((d, i) => {
+        const dd = Math.abs(X(i) - mx);
+        if (dd < bd) { bd = dd; bi = i; }
+      });
+      drawTrendHover(ctx, { W, H, padL, padR, padT, padB, ink, muted, gridCol }, data, bi, SERIES, X, YL, YR);
+    };
+    const onLeave = () => drawTrend(ad);
+    canvas._trendMove = onMove;
+    canvas._trendLeave = onLeave;
+    canvas.addEventListener('mousemove', onMove);
+    canvas.addEventListener('mouseleave', onLeave);
+  }
+
+  function drawTrendHover(ctx, g, data, bi, SERIES, X, YL, YR) {
+    const d = data[bi];
+    const x = X(bi);
+    ctx.save();
+    ctx.strokeStyle = g.muted;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x, g.padT);
+    ctx.lineTo(x, g.H - g.padB);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const lines = [`📅 ${d.date}`].concat(SERIES.map((s) => {
+      const Y = s.axis === 'l' ? YL : YR;
+      ctx.fillStyle = s.color;
+      ctx.beginPath();
+      ctx.arc(x, Y(d[s.key] || 0), 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      return { color: s.color, text: `${s.label} ${s.fmt(d[s.key] || 0)}` };
+    }));
+
+    ctx.font = '12px -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+    const tw = Math.max(...lines.map((l) => ctx.measureText(typeof l === 'string' ? l : l.text).width)) + 28;
+    const th = lines.length * 20 + 12;
+    let tx = x + 12;
+    if (tx + tw > g.W - 8) tx = x - tw - 12;
+    const ty = Math.min(Math.max(g.padT + 4, 60), g.H - th - 8);
+    ctx.fillStyle = 'rgba(20,20,20,0.88)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(tx, ty, tw, th, 8); else ctx.rect(tx, ty, tw, th);
+    ctx.fill();
+    ctx.stroke();
+    lines.forEach((l, i) => {
+      const yy = ty + 20 + i * 20;
+      if (typeof l !== 'string') {
+        ctx.fillStyle = l.color;
+        ctx.beginPath();
+        ctx.arc(tx + 12, yy - 4, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'left';
+      ctx.fillText(typeof l === 'string' ? l : l.text, tx + (typeof l === 'string' ? 12 : 22), yy);
+    });
+    ctx.restore();
   }
 
   function marketHints(product) {
@@ -1214,6 +1473,138 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     `;
 
     updateStats();
+  }
+
+  // ============================================
+  // 系统设置页
+  // ============================================
+  function renderSettingsPage() {
+    $('#pageTitle').textContent = '系统设置';
+    $('#bc1').textContent = '工作台';
+    $('#bc2').textContent = '系统设置';
+
+    const products = getProducts();
+    const markets = getMarkets();
+
+    $('#content').innerHTML = `
+      <div class="grid">
+        <section class="panel">
+          <div class="ph">产品选项 <span class="muted-sm">${products.length} 个</span></div>
+          <div class="pb stack">
+            <div class="opt-add">
+              <input id="optProductInp" class="inp inp-sm" placeholder="输入新产品名称">
+              <button class="btn primary small" data-act="addOption" data-kind="product">添加</button>
+            </div>
+            <div class="opt-list">
+              ${products.map((p) => `
+                <span class="opt-tag">${esc(p)}
+                  <button class="opt-del" data-act="delOption" data-kind="product" data-value="${esc(p)}" title="删除">×</button>
+                </span>`).join('')}
+            </div>
+            <div class="hint">删除选项不影响已有广告记录，只影响新建时的下拉列表。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="ph">市场选项 <span class="muted-sm">${markets.length} 个</span></div>
+          <div class="pb stack">
+            <div class="opt-add">
+              <input id="optMarketInp" class="inp inp-sm" placeholder="输入新市场名称">
+              <button class="btn primary small" data-act="addOption" data-kind="market">添加</button>
+            </div>
+            <div class="opt-list">
+              ${markets.map((m) => `
+                <span class="opt-tag">${esc(m)}
+                  <button class="opt-del" data-act="delOption" data-kind="market" data-value="${esc(m)}" title="删除">×</button>
+                </span>`).join('')}
+            </div>
+            <div class="hint">删除选项不影响已有广告记录，只影响新建时的下拉列表。</div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="ph">备份管理</div>
+          <div class="pb stack">
+            <div class="hint">每次保存会自动快照（保留最近 30 份），也可手动创建备份。恢复前会自动快照当前数据。</div>
+            <div class="toolbar">
+              <button class="btn small" data-act="backup">创建手动备份</button>
+              <button class="btn small" data-act="refreshBackups">刷新列表</button>
+            </div>
+            <div id="backupList"><div class="empty">加载中...</div></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="ph">系统信息</div>
+          <div class="pb stack">
+            <div class="kv"><span>数据版本</span><b>v${State.rev}</b></div>
+            <div class="kv"><span>广告记录</span><b>${State.ads.length} 条</b></div>
+            <div class="kv"><span>访问密码</span><b>${State.serverHealth?.authEnabled ? '已启用' : '未启用'}</b></div>
+            <div class="hint">多窗口同时编辑时，保存会做版本校验，版本过期会弹窗提示，避免互相覆盖。</div>
+          </div>
+        </section>
+      </div>
+    `;
+
+    loadBackupList();
+    updateStats();
+  }
+
+  async function loadBackupList() {
+    const el = $('#backupList');
+    if (!el) return;
+    try {
+      const rows = await api('/api/backups');
+      el.innerHTML = rows.length ? `
+        <table class="table">
+          <thead><tr><th>#</th><th>类型</th><th>时间</th><th></th></tr></thead>
+          <tbody>
+            ${rows.map((r) => `
+              <tr>
+                <td>${r.id}</td>
+                <td>${esc(r.scope)}</td>
+                <td>${esc(String(r.created_at || '').replace('T', ' ').slice(0, 19))}</td>
+                <td><button class="btn small" data-act="restoreBackup" data-id="${r.id}">恢复</button></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>` : '<div class="empty">暂无备份</div>';
+    } catch (err) {
+      el.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+    }
+  }
+
+  async function addOption(kind) {
+    const inp = kind === 'product' ? $('#optProductInp') : $('#optMarketInp');
+    const v = (inp?.value || '').trim();
+    if (!v) { toast('请输入名称', 'warn'); return; }
+    try {
+      const r = await api('/api/options', { method: 'POST', body: JSON.stringify({ kind, value: v }) });
+      State.options = { product: r.product || [], market: r.market || [] };
+      toast(`已添加${kind === 'product' ? '产品' : '市场'}：${v}`, 'success');
+      renderSettingsPage();
+    } catch (err) { toast(`添加失败：${err.message}`, 'error'); }
+  }
+
+  function delOption(kind, value) {
+    confirmBox('删除选项', `确定删除${kind === 'product' ? '产品' : '市场'}「${value}」吗？已有记录不受影响。`, async () => {
+      try {
+        const r = await api(`/api/options/${kind}/${encodeURIComponent(value)}`, { method: 'DELETE' });
+        State.options = { product: r.product || [], market: r.market || [] };
+        toast('已删除', 'success');
+        renderSettingsPage();
+      } catch (err) { toast(`删除失败：${err.message}`, 'error'); }
+    });
+  }
+
+  function restoreBackup(id) {
+    confirmBox('恢复备份', `确定从备份 #${id} 恢复吗？当前数据会被替换（恢复前会自动快照当前数据，可撤销）。`, async () => {
+      try {
+        const r = await api(`/api/backups/${id}/restore`, { method: 'POST' });
+        if (typeof r.rev === 'number') State.rev = r.rev;
+        await loadFromServer();
+        toast(`已从备份 #${id} 恢复 ${r.count} 条记录`, 'success');
+      } catch (err) { toast(`恢复失败：${err.message}`, 'error'); }
+    });
   }
 
   // ============================================
@@ -1319,6 +1710,16 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     renderList();
   }
 
+  // 自动编号：扫描现有 AD-数字 格式，返回下一个可用编号
+  function nextAdNo() {
+    let max = 0;
+    State.ads.forEach((a) => {
+      const m = /^AD-(\d+)$/i.exec(String(a.no || '').trim());
+      if (m) max = Math.max(max, parseInt(m[1], 10));
+    });
+    return `AD-${String(max + 1).padStart(3, '0')}`;
+  }
+
   function addAd() {
     const ad = normalizeAd({
       no: $('#qNo')?.value,
@@ -1361,6 +1762,35 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     renderDetail(id);
     renderList();
     saveNow(false);
+  }
+
+  // 复制昨日数据：取离今天最近的一条每日记录，复制消耗/单量/收入/备注，日期填今天
+  function copyYesterday(id) {
+    const ad = State.ads.find((a) => a.id === id);
+    if (!ad) return;
+    if (!ad.daily.length) {
+      toast('还没有每日数据可复制', 'warn');
+      return;
+    }
+    const t = today();
+    const src = ad.daily
+      .filter((d) => d.date < t)
+      .sort((a, b) => b.date.localeCompare(a.date))[0] || ad.daily[0];
+
+    pushUndo();
+    ad.daily.push(normalizeDaily({
+      date: t,
+      spend: src.spend,
+      orders: src.orders,
+      revenue: src.revenue,
+      note: src.note
+    }));
+
+    State.dirty = true;
+    renderDetail(id);
+    renderList();
+    saveNow(false);
+    toast(`已复制 ${src.date} 的数据`, 'success');
   }
 
   function deleteAd(id) {
@@ -1524,13 +1954,17 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   // ============================================
   // 应用外壳渲染
   // ============================================
-  function renderAppShell() {
-    const marketBtns = ['意大利', '西班牙', '德国', '波兰'].map((m) =>
-      `<button class="nav-btn" data-act="nav" data-page="market" data-param="${m}">
-        <span class="nav-ico">${m[0]}</span>
-        <span class="nav-text">${m}</span>
+  function marketNavHTML() {
+    return getMarkets().slice(0, 4).map((m) =>
+      `<button class="nav-btn" data-act="nav" data-page="market" data-param="${esc(m)}">
+        <span class="nav-ico">${esc(m[0])}</span>
+        <span class="nav-text">${esc(m)}</span>
       </button>`
     ).join('');
+  }
+
+  function renderAppShell() {
+    const marketBtns = marketNavHTML();
 
     document.body.innerHTML = `
       <div class="app">
@@ -1561,10 +1995,14 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
             <div class="section">
               <div class="label">市场</div>
-              ${marketBtns}
+              <div id="marketNav">${marketBtns}</div>
               <button class="nav-btn" data-act="nav" data-page="market" data-param="all">
                 <span class="nav-ico">🌍</span>
                 <span class="nav-text">更多市场</span>
+              </button>
+              <button class="nav-btn" data-act="nav" data-page="settings">
+                <span class="nav-ico">⚙</span>
+                <span class="nav-text">系统设置</span>
               </button>
             </div>
 
@@ -1734,9 +2172,16 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           clearAll();
           break;
 
-        case 'toggleAdd':
-          $('#qa')?.classList.toggle('open');
+        case 'toggleAdd': {
+          const qa = $('#qa');
+          qa?.classList.toggle('open');
+          if (qa?.classList.contains('open')) {
+            const noInp = $('#qNo');
+            if (noInp && !noInp.value) noInp.value = nextAdNo();
+            $('#qProduct')?.focus();
+          }
           break;
+        }
 
         case 'closeAdd':
           $('#qa')?.classList.remove('open');
@@ -1763,6 +2208,15 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           addDaily(b.dataset.id);
           break;
 
+        case 'copyYesterday':
+          copyYesterday(b.dataset.id);
+          break;
+
+        case 'toggleSeries':
+          State.chartSeries[b.dataset.series] = !State.chartSeries[b.dataset.series];
+          renderDetail(State.selectedId);
+          break;
+
         case 'delDaily':
           deleteDaily(b.dataset.ad, b.dataset.id);
           break;
@@ -1773,6 +2227,22 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
         case 'batchDelete':
           batchDelete();
+          break;
+
+        case 'addOption':
+          addOption(b.dataset.kind);
+          break;
+
+        case 'delOption':
+          delOption(b.dataset.kind, b.dataset.value);
+          break;
+
+        case 'restoreBackup':
+          restoreBackup(b.dataset.id);
+          break;
+
+        case 'refreshBackups':
+          loadBackupList();
           break;
 
         case 'undo':
@@ -1838,6 +2308,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
       // Escape: 关闭对话框
       if (e.key === 'Escape') {
         closeConfirm();
+        closeChoice();
         $('#qa')?.classList.remove('open');
       }
     });
