@@ -25,8 +25,8 @@
   --primary-hover: #025a60;
   --green: #437a22;
   --green-bg: #d4dfcc;
-  --red: #a12c7b;
-  --red-bg: #e0ced7;
+  --red: #c0392b;
+  --red-bg: #f3d9d4;
   --orange: #da7101;
   --blue: #006494;
   --blue-bg: #c6d8e4;
@@ -66,7 +66,7 @@ html[data-theme="dark"] {
   --primary-hover: #5da8b3;
   --green: #6daa45;
   --green-bg: #3a4435;
-  --red: #d163a7;
+  --red: #e0685c;
   --red-bg: #4c3d46;
   --orange: #fdab43;
   --blue: #5591c7;
@@ -1063,7 +1063,7 @@ html[data-theme="dark"] .safe.warn {
 /* 每日数据添加行 */
 .daily-add {
   display: grid;
-  grid-template-columns: 130px 90px 70px 90px 1fr auto;
+  grid-template-columns: 130px 90px 70px 90px 1fr auto auto;
   gap: 8px;
   padding: 12px 18px;
   background: var(--soft);

@@ -1,0 +1,26 @@
+# Render 部署配置（含持久化磁盘，数据库不会因重启丢失）
+services:
+  - type: web
+    name: google-ads-system
+    runtime: node
+    plan: starter            # 持久盘需要付费计划（Starter 起）
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
+      - key: DB_PATH
+        value: /data/ads.sqlite   # 指向持久盘
+      - key: APP_PASSWORD
+        sync: false                # 在 Render 面板手动设置访问密码（可选）
+    disk:
+      name: ads-data
+      mountPath: /data
+      sizeGB: 1
+
+# 注意：
+# 1. 免费计划没有持久盘，重启/重新部署会丢失 data/ads.sqlite，
+#    如需长期使用请选择 Starter 及以上计划。
+# 2. 也可以把 DB_PATH 指向外部（如 Neon Postgres 需自行改造），
+#    本项目默认 SQLite 单文件，配合持久盘即可。
+# 3. 公网访问务必设置 APP_PASSWORD。

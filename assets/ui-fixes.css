@@ -430,3 +430,143 @@ textarea:focus-visible {
   width: 200%;
   height: 200%;
 }
+
+/* ============ v3.0 新增组件 ============ */
+
+/* 登录遮罩 */
+#loginGate {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(15, 15, 15, 0.55);
+  backdrop-filter: blur(6px);
+}
+.login-card {
+  width: min(92vw, 360px);
+  padding: 32px 28px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.login-title {
+  font-size: 18px;
+  font-weight: 800;
+  margin-bottom: 6px;
+}
+.login-sub {
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 18px;
+}
+.login-card .inp {
+  width: 100%;
+  margin-bottom: 10px;
+  text-align: center;
+}
+.login-err {
+  min-height: 20px;
+  color: var(--red);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.login-card .btn {
+  width: 100%;
+}
+
+/* 趋势图图例 */
+.chart-legend {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 12px;
+  vertical-align: middle;
+}
+.chart-legend .lg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--soft);
+  color: var(--muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.chart-legend .lg i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.chart-legend .lg.on {
+  background: var(--panel);
+  color: var(--text);
+  border-color: var(--primary);
+}
+.chart-legend .lg:not(.on) {
+  opacity: 0.55;
+}
+
+/* 设置页 */
+.opt-add {
+  display: flex;
+  gap: 8px;
+}
+.opt-add .inp {
+  flex: 1;
+}
+.opt-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.opt-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px 5px 12px;
+  font-size: 13px;
+  background: var(--soft);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+}
+.opt-del {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.opt-del:hover {
+  background: var(--red-bg);
+  color: var(--red);
+}
+.kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13px;
+}
+.kv:last-child {
+  border-bottom: none;
+}
+.kv span {
+  color: var(--muted);
+}
+.muted-sm {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 400;
+}
