@@ -520,9 +520,13 @@ const POOL_TABLE = {
 };
 
 const POOL_FORMAT = {
-  emails: `NewkirkCorre.l103@gmail.com——psj5qrajyv——ucyar7gltohvnnxbpxt4vmsdrcaxa5j6
-vanmaih.uynh75@gmail.com——Y2IvBdZRN2——54viszzfxqzxuowp57ma2sw7euael6x5`,
-  proxies: `5750389
+  emails: `一行一条，分隔符支持 ——、—、–、|、Tab、:、;、,、空格；也支持「标签：值」形式（顺序任意）
+NewkirkCorre.l103@gmail.com——psj5qrajyv——ucyar7gltohvnnxbpxt4vmsdrcaxa5j6
+vanmaih.uynh75@gmail.com|Y2IvBdZRN2|54viszzfxqzxuowp57ma2sw7euael6x5
+demo@gmail.com:pass123:2fakey
+邮箱：demo2@gmail.com 密码：abc12345 2FA：JBSWY3DPEHPK3PXP`,
+  proxies: `代理商文本块（账号/密码/主机/端口/国家等标签行，中英文均可、顺序任意）：
+5750389
 socks5
 55.kookeey.info
 26004
@@ -532,14 +536,13 @@ socks5
 US-美国
 217.20.243.226
 
-9189913
-socks5
-55.kookeey.info
-30263
-账号：437d8679
-密码：547be5d2
-US-美国
-154.16.121.213`,
+也支持一行一条：
+socks5://user:pass@host:port
+user:pass@host:port
+host:port:user:pass
+user:pass:host:port
+host,port,user,pass
+host port user pass`,
   cards: `4367970152619097 06/29 596
 4367970159932238 06/29 364
 4367970169748392 06/29 786`,
@@ -699,7 +702,12 @@ function openAutoImport() {
   openModal(`
     <div class="modal-head"><h3>智能导入 · 邮箱 + 代理</h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
-      <div class="auto-hint">粘贴任意格式，自动识别并拆分（可混合）：<b>AdsPower 导入 TXT</b>（key=value，星号线分块）、邮箱「账号——密码——2FA」、代理商文本块、<span class="mono">主机：端口：账号：密码</span> 一行代理。识别后邮箱进「邮箱库」、代理进「代理库」，重复自动跳过。</div>
+      <div class="auto-hint">粘贴任意格式，自动识别并拆分（可混合）：<br>
+        ① <b>AdsPower 导入 TXT</b>（key=value，星号线分块）<br>
+        ② 邮箱：<span class="mono">账号——密码——2FA</span>，分隔符支持 —、|、Tab、冒号、分号、逗号、空格，或「邮箱：xxx 密码：yyy 2FA：zzz」标签形式（顺序任意）<br>
+        ③ 一行代理：<span class="mono">socks5://user:pass@host:port</span>、<span class="mono">user:pass@host:port</span>、<span class="mono">host:port:user:pass</span>、<span class="mono">user:pass:host:port</span>、<span class="mono">host,port,user,pass</span> 等<br>
+        ④ 代理商多行文本块（账号/密码/主机/端口/国家等标签行，中英文均可）<br>
+        识别后邮箱进「邮箱库」、代理进「代理库」，重复自动跳过。</div>
       <div class="auto-toolbar">
         <button type="button" class="btn btn-ghost btn-sm" id="auto-file-btn">选择 TXT 文件</button>
         <input type="file" id="auto-file" accept=".txt,.csv,text/plain" hidden>

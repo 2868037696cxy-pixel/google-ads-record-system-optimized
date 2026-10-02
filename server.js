@@ -71,22 +71,67 @@ function nextSeq() {
 
 /* ---------------- 解析器 ---------------- */
 
-// 邮箱：账号——密码——2FA（支持 ——、—、--、|、Tab 分隔）
+/* ---------------- 邮箱解析 ---------------- */
+
+// 邮箱域部分不允许冒号/端口，避免把 user:pass@host:port 形态误判为邮箱
+const EMAIL_RE = /^[^\s@:]+@[^\s@:]+\.[^\s@:]+$/;
+
+// 标签关键词（用户 / 密码 / 2FA），标签形式形如「邮箱：a 密码：b 2FA：c」，顺序任意
+const LABEL_USER = '邮箱|电子邮件|e-?mail|账号|账户|用户名|user(?:name)?|account';
+const LABEL_PASS = '密码|pass(?:word)?|pwd';
+const LABEL_FAKEY = '2fa|fakey|secret|totp|谷歌验证|两步验证|验证码?|key';
+const LABEL_ALL = `${LABEL_USER}|${LABEL_PASS}|${LABEL_FAKEY}`;
+const LABEL_STOP = `${LABEL_ALL}|代理|proxy|备注|note|过期|到期|expire|序号|编号|serial|sn`;
+
+function grabLabeled(t, labels) {
+  const re = new RegExp(`(?:${labels})\\s*[:：=]\\s*(.*?)(?=[，,;；、\\s]*(?:${LABEL_STOP})\\s*[:：=]|$)`, 'i');
+  const m = t.match(re);
+  return m ? m[1].trim().replace(/^["'「」『』【】]+|["'「」『』【】]+$/g, '') : '';
+}
+
+// 单行邮箱。分隔符形式支持 ——、—、–、--、|、Tab、:、;、,、空白；字段两端引号自动去除
+function parseEmailLine(line) {
+  const t = String(line || '').trim();
+  if (!t || /^\*{3,}$/.test(t) || ADSPOWER_KV_RE.test(t)) return null;
+  let m;
+  if (new RegExp(`(?:${LABEL_ALL})\\s*[:：=]`, 'i').test(t)) {
+    let user = grabLabeled(t, LABEL_USER);
+    if (!EMAIL_RE.test(user)) {
+      m = t.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/i);
+      if (m && EMAIL_RE.test(m[0])) user = m[0];
+    }
+    if (EMAIL_RE.test(user)) {
+      return { user, pass: grabLabeled(t, LABEL_PASS), fakey: grabLabeled(t, LABEL_FAKEY) };
+    }
+  }
+  const parts = t
+    .split(/\s*(?:——|—|–|--|\t|\||;|；|,|，|:|：|\s+)\s*/)
+    .map((s) => s.trim().replace(/^["']+|["']+$/g, ''))
+    .filter(Boolean);
+  if (!parts.length || !EMAIL_RE.test(parts[0])) return null;
+  if (parts.length >= 2) {
+    // user:pass@host:port 形态的代理行让给代理解析
+    const restStr = t.slice(t.indexOf(parts[1])).trim();
+    if (/^[^@\s]+@[^\s:@]+:\d{1,5}$/.test(restStr)) return null;
+  }
+  return { user: parts[0], pass: parts[1] || '', fakey: parts[2] || '' };
+}
+
 function parseEmails(text) {
   const out = [];
   for (const raw of String(text || '').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    const parts = line.split(/\s*(?:——|—|--|\t|\|)\s*/).map((s) => s.trim()).filter(Boolean);
-    if (!parts.length) continue;
-    const user = parts[0];
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(user)) continue;
-    out.push({ user, pass: parts[1] || '', fakey: parts[2] || '' });
+    const e = parseEmailLine(raw);
+    if (e) out.push(e);
   }
   return out;
 }
 
-// 代理：文本块（编号 / 类型 / 主机 / 端口 / 账号 / 密码 / 国家 / IP）
+/* ---------------- 代理解析 ---------------- */
+
+// 中文国家词（用于「美国」「香港 备用」等整行识别）
+const PROXY_ZH_COUNTRY = '美国|香港|台湾|日本|新加坡|韩国|英国|德国|法国|荷兰|俄罗斯|加拿大|澳大利亚|澳洲|马来西亚|泰国|越南|菲律宾|印尼|印度尼西亚|印度|巴西|墨西哥|土耳其|阿联酋|阿根廷|巴基斯坦|乌克兰|波兰|西班牙|意大利|瑞典|瑞士|爱尔兰|奥地利|比利时|丹麦|挪威|芬兰|捷克|罗马尼亚|南非|尼日利亚|埃及';
+
+// 多行文本块：编号 / 类型 / 主机 / 端口 / 账号 / 密码 / 国家 / IP，支持中英文标签与裸值
 function parseProxies(text) {
   const newItem = () => ({ sn: '', type: '', host: '', port: '', user: '', pass: '', country: '', ip: '' });
   const lines = String(text || '').split(/\r?\n/);
@@ -96,63 +141,96 @@ function parseProxies(text) {
     if (cur && (cur.host || cur.user)) items.push(cur);
     cur = null;
   };
+  const ensure = () => (cur || (cur = newItem()));
+  const setHost = (val) => {
+    const h = String(val).replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').trim();
+    const hp = h.match(/^(\[[^\]]+\]|[^\s:]+):(\d{1,5})$/);
+    if (hp && Number(hp[2]) <= 65535) {
+      cur.host = hp[1];
+      if (!cur.port) cur.port = hp[2];
+    } else {
+      cur.host = h;
+    }
+  };
   const ipRe = /^\d{1,3}(?:\.\d{1,3}){3}$/;
+  const zhCountryRe = new RegExp(`^(?:${PROXY_ZH_COUNTRY})(?:[\\s\\-–—|·][\\u4e00-\\u9fa5a-zA-Z0-9]{1,12})?$`);
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
     let m;
-    if ((m = line.match(/^(?:账号|用户名|user)\s*[:：]\s*(.+)$/i))) {
+    if ((m = line.match(/^(?:代理?账号|用户名|账户|user(?:name)?|login)\s*[:：]\s*(.+)$/i))) {
       if (cur && cur.user) flush();
-      if (!cur) cur = newItem();
-      cur.user = m[1].trim();
+      ensure().user = m[1].trim();
       continue;
     }
-    if ((m = line.match(/^(?:密码|password|pwd)\s*[:：]\s*(.+)$/i))) {
+    if ((m = line.match(/^(?:代理?密码|pass(?:word)?|pwd)\s*[:：]\s*(.+)$/i))) {
       if (cur && cur.pass) flush();
-      if (!cur) cur = newItem();
-      cur.pass = m[1].trim();
+      ensure().pass = m[1].trim();
       continue;
     }
+    if ((m = line.match(/^(?:序号|编号|序列号|serial|sn(?![a-z]))\s*[:：]?\s*(\S+)\s*$/i))) {
+      if (cur && cur.sn) flush();
+      ensure().sn = m[1];
+      continue;
+    }
+    if ((m = line.match(/^(?:类型|协议|type|protocol|scheme)\s*[:：]\s*([a-z0-9]+)\s*$/i))) {
+      const v = m[1].toLowerCase();
+      if (cur && cur.type) flush();
+      ensure().type = v === 'socks' ? 'socks5' : v;
+      continue;
+    }
+    if ((m = line.match(/^(?:主机|服务器|地址|端点|host(?:name)?|server|address|endpoint)\s*[:：]\s*(.+)$/i))) {
+      if (cur && cur.host) flush();
+      ensure();
+      setHost(m[1]);
+      continue;
+    }
+    if ((m = line.match(/^(?:端口|port)\s*[:：]\s*(\d{1,5})\s*$/i))) {
+      if (cur && cur.port) flush();
+      ensure().port = m[1];
+      continue;
+    }
+    if ((m = line.match(/^(?:国家|地区|country|region)\s*[:：]\s*(.+)$/i))) {
+      ensure().country = m[1].trim();
+      continue;
+    }
+    if ((m = line.match(/^(?:出口\s*ip|ip\s*地址|exit\s*ip|ip|出口)\s*[:：]\s*(.+)$/i))) {
+      ensure().ip = m[1].trim();
+      continue;
+    }
+    if (/^(?:过期时间?|到期|失效|expire[ds]?|状态|status|备注|remark|note|说明)\s*[:：]/i.test(line)) continue;
     const low = line.toLowerCase();
     if (/^(socks5|socks4|socks|http|https|ssh)$/.test(low)) {
       if (cur && cur.type) flush();
-      if (!cur) cur = newItem();
-      cur.type = low === 'socks' ? 'socks5' : low;
+      ensure().type = low === 'socks' ? 'socks5' : low;
       continue;
     }
     if (ipRe.test(line)) {
-      if (!cur) cur = newItem();
-      cur.ip = line;
+      ensure().ip = line;
       continue;
     }
     if ((m = line.match(/^([A-Za-z]{2})\s*[-–—]\s*(.+)$/)) && /[\u4e00-\u9fa5]/.test(m[2])) {
-      if (!cur) cur = newItem();
-      cur.country = line;
+      ensure().country = line;
+      continue;
+    }
+    if (zhCountryRe.test(line)) {
+      ensure().country = line;
       continue;
     }
     if (/^\d+$/.test(line)) {
       const num = parseInt(line, 10);
       if (num <= 65535 && line.length <= 5 && !cur?.port) {
-        if (!cur) cur = newItem();
-        cur.port = line;
+        ensure().port = line;
       } else {
         if (cur && (cur.sn || cur.user)) flush();
-        if (!cur) cur = newItem();
-        cur.sn = line;
+        ensure().sn = line;
       }
       continue;
     }
     if (line.includes('.')) {
       if (cur && cur.host) flush();
-      if (!cur) cur = newItem();
-      const h = line.replace(/^https?:\/\//, '');
-      const hp = h.match(/^(\[[^\]]+\]|[^\s:]+):(\d{1,5})$/);
-      if (hp && Number(hp[2]) <= 65535) {
-        cur.host = hp[1];
-        cur.port = hp[2];
-      } else {
-        cur.host = h;
-      }
+      ensure();
+      setHost(line);
       continue;
     }
   }
@@ -160,22 +238,65 @@ function parseProxies(text) {
   return items;
 }
 
-// 一行代理：主机:端口:账号:密码 或 账号:密码@主机:端口（支持 IPv6 [主机]:端口:…）
+/* ---------------- 一行代理 ---------------- */
+
+// 支持格式（IPv6 需方括号 [主机]:端口）：
+//   socks5://host:port、http://user:pass@host:port（带协议前缀）
+//   host:port、host:port:user:pass、user:pass@host:port、user:pass:host:port
+//   host,port,user,pass（逗号/分号）、host port user pass（空白）
+const PROXY_SCHEMES = { socks5: 'socks5', socks4: 'socks4', socks: 'socks5', http: 'http', https: 'https', ssh: 'ssh' };
+
 function parseProxyStr(s) {
-  const t = String(s || '').trim();
+  let t = String(s || '').trim();
   if (!t) return null;
-  let m = t.match(/^(?:([^:@\s]+):([^@\s]+))?@(\[[^\]]+\]|[^\s:]+):(\d{1,5})$/);
-  if (m && Number(m[4]) <= 65535) {
-    return { host: m[3], port: m[4], user: m[1] || '', pass: m[2] || '' };
+  let type = '';
+  const sch = t.match(/^([a-z][a-z0-9+.-]*):\/\//i);
+  if (sch) {
+    type = PROXY_SCHEMES[sch[1].toLowerCase()] || '';
+    t = t.slice(sch[0].length);
   }
-  m = t.match(/^(\[[^\]]+\]|(?=[^\s:]*\.)[a-zA-Z\d][a-zA-Z\d.-]*):(\d{1,5})(?::([^:@\s]*):([^:@\s]*))?$/);
-  if (m && Number(m[2]) <= 65535) {
-    return { host: m[1], port: m[2], user: m[3] || '', pass: m[4] || '' };
+  t = t.replace(/：/g, ':').trim();
+  const at = t.indexOf('@');
+  if (at >= 0) {
+    t = t.slice(0, at).replace(/[,;，；\s]+/g, ':').replace(/:+/g, ':') + t.slice(at).replace(/\s+/g, '');
+  } else if (/[,;，；]/.test(t)) {
+    t = t.split(/[,;，；]/).map((x) => x.trim()).filter(Boolean).join(':');
+  } else if (/\s/.test(t)) {
+    const tok = t.split(/\s+/).filter(Boolean);
+    if (tok.length >= 2 && /^\d{1,5}$/.test(tok[1]) && Number(tok[1]) <= 65535) {
+      t = tok.slice(0, 4).join(':');
+    }
+  }
+  if (!t.includes('[')) t = t.split(':').map((x) => x.trim()).join(':');
+  const done = (host, port, user, pass) => (
+    Number(port) <= 65535 ? { host, port, user: user || '', pass: pass || '', ...(type ? { type } : {}) } : null
+  );
+  let m = t.match(/^(?:([^:@]+):([^@]+))?@(\[[^\]]+\]|[^\s:@]+):(\d{1,5})$/);
+  if (m) return done(m[3], m[4], m[1], m[2]);
+  m = t.match(/^(\[[^\]]+\]|(?=[^\s:]*\.)[a-zA-Z\d][a-zA-Z\d.-]*):(\d{1,5})(?::([^:@]*):([^:@]*))?$/);
+  if (m) return done(m[1], m[2], m[3], m[4]);
+  const parts = t.split(':');
+  if (parts.length === 4 && !parts[0].includes('.') && !parts[0].startsWith('[')
+    && parts[2].includes('.') && /^\d{1,5}$/.test(parts[3])) {
+    return done(parts[2], parts[3], parts[0], parts[1]);
   }
   return null;
 }
 
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// 代理库导入：一行写法（协议前缀/@/逗号/空格等）逐行优先，其余行整体交给文本块解析
+function parseProxyPool(text) {
+  const items = [];
+  const rest = [];
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) continue;
+    const one = parseProxyStr(t);
+    if (one) items.push({ sn: '', type: '', country: '', ip: '', ...one });
+    else rest.push(line);
+  }
+  items.push(...parseProxies(rest.join('\n')));
+  return items;
+}
 
 // AdsPower 导入 TXT：key=value，块之间用星号线分隔（name= 也视为新块开始）
 const ADSPOWER_KV_RE = /^(?:name|remark|tab|platform|username|password|fakey|cookie|proxytype|ipchecker|proxy|proxyurl|ip|countrycode|regioncode|citycode|proxyid|ua|resolution)\s*=/i;
@@ -224,13 +345,12 @@ function parseAdspowerBlocks(text) {
   return { emails, proxies };
 }
 
-// 智能自动识别：AdsPower TXT / 邮箱行 / 一行代理 / 代理商文本块，可任意混合
+// 智能自动识别：AdsPower TXT / 邮箱行（分隔符或标签）/ 一行代理 / 代理商文本块，可任意混合
 function parseAuto(text) {
   const raw = String(text || '');
   const lines = raw.split(/\r?\n/);
   const isSep = (l) => /^\*{3,}$/.test(l.trim());
   const isKv = (l) => ADSPOWER_KV_RE.test(l.trim());
-  const isEmailLine = (l) => EMAIL_RE.test(l.trim().split(/\s*(?:——|—|--|\t|\|)\s*/)[0] || '');
 
   const fromBlocks = parseAdspowerBlocks(raw);
   const emails = fromBlocks.emails.slice();
@@ -240,7 +360,11 @@ function parseAuto(text) {
   for (const line of lines) {
     const t = line.trim();
     if (!t || isSep(line) || isKv(line)) continue;
-    if (isEmailLine(line)) continue;
+    const e = parseEmailLine(t);
+    if (e) {
+      emails.push(e);
+      continue;
+    }
     const one = parseProxyStr(t);
     if (one) {
       proxies.push({ sn: '', type: '', country: '', ip: '', ...one });
@@ -248,8 +372,6 @@ function parseAuto(text) {
     }
     rest.push(line);
   }
-  const plain = lines.filter((l) => !isSep(l) && !isKv(l)).join('\n');
-  emails.push(...parseEmails(plain));
   proxies.push(...parseProxies(rest.join('\n')));
 
   const seenE = new Set();
@@ -306,7 +428,7 @@ function parseLicenses(text) {
   return out;
 }
 
-const PARSERS = { emails: parseEmails, proxies: parseProxies, cards: parseCards, licenses: parseLicenses };
+const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCards, licenses: parseLicenses };
 
 /* ---------------- 资源库导入 ---------------- */
 
