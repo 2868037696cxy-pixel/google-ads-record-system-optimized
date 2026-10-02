@@ -1,0 +1,16 @@
+{
+  "name": "ads-workbench",
+  "version": "1.0.0",
+  "description": "广告账号管理工作台 - 资源库 / 快速创建 / AdsPower 批量导出",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.3",
+    "fastify": "^5.2.0"
+  }
+}

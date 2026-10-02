@@ -1,0 +1,136 @@
+******************************************************************************
+字段说明（key=value）
+- name 选填，填写浏览器环境的名称，最多100字。
+  【例】name=账号名称账号名称账号名称
+
+- remark 选填，填写浏览器环境的备注信息。
+  【例】remark=备注内容备注内容备注内容备注内容备注内容
+
+- tab 选填，填写启动浏览器时需要打开的标签页。1.每个标签页使用,隔开，最多填写5个标签页，超出部分不导入；2.若不填写，则默认打开platform的域名。
+  【例】tab=https://mail.google.com/mail,https://www.adspower.com/download
+
+- platform 选填，填写平台的域名。1.如需配置多个平台，使用,隔开，最多填写10个平台，超出部分不导入
+  【例】platform=facebook.com,amazon.com
+
+- username 选填，填写平台的账号。1.每一个平台的账号使用,隔开，最多填写10个，超出部分不导入。
+  1.若填写了platform或选择了<账号平台>，则该key为必填项；
+  2.若勾选了<校验重复-账号/密码>，则该key为必填项。
+  【例】username=abcde@gmail.com,12345@user.com
+
+- password 选填，填写平台账号对应的密码。若勾选了<校验重复-账号/密码>，则该key为必填项。1.每一个平台的密码使用"",隔开，最多填写10个，超出部分不导入。
+  【例】password="123456789","987654321"
+
+- fakey 选填，填写2FA密钥。适用于网站的二次验证码升成，类似Goole身份验证器。1.每一个平台的2FA密钥使用,隔开，最多填写10个，超出部分不导入。
+  【例】fakey=BRMSC5DYAMJKCFTJRUK6TUKGQ4GVILOO
+
+- cookie 选填，仅支持填写 JSON、Netscape、Name=Value 三种格式的Cookie。若勾选了<校验重复-Cooike>，则该key为必填项。
+  【例】cookie=[{"name":"abc","value":"abc","domain":"www.facebook.com","path":"/","httpOnly":false,"secure":false,"session":true,"expires":1751530765,"sameSite":"unspecified"}]
+
+- proxytype 必填，填写代理类型，可选值如下：
+  1.【本地直连】- noproxy：使用本地网络直连，无需填写其他代理key。
+  2.【动态代理】- adspowerauto：使用 AdsPower 内置动态代理，必须填写 countrycode 列；ip 列不生效。
+  3.使用 HTTP、HTTPS、SSH、Socks5、Brightdata 代理类型，则根据所需类型填写相应的选项。
+    a. 选项：http、https、socks5、ssh、brightdata、brightdatahttps、brightdatasocks5
+    b. 若选择该类型，则必须填写【proxy】key
+  4.使用 Brightauto、Oxylabsauto、IPFoxyauto、kookauto、Proxy302auto、LumiProxyauto、SXORGauto、Floppyauto 代理类型，则根据所需类型填写相应的选项。
+    a. 选项：brightauto、oxylabsauto、ipfoxyauto、kookauto、proxy302auto、lumiproxyauto、sxorgauto、floppyauto
+    b. 若选择该类型，则必须填写【ip】或【countrycode】key，任选其一。
+  【例】proxytype=socks5
+
+- ipchecker 选填，填写IP查询渠道，不填则使用全局设置的IP查询渠道预设值。
+  1.可选值：IP2Location、ip-api、ipfoxy
+  2.适用代理类型：noproxy、adspowerauto、http、https、ssh、socks5、kookauto、proxy302auto、lumiproxyauto、sxorgauto、floppyauto
+  【例】ipchecker=IP2Location
+
+- proxy 条件必填。使用 HTTP、HTTPS、SSH、Socks5、Brightdata 时为必填项。
+  填写代理的相关信息(主机、端口、代理账号、代理密码)。
+  IPv4 地址支持格式：
+ 主机:端口:账号:密码，示例：192.168.0.1:8000:myproxy:password
+ 账号:密码@主机:端口，示例：myproxy:password@192.168.0.1:8000
+
+ IPv6 地址支持格式：
+ [主机]:端口:账号:密码，示例：[1234:abcd::e13]:8000:myproxy:password
+ 账号:密码@[主机]:端口，示例：myproxy:password@[1234:abcd::e13]:8000
+
+- proxyurl 选填，可填写移动代理的刷新URL。该URL仅用于移动代理。
+  【例】proxyurl=http://refresh.url
+
+- ip 条件必填（与countrycode二选一）。使用brightauto、oxylabsauto、ipfoxyauto、kookauto、proxy302auto、lumiproxyauto、sxorgauto、floppyauto 时【ip】列 或【countrycode】列须至少填写一项。
+使用 adspowerauto 时，该列不生效，系统不会根据 ip 解析或修改地区设置
+  填写匹配动态代理地区的IP。
+  【例】ip=192.168.0.1
+
+- countrycode 使使用 adspowerauto 时必填。填写 global 表示不限制国家/地区；填写具体国家/地区代码，则仅在对应国家/地区查找代理。使用brightauto、oxylabsauto、ipfoxyauto、kookauto、proxy302auto、lumiproxyauto、sxorgauto、floppyauto 时【ip】列 或【countrycode】列须至少填写一项。
+  填写动态代理的国家/地区。
+  【例】countrycode=us
+
+- regioncode 选填，填写动态代理的州/省。
+  生效前提：countrycode key须已填写。
+  适用代理类型：同countrycode key。
+  【例】regioncode=ak
+
+- citycode 选填，填写动态代理的城市。
+  生效前提：countrycode key须已填写。
+  适用代理类型：同countrycode key。
+  【例】citycode=adak
+
+- proxyid 选填。填写"代理管理"模块中已保存的代理 ID，填写后将直接使用该代理，无需填写其他代理key。
+  1.填写具体代理ID（数字），使用指定代理。
+  【例】proxyid=1
+  2.填写 random，从"代理管理"中随机选取一个代理。
+  【例】proxyid=random
+
+- ua 选填，填写需要使用的User Agent。
+  【例子】ua=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.5359.72 Safari/537.36
+
+- resolution 选填，填写浏览器环境的分辨率。
+  【例】resolution=1080x1920
+
+******************************************************************************
+每个环境之间请用 ************ 进行分隔。注意，备注内尽量不含空行。如存在空行，可能会导致识别失败。
+导入两个环境，示例如下：
+
+name=账号名称1
+remark=备注内容1
+tab=
+platform=facebook.com
+username=abcde@gmail.com
+password=123456789
+fakey=
+cookie=
+proxytype=socks5
+ipchecker=
+proxy=192.168.1.1:8000:myproxy:password
+proxyurl=
+ip=
+countrycode=
+regioncode=
+citycode=
+proxyid=
+ua=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.5359.72 Safari/537.36
+resolution=
+************************************
+name=账号名称2
+remark=备注内容3
+tab=
+platform=facebook.com
+username=fghijk@gmail.com
+password=987654321
+fakey=
+cookie=
+proxytype=socks5
+ipchecker=
+proxy=192.168.1.2:8000:myproxy:password
+proxyurl=
+ip=
+countrycode=
+regioncode=
+citycode=
+proxyid=
+ua=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_12_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5359.72 Safari/537.36
+resolution=
+
+******************************************************************************
+导入时，请删除本行及其以上的所有内容。
+
+
