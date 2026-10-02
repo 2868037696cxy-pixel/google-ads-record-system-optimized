@@ -73,7 +73,8 @@
   const State = {
     ads: [],
     selectedId: '',
-    view: 'list',
+    view: 'dashboard',
+    dashRange: 7,
     viewMarket: '',
     currentPage: 1,
     sortKey: 'createdAt',
@@ -862,7 +863,9 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   // ============================================
   function renderShell() {
     try {
-      if (State.view === 'list' || State.view === 'market') {
+      if (State.view === 'dashboard') {
+        renderDashboard();
+      } else if (State.view === 'list' || State.view === 'market') {
         renderListPage();
       } else if (State.view === 'stats') {
         renderStatsPage();
@@ -874,6 +877,10 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
       updateNav();
       updateStats(State.view === 'market' ? filteredAds() : State.ads);
+
+      // Dashboard 自带头部，隐藏外壳的旧标题+统计条，避免重复
+      const shellHead = document.querySelector('.body > .head');
+      if (shellHead) shellHead.style.display = State.view === 'dashboard' ? 'none' : '';
 
     } catch (err) {
       console.error('[Render Error]', err);
@@ -1608,6 +1615,394 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   }
 
   // ============================================
+  // v4.0 总览 Dashboard
+  // ============================================
+  function dashDates(n, offset = 0) {
+    const out = [];
+    const t = new Date();
+    for (let i = offset + n - 1; i >= offset; i--) {
+      const d = new Date(t);
+      d.setDate(d.getDate() - i);
+      out.push(d.toISOString().slice(0, 10));
+    }
+    return out;
+  }
+
+  function dashDailyMap() {
+    const map = {};
+    State.ads.forEach((ad) => ad.daily.forEach((d) => {
+      const m = map[d.date] || (map[d.date] = { spend: 0, orders: 0, revenue: 0 });
+      m.spend += +d.spend || 0;
+      m.orders += +d.orders || 0;
+      m.revenue += +d.revenue || 0;
+    }));
+    return map;
+  }
+
+  function sumDays(map, dates) {
+    const t = { spend: 0, orders: 0, revenue: 0 };
+    dates.forEach((dt) => {
+      const m = map[dt];
+      if (m) { t.spend += m.spend; t.orders += m.orders; t.revenue += m.revenue; }
+    });
+    t.profit = t.revenue - t.spend;
+    t.roi = t.spend ? (t.profit / t.spend) * 100 : null;
+    t.margin = t.revenue ? (t.profit / t.revenue) * 100 : null;
+    t.cost = t.orders ? t.spend / t.orders : 0;
+    return t;
+  }
+
+  function deltaHTML(cur, prev, invert, suffix = '%') {
+    if (cur == null) return '<span class="delta na">—</span>';
+    if (!prev && cur) return '<span class="delta up">新</span>';
+    if (!prev && !cur) return '<span class="delta na">—</span>';
+    const d = ((cur - prev) / Math.abs(prev)) * 100;
+    const good = invert ? !up : up;
+    const cls = Math.abs(d) < 0.05 ? 'na' : (good ? 'up' : 'down');
+    const arrow = Math.abs(d) < 0.05 ? '' : (up ? '▲' : '▼');
+    return `<span class="delta ${cls}">${arrow} ${Math.abs(d).toFixed(1)}${suffix}</span>`;
+  }
+
+  function drawSpark(id, values, color) {
+    const cv = document.getElementById(id);
+    if (!cv || !values.length) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth || 120, h = cv.clientHeight || 36;
+    cv.width = w * dpr; cv.height = h * dpr;
+    const ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const validVals = values.filter((v) => v != null);
+    const max = Math.max(...validVals, 1), min = Math.min(...validVals, 0);
+    const px = (i) => 2 + (i / (values.length - 1 || 1)) * (w - 4);
+    const py = (v) => h - 3 - ((v - min) / (max - min || 1)) * (h - 6);
+    const trace = () => {
+      let pen = false;
+      values.forEach((v, i) => {
+        if (v == null) { pen = false; return; }
+        if (!pen) { ctx.moveTo(px(i), py(v)); pen = true; }
+        else ctx.lineTo(px(i), py(v));
+      });
+    };
+    // 面积（仅全有效时绘制）
+    if (validVals.length === values.length) {
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, color + '44'); grad.addColorStop(1, color + '00');
+      ctx.beginPath();
+      trace();
+      ctx.lineTo(px(values.length - 1), h); ctx.lineTo(px(0), h); ctx.closePath();
+      ctx.fillStyle = grad; ctx.fill();
+    }
+    // 线
+    ctx.beginPath();
+    trace();
+    ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = 'round'; ctx.stroke();
+    // 末端点（最后一个有效值）
+    for (let i = values.length - 1; i >= 0; i--) {
+      if (values[i] != null) {
+        ctx.beginPath();
+        ctx.arc(px(i), py(values[i]), 2.6, 0, 7);
+        ctx.fillStyle = color; ctx.fill();
+        break;
+      }
+    }
+  }
+
+  function drawDashChart(map, dates) {
+    const cv = document.getElementById('dashChart');
+    if (!cv) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = cv.clientWidth || 700, h = 300;
+    cv.width = w * dpr; cv.height = h * dpr;
+    const ctx = cv.getContext('2d');
+    ctx.scale(dpr, dpr);
+    const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+    const series = [
+      { key: 'spend', color: css('--brand') || '#0b6e74', label: '消耗' },
+      { key: 'revenue', color: css('--blue') || '#0b5f8a', label: '收入' },
+    ];
+    const vals = dates.map((dt) => map[dt] || { spend: 0, orders: 0, revenue: 0 });
+    const maxV = Math.max(1, ...vals.map((v) => Math.max(v.spend, v.revenue)));
+    const padL = 46, padR = 12, padT = 14, padB = 26;
+    const iw = w - padL - padR, ih = h - padT - padB;
+    const niceMax = Math.ceil(maxV / Math.pow(10, Math.floor(Math.log10(maxV)))) * Math.pow(10, Math.floor(Math.log10(maxV)));
+    const px = (i) => padL + (i / (dates.length - 1 || 1)) * iw;
+    const py = (v) => padT + ih - (v / niceMax) * ih;
+    // 网格
+    ctx.strokeStyle = css('--line') || '#e3e8ee'; ctx.lineWidth = 1;
+    ctx.fillStyle = css('--faint') || '#9aa5b1'; ctx.font = '10px sans-serif';
+    for (let g = 0; g <= 4; g++) {
+      const y = padT + (ih / 4) * g;
+      const val = niceMax - (niceMax / 4) * g;
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+      ctx.fillText('€' + (val >= 1000 ? (val / 1000) + 'k' : Math.round(val)), 4, y + 3);
+    }
+    // 日期
+    const step = Math.ceil(dates.length / 8);
+    ctx.textAlign = 'center';
+    dates.forEach((dt, i) => {
+      if (i % step === 0 || i === dates.length - 1) ctx.fillText(dt.slice(5), px(i), h - 8);
+    });
+    ctx.textAlign = 'left';
+    // 序列
+    series.forEach((s) => {
+      const grad = ctx.createLinearGradient(0, padT, 0, padT + ih);
+      grad.addColorStop(0, s.color + '30'); grad.addColorStop(1, s.color + '00');
+      ctx.beginPath();
+      vals.forEach((v, i) => i ? ctx.lineTo(px(i), py(v[s.key])) : ctx.moveTo(px(i), py(v[s.key])));
+      ctx.lineTo(px(vals.length - 1), padT + ih); ctx.lineTo(px(0), padT + ih); ctx.closePath();
+      ctx.fillStyle = grad; ctx.fill();
+      ctx.beginPath();
+      vals.forEach((v, i) => i ? ctx.lineTo(px(i), py(v[s.key])) : ctx.moveTo(px(i), py(v[s.key])));
+      ctx.strokeStyle = s.color; ctx.lineWidth = 2.2; ctx.lineJoin = 'round'; ctx.stroke();
+    });
+  }
+
+  function rankData(n, type) {
+    const map = {};
+    const dates = new Set(dashDates(n));
+    State.ads.forEach((ad) => {
+      const k = type === 'market' ? (ad.market || '未选市场') : (ad.product || '未命名');
+      const m = map[k] || (map[k] = { spend: 0, orders: 0, revenue: 0 });
+      ad.daily.forEach((d) => {
+        if (dates.has(d.date)) { m.spend += +d.spend || 0; m.orders += +d.orders || 0; m.revenue += +d.revenue || 0; }
+      });
+    });
+    return Object.entries(map).filter(([, v]) => v.spend > 0)
+      .sort((a, b) => b[1].spend - a[1].spend).slice(0, 6);
+  }
+
+  function dashAlerts(n) {
+    const alerts = [];
+    const dates = new Set(dashDates(n));
+    const last3 = new Set(dashDates(3));
+    State.ads.forEach((ad) => {
+      let spend = 0, revenue = 0, s3 = 0, o3 = 0;
+      ad.daily.forEach((d) => {
+        if (dates.has(d.date)) { spend += +d.spend || 0; revenue += +d.revenue || 0; }
+        if (last3.has(d.date)) { s3 += +d.spend || 0; o3 += +d.orders || 0; }
+      });
+      if (s3 > 0 && o3 === 0) {
+        alerts.push({ level: 'bad', ad, text: `近3天消耗 €${fmt(s3)} 但 0 转化` });
+      } else if (spend > 0) {
+        const roi = ((revenue - spend) / spend) * 100;
+        if (roi < -20) alerts.push({ level: 'warn', ad, text: `近${n}天 ROI ${roi.toFixed(0)}%，持续亏损` });
+      }
+      if (ad.budget > 0) {
+        const total = ad.daily.reduce((s, d) => s + (+d.spend || 0), 0);
+        if (total / ad.budget >= 0.9 && total > 0) {
+          alerts.push({ level: 'warn', ad, text: `预算使用率 ${(total / ad.budget * 100).toFixed(0)}%` });
+        }
+      }
+    });
+    return alerts.slice(0, 6);
+  }
+
+  function animateNum(el, target, format) {
+    if (!el) return;
+    const dur = 700, t0 = performance.now();
+    const step = (t) => {
+      const p = Math.min(1, (t - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3);
+      el.textContent = format(target * e);
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  function renderDashboard() {
+    const n = State.dashRange || 7;
+    const map = dashDailyMap();
+    const cur = sumDays(map, dashDates(n));
+    const prev = sumDays(map, dashDates(n, n));
+    const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+    $('#pageTitle').textContent = '总览';
+    $('#bc1').textContent = '工作台';
+    $('#bc2').textContent = '总览';
+
+    const dates = dashDates(n);
+    const dailyROI = dates.map((d) => {
+      const m = map[d];
+      return (m && m.spend) ? ((m.revenue - m.spend) / m.spend) * 100 : null;
+    });
+    const dailyMargin = dates.map((d) => {
+      const m = map[d];
+      return (m && m.revenue) ? ((m.revenue - m.spend) / m.revenue) * 100 : null;
+    });
+
+    const kpis = [
+      { label: '总消耗', val: cur.spend, fmt: (v) => '€' + fmt(v), delta: deltaHTML(cur.spend, prev.spend, true), spark: dates.map((d) => (map[d] || {}).spend || 0), color: css('--brand') },
+      { label: '总单量', val: cur.orders, fmt: (v) => Math.round(v).toString(), delta: deltaHTML(cur.orders, prev.orders, false), spark: dates.map((d) => (map[d] || {}).orders || 0), color: css('--blue') },
+      { label: '总收入', val: cur.revenue, fmt: (v) => '€' + fmt(v), delta: deltaHTML(cur.revenue, prev.revenue, false), spark: dates.map((d) => (map[d] || {}).revenue || 0), color: css('--green') },
+      { label: 'ROI', val: cur.roi, fmt: (v) => (cur.roi == null ? '—' : v.toFixed(1) + '%'), delta: cur.roi == null ? '<span class="delta na">—</span>' : deltaHTML(cur.roi, prev.roi, false, 'pp'), spark: dailyROI, color: css('--accent') },
+      { label: '毛利率', val: cur.margin, fmt: (v) => (cur.margin == null ? '—' : v.toFixed(1) + '%'), delta: cur.margin == null ? '<span class="delta na">—</span>' : deltaHTML(cur.margin, prev.margin, false, 'pp'), spark: dailyMargin, color: css('--orange') },
+    ];
+
+    const prodRank = rankData(n, 'product');
+    const mktRank = rankData(n, 'market');
+    const maxSpend = Math.max(1, ...prodRank.map(([, v]) => v.spend), ...mktRank.map(([, v]) => v.spend));
+    const barRow = ([k, v]) => {
+      const roi = v.spend ? ((v.revenue - v.spend) / v.spend) * 100 : null;
+      return `<div class="rank-row">
+        <span class="rank-name">${esc(k)}</span>
+        <div class="rank-bar"><i style="width:${(v.spend / maxSpend * 100).toFixed(1)}%"></i></div>
+        <span class="rank-val num">€${fmt(v.spend)}</span>
+        <span class="rank-roi ${roi == null ? '' : roi >= 0 ? 'pos' : 'neg'}">${roi == null ? '' : roi.toFixed(0) + '%'}</span>
+      </div>`;
+    };
+
+    const alerts = dashAlerts(n);
+
+    $('#content').innerHTML = `
+      <div class="dash">
+        <div class="dash-head">
+          <div>
+            <h2 class="dash-title">业务总览</h2>
+            <p class="dash-sub">近 ${n} 天 · 与前 ${n} 天对比 · ${State.ads.length} 条广告在跑</p>
+          </div>
+          <div class="seg">
+            <button class="${n === 7 ? 'on' : ''}" data-act="dashRange" data-n="7">近7天</button>
+            <button class="${n === 30 ? 'on' : ''}" data-act="dashRange" data-n="30">近30天</button>
+          </div>
+        </div>
+
+        <div class="kpis">
+          ${kpis.map((k, i) => `
+            <div class="kpi" style="--d:${i * 60}ms">
+              <div class="kpi-top"><span>${k.label}</span>${k.delta}</div>
+              <b class="kpi-num num" id="kpiNum${i}">0</b>
+              <canvas class="spark" id="spark${i}"></canvas>
+            </div>`).join('')}
+        </div>
+
+        <div class="dash-grid">
+          <section class="panel span2">
+            <div class="ph">消耗 / 收入趋势
+              <span class="chart-legend">
+                <span class="lg on"><i style="background:var(--brand)"></i>消耗</span>
+                <span class="lg on"><i style="background:var(--blue)"></i>收入</span>
+              </span>
+            </div>
+            <div class="pb"><canvas id="dashChart" class="chart dash-chart"></canvas></div>
+          </section>
+          <section class="panel">
+            <div class="ph">智能预警 <span class="muted-sm">${alerts.length}</span></div>
+            <div class="pb alerts">
+              ${alerts.length ? alerts.map((a) => `
+                <div class="alert ${a.level}" data-act="openAd" data-id="${a.ad.id}">
+                  <b>${esc(a.ad.no || '')} · ${esc(a.ad.product || '')}</b>
+                  <span>${esc(a.text)}</span>
+                </div>`).join('')
+                : `<div class="empty-sm">暂无预警，投放状态健康</div>`}
+            </div>
+          </section>
+        </div>
+
+        <div class="dash-grid">
+          <section class="panel">
+            <div class="ph">产品排行 <span class="muted-sm">按消耗</span></div>
+            <div class="pb">${prodRank.length ? prodRank.map(barRow).join('') : '<div class="empty-sm">暂无数据</div>'}</div>
+          </section>
+          <section class="panel">
+            <div class="ph">市场排行 <span class="muted-sm">按消耗</span></div>
+            <div class="pb">${mktRank.length ? mktRank.map(barRow).join('') : '<div class="empty-sm">暂无数据</div>'}</div>
+          </section>
+        </div>
+      </div>
+    `;
+
+    // 数字滚动 + sparkline
+    kpis.forEach((k, i) => {
+      animateNum(document.getElementById('kpiNum' + i), k.val, k.fmt);
+      if (k.spark.filter((v) => v != null).length > 1) drawSpark('spark' + i, k.spark, k.color || '#0b6e74');
+    });
+    drawDashChart(map, dashDates(n));
+    window.addEventListener('resize', () => {
+      if (State.view === 'dashboard') {
+        drawDashChart(dashDailyMap(), dashDates(State.dashRange || 7));
+        kpis.forEach((k, i) => { if (k.spark.filter((v) => v != null).length > 1) drawSpark('spark' + i, k.spark, k.color || '#0b6e74'); });
+      }
+    });
+
+    updateStats();
+  }
+
+  // ============================================
+  // v4.0 命令面板 Cmd+K
+  // ============================================
+  const PALETTE_ACTIONS = [
+    { id: 'new', title: '新建广告记录', hint: 'N', run: () => { State.view = 'list'; renderShell(); setTimeout(() => document.querySelector('[data-act="toggleAdd"]')?.click(), 50); } },
+    { id: 'dash', title: '前往总览', run: () => { State.view = 'dashboard'; renderShell(); } },
+    { id: 'list', title: '前往广告列表', run: () => { State.view = 'list'; renderShell(); } },
+    { id: 'stats', title: '前往统计报表', run: () => { State.view = 'stats'; renderShell(); } },
+    { id: 'settings', title: '前往系统设置', run: () => { State.view = 'settings'; renderShell(); } },
+    { id: 'theme', title: '切换深色 / 浅色', run: () => { document.documentElement.dataset.theme = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; if (State.view === 'dashboard') renderDashboard(); } },
+    { id: 'save', title: '立即保存', hint: '⌃S', run: () => saveNow(true) },
+    { id: 'export', title: '导出 JSON', run: () => exportJson() },
+  ];
+  let paletteIdx = 0;
+
+  function ensurePalette() {
+    if ($('#cmdPalette')) return;
+    document.body.insertAdjacentHTML('beforeend', `
+      <div id="cmdPalette" class="palette-overlay" hidden>
+        <div class="palette">
+          <div class="palette-input-wrap"><span>⌕</span><input id="paletteInput" placeholder="输入命令或搜索广告编号、产品…" autocomplete="off"></div>
+          <div class="palette-list" id="paletteList"></div>
+          <div class="palette-foot"><span><kbd>↑↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>esc</kbd> 关闭</span></div>
+        </div>
+      </div>`);
+    $('#paletteInput').addEventListener('input', renderPaletteList);
+    $('#paletteInput').addEventListener('keydown', (e) => {
+      const items = [...document.querySelectorAll('.palette-item')];
+      if (e.key === 'ArrowDown') { e.preventDefault(); paletteIdx = Math.min(items.length - 1, paletteIdx + 1); markPalette(items); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); paletteIdx = Math.max(0, paletteIdx - 1); markPalette(items); }
+      else if (e.key === 'Enter') { e.preventDefault(); items[paletteIdx]?.click(); }
+    });
+    $('#cmdPalette').addEventListener('click', (e) => { if (e.target.id === 'cmdPalette') togglePalette(false); });
+  }
+
+  function markPalette(items) {
+    items.forEach((el, i) => el.classList.toggle('sel', i === paletteIdx));
+    items[paletteIdx]?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function renderPaletteList() {
+    const q = ($('#paletteInput').value || '').toLowerCase().trim();
+    const acts = PALETTE_ACTIONS.filter((a) => !q || a.title.toLowerCase().includes(q));
+    const ads = State.ads
+      .filter((a) => q && `${a.no} ${a.product} ${a.market}`.toLowerCase().includes(q))
+      .slice(0, 8);
+    paletteIdx = 0;
+    $('#paletteList').innerHTML =
+      (acts.length ? `<div class="palette-group">命令</div>` + acts.map((a) => `
+        <div class="palette-item" data-pid="${a.id}"><span>${esc(a.title)}</span>${a.hint ? `<kbd>${esc(a.hint)}</kbd>` : ''}</div>`).join('') : '') +
+      (ads.length ? `<div class="palette-group">广告</div>` + ads.map((a) => `
+        <div class="palette-item" data-aid="${a.id}"><span><b>${esc(a.no || '')}</b> · ${esc(a.product || '')} · ${esc(a.market || '')}</span></div>`).join('') : '') +
+      (!acts.length && !ads.length ? `<div class="empty-sm">无匹配结果</div>` : '');
+    [...document.querySelectorAll('.palette-item')].forEach((el) => {
+      el.addEventListener('click', () => {
+        togglePalette(false);
+        if (el.dataset.pid) PALETTE_ACTIONS.find((a) => a.id === el.dataset.pid)?.run();
+        else if (el.dataset.aid) { State.view = 'list'; State.selectedId = el.dataset.aid; renderShell(); }
+      });
+    });
+    markPalette([...document.querySelectorAll('.palette-item')]);
+  }
+
+  function togglePalette(open) {
+    ensurePalette();
+    const ov = $('#cmdPalette');
+    const show = open === undefined ? ov.hidden : open;
+    ov.hidden = !show;
+    if (show) {
+      $('#paletteInput').value = '';
+      renderPaletteList();
+      setTimeout(() => $('#paletteInput').focus(), 30);
+    }
+  }
+
+  // ============================================
   // 统计数据
   // ============================================
   function groupStats(type) {
@@ -1978,7 +2373,11 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           <nav class="nav">
             <div class="section">
               <div class="label">工作台</div>
-              <button class="nav-btn active" data-act="nav" data-page="list">
+              <button class="nav-btn active" data-act="nav" data-page="dashboard">
+                <span class="nav-ico">◈</span>
+                <span class="nav-text">总览</span>
+              </button>
+              <button class="nav-btn" data-act="nav" data-page="list">
                 <span class="nav-ico">▤</span>
                 <span class="nav-text">广告列表</span>
                 <span class="badge-count" id="sbCount">0</span>
@@ -2069,6 +2468,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
               <span id="bc1">工作台</span> / <b id="bc2">广告列表</b>
             </div>
             <div class="top-right">
+              <button class="palette-trigger" data-act="palette" title="命令面板 (Ctrl+K)">⌕ <kbd>⌘K</kbd></button>
               <span class="hint">Ctrl+S 保存 · Ctrl+Z 撤销 · N 新增</span>
               <span id="countTxt"></span>
               <button class="icon" data-act="theme">◐</button>
@@ -2138,6 +2538,21 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           State.selectedId = '';
           State.currentPage = 1;
           renderShell();
+          break;
+
+        case 'dashRange':
+          State.dashRange = parseInt(b.dataset.n, 10) || 7;
+          renderDashboard();
+          break;
+
+        case 'openAd':
+          State.view = 'list';
+          State.selectedId = b.dataset.id;
+          renderShell();
+          break;
+
+        case 'palette':
+          togglePalette();
           break;
 
         case 'saveNow':
@@ -2277,6 +2692,13 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
     // 键盘快捷键
     document.addEventListener('keydown', async (e) => {
+      // Cmd/Ctrl + K: 命令面板
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        togglePalette();
+        return;
+      }
+
       // Ctrl/Cmd + S: 保存
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
@@ -2307,6 +2729,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
       // Escape: 关闭对话框
       if (e.key === 'Escape') {
+        if (!$('#cmdPalette')?.hidden) { togglePalette(false); return; }
         closeConfirm();
         closeChoice();
         $('#qa')?.classList.remove('open');
