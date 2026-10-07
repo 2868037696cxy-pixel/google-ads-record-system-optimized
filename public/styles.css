@@ -910,6 +910,14 @@ tr:hover .row-actions { opacity: 1; }
 
 table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 
+/* 资源库表格：colgroup 控制列宽，长文本截断省略 */
+.pool-table { width: max-content; min-width: 100%; }
+.pool-table tbody td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 thead th {
   position: sticky;
   top: 0;
@@ -932,7 +940,6 @@ tbody td {
   border-bottom: 1px solid rgba(163, 190, 228, 0.055);
   vertical-align: middle;
   white-space: nowrap;
-  max-width: 260px;
   overflow: hidden;
   text-overflow: ellipsis;
 }

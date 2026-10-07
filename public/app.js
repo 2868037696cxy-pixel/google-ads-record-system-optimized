@@ -513,6 +513,7 @@ async function doCreate() {
 const POOL_TABLE = {
   emails: {
     cols: ['ID', '谷歌邮箱', '邮箱密码', '2FA', '状态', '导入时间', '操作'],
+    widths: ['60px', '260px', '150px', '170px', '100px', '170px', '70px'],
     row: (e) => [
       `<span class="faint mono">${e.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(e.user)}" title="点击复制">${esc(e.user)}</span>`,
@@ -522,6 +523,7 @@ const POOL_TABLE = {
   },
   proxies: {
     cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '状态', '导入时间', '操作'],
+    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '95px', '160px', '65px'],
     row: (p) => [
       `<span class="faint mono">${p.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.sn)}" title="点击复制">${esc(p.sn) || '<span class="faint">—</span>'}</span>`,
@@ -536,6 +538,7 @@ const POOL_TABLE = {
   },
   cards: {
     cols: ['ID', '卡号', '有效期', 'CVV', '状态', '导入时间', '操作'],
+    widths: ['60px', '220px', '90px', '80px', '100px', '170px', '70px'],
     row: (c) => [
       `<span class="faint mono">${c.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(c.number)}" title="点击复制">${sens(c.number)}</span>`,
@@ -545,6 +548,7 @@ const POOL_TABLE = {
   },
   licenses: {
     cols: ['ID', '公司名称', '法定名称', '城市', '邮编', '状态', '导入时间', '操作'],
+    widths: ['60px', '240px', '240px', '110px', '75px', '95px', '160px', '65px'],
     row: (l) => [
       `<span class="faint mono">${l.id}</span>`,
       `<span class="copyable link" data-action="view-license" data-id="${l.id}" title="点击查看详情">${esc(l.name)}</span>`,
@@ -647,7 +651,8 @@ function renderPool(kind) {
               <p>点击右上角「批量导入」，支持粘贴以下格式（一行一条）：</p>
               <code>${esc(POOL_FORMAT[kind])}</code>
             </div>`
-          : `<div class="table-wrap"><table>
+          : `<div class="table-wrap"><table class="pool-table">
+              <colgroup>${(tableConf.widths || []).map((w) => `<col${w ? ` style="width:${w}"` : ''}>`).join('')}</colgroup>
               <thead><tr>${tableConf.cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
               <tbody>
                 ${list
