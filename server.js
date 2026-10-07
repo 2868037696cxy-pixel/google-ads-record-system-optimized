@@ -393,19 +393,33 @@ function parseAuto(text) {
   return { emails: outE, proxies: outP };
 }
 
-// 信用卡：卡号 有效期 CVV（分隔符支持空格/Tab/逗号/|），可只填卡号
+// 信用卡：卡号 有效期 CVV（分隔符支持空格/Tab/逗号/|，日期支持 MM/YY、MM-YY、MMYY 四位无分隔，可只填卡号）
 function parseCards(text) {
   const out = [];
   for (const raw of String(text || '').split(/\r?\n/)) {
     const line = raw.trim();
     if (!line) continue;
+    // 完整：卡号 日期MM/YY CVV
     let m = line.match(/(\d{13,19})\s*[,;\s|]\s*(\d{1,2})\s*[\/\-]\s*(\d{2,4})\s*[,;\s|]\s*(\d{3,4})/);
     if (m) {
       out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: m[4] });
       continue;
     }
+    // 完整：卡号 日期MMYY(无分隔符) CVV
+    m = line.match(/(\d{13,19})\s*[,;\s|]\s*(\d{2})(\d{2})\s*[,;\s|]\s*(\d{3,4})/);
+    if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) {
+      out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: m[4] });
+      continue;
+    }
+    // 卡号 日期MM/YY（无 CVV）
     m = line.match(/^(\d{13,19})\s*[,;\s|]\s*(\d{1,2})\s*[\/\-]\s*(\d{2,4})/);
     if (m) {
+      out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: '' });
+      continue;
+    }
+    // 卡号 日期MMYY（无 CVV）
+    m = line.match(/^(\d{13,19})\s*[,;\s|]\s*(\d{2})(\d{2})$/);
+    if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) {
       out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: '' });
       continue;
     }
