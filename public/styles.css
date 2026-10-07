@@ -970,6 +970,15 @@ tbody tr:last-child td { border-bottom: none; }
 .copyable { cursor: copy; }
 .copyable:hover { color: var(--accent-strong); }
 
+/* 可点击链接（如营业执照公司名 → 详情） */
+.link { cursor: pointer; color: var(--accent-strong); text-decoration: underline dotted; text-underline-offset: 3px; }
+.link:hover { color: var(--accent); text-decoration: underline; }
+
+/* 营业执照详情表 */
+.detail-table { width: 100%; border-collapse: collapse; }
+.detail-table th { text-align: left; font-weight: 600; color: var(--faint); padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; width: 110px; }
+.detail-table td { padding: 10px 12px; border-bottom: 1px solid var(--line); }
+
 /* 表格中纯文本单元格（无按钮/下拉/复选框）点击可复制 */
 tbody td { cursor: copy; }
 tbody td:has(button, select, input, a) { cursor: default; }

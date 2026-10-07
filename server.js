@@ -429,15 +429,75 @@ function parseCards(text) {
   return out;
 }
 
-// 营业执照：一行一个公司名
+/* ---------------- PDF 文本提取 ---------------- */
+async function extractPdfText(buf) {
+  const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), useSystemFonts: true });
+  const pdf = await loadingTask.promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const tc = await page.getTextContent();
+    const items = tc.items.map((it) => it.str).filter(Boolean);
+    pages.push(items.join('\n'));
+  }
+  return pages.join('\n\n');
+}
+
+/* ---------------- 营业执照解析 ---------------- */
+// 支持两种来源：
+//   1) 纯文本一行一个公司名（旧格式兼容）
+//   2) 带标签的结构化文本（如 PDF 提取的丹麦工商注册信息）
+//      字段：资料类型 / 组织名称 / 法定名称 / 街道地址 / 门牌号 / 邮编 / 市/区
+const LIC_LABELS = {
+  name: '组织名称|公司名称|企业名称|(?:company|organization|business|firm)\\s*name',
+  legal: '法定名称|(?:legal|registered)\\s*name',
+  address: '街道地址|地址|(?:street|postal)\\s*address|address',
+  apt: '公寓|套房|门牌号|(?:apt|suite|unit)\\b',
+  zip: '邮编|(?:postal\\s*code|zip\\s*code|zip)',
+  city: '市(?:/区)?|城市|(?:city|town|municipality)',
+  type: '资料类型|(?:entity|business|organization)\\s*type|类型|type',
+};
+const LIC_STOP = Object.values(LIC_LABELS).join('|');
+
+function licGrab(t, labels) {
+  const re = new RegExp(`(?:${labels})\\s*[:：=]\\s*(.*?)(?=[，,;；、\\s]*(?:${LIC_STOP})\\s*[:：=]|$)`, 'i');
+  const m = t.match(re);
+  return m ? m[1].trim().replace(/^["'「」『』【】]+|["'「」『』【】]+$/g, '') : '';
+}
+
 function parseLicenses(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return [];
+
+  // 检测是否为带标签的结构化文本
+  const hasLabel = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(raw);
+
+  if (hasLabel) {
+    // 把多行拍平成一行，标签之间用空格分隔便于前瞻匹配
+    const flat = raw.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
+    const name = licGrab(flat, LIC_LABELS.name) || licGrab(flat, LIC_LABELS.legal);
+    if (!name) return [];
+    return [{
+      name,
+      legal_name: licGrab(flat, LIC_LABELS.legal),
+      address: licGrab(flat, LIC_LABELS.address),
+      apt: licGrab(flat, LIC_LABELS.apt),
+      zip: licGrab(flat, LIC_LABELS.zip).replace(/^DK-/i, ''),
+      city: licGrab(flat, LIC_LABELS.city),
+      type: licGrab(flat, LIC_LABELS.type) || '组织',
+    }];
+  }
+
+  // 旧格式：一行一个公司名
   const out = [];
-  for (const raw of String(text || '').split(/\r?\n/)) {
-    let line = raw.trim();
-    if (!line) continue;
-    line = line.replace(/^\s*(?:\d+[.、)]|[-*•])\s*/, '').trim();
-    if (!line || line.includes('@')) continue;
-    out.push({ name: line });
+  for (const line of raw.split(/\r?\n/)) {
+    let l = line.trim();
+    if (!l) continue;
+    l = l.replace(/^\s*(?:\d+[.、)]|[-*•])\s*/, '').trim();
+    if (!l || l.includes('@')) continue;
+    out.push({ name: l });
   }
   return out;
 }
@@ -763,6 +823,20 @@ fastify.post('/api/parse/:type', async (req) => {
   if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
   const items = PARSERS[type](req.body?.text);
   return { items };
+});
+
+// 营业执照 PDF 导入：接收 base64 PDF，提取文本并解析
+fastify.post('/api/parse/licenses-pdf', async (req) => {
+  const b64 = req.body?.pdf;
+  if (!b64) return { error: '未收到 PDF 文件' };
+  try {
+    const buf = Buffer.from(b64, 'base64');
+    const text = await extractPdfText(buf);
+    const items = parseLicenses(text);
+    return { items, text };
+  } catch (e) {
+    return { error: 'PDF 解析失败：' + e.message };
+  }
 });
 
 fastify.post('/api/import/:type', async (req) => {

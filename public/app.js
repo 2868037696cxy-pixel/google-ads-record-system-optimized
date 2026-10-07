@@ -544,10 +544,13 @@ const POOL_TABLE = {
     ],
   },
   licenses: {
-    cols: ['ID', '公司名称', '状态', '导入时间', '操作'],
+    cols: ['ID', '公司名称', '法定名称', '城市', '邮编', '状态', '导入时间', '操作'],
     row: (l) => [
       `<span class="faint mono">${l.id}</span>`,
-      `<span class="copyable" data-copy="${esc(l.name)}" title="点击复制">${esc(l.name)}</span>`,
+      `<span class="copyable link" data-action="view-license" data-id="${l.id}" title="点击查看详情">${esc(l.name)}</span>`,
+      `<span class="copyable" data-copy="${esc(l.legal_name || '')}" title="点击复制">${esc(l.legal_name) || '<span class="faint">—</span>'}</span>`,
+      `<span class="copyable" data-copy="${esc(l.city || '')}" title="点击复制">${esc(l.city) || '<span class="faint">—</span>'}</span>`,
+      `<span class="copyable" data-copy="${esc(l.zip || '')}" title="点击复制">${esc(l.zip) || '<span class="faint">—</span>'}</span>`,
     ],
   },
 };
@@ -579,9 +582,18 @@ host port user pass`,
   cards: `4367970152619097 06/29 596
 4367970159932238 06/29 364
 4367970169748392 06/29 786`,
-  licenses: `CC TEKNIK ApS
+  licenses: `支持两种方式：
+① 纯文本（一行一个公司名）：
+CC TEKNIK ApS
 Capital Service ApS
-CFTS-Byg ApS`,
+
+② 带标签的结构化文本（PDF 自动提取后即为此格式）：
+资料类型：组织
+组织名称：TOLDERLUNDS AUTO ApS
+法定名称：TOLDERLUNDS AUTO ApS
+街道地址：Pedersholmparken 1
+邮编：3600
+市/区：Frederikssund`,
 };
 
 function renderPool(kind) {
@@ -716,6 +728,12 @@ async function openImportModal(kind) {
   openModal(`
     <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
+      ${kind === 'licenses' ? `
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+        <input type="file" id="pdf-file" accept=".pdf,application/pdf" style="display:none">
+        <button class="btn btn-ghost btn-sm" id="pick-pdf">📄 选择 PDF 文件</button>
+        <span class="faint" id="pdf-name" style="font-size:11px"></span>
+      </div>` : ''}
       <pre class="format-hint">${esc(POOL_FORMAT[kind])}</pre>
       <textarea id="import-text" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
       <div class="parse-result" id="parse-result">等待粘贴内容…</div>
@@ -730,6 +748,42 @@ async function openImportModal(kind) {
   const resultBox = document.getElementById('parse-result');
   const okBtn = document.getElementById('import-ok');
   let parsed = [];
+
+  // PDF 上传（仅营业执照）
+  const pdfInput = document.getElementById('pdf-file');
+  const pickPdf = document.getElementById('pick-pdf');
+  const pdfName = document.getElementById('pdf-name');
+  if (pickPdf && pdfInput) {
+    pickPdf.onclick = () => pdfInput.click();
+    pdfInput.onchange = async () => {
+      const file = pdfInput.files[0];
+      if (!file) return;
+      pdfName.textContent = file.name;
+      resultBox.innerHTML = '⏳ 正在解析 PDF…';
+      okBtn.disabled = true;
+      try {
+        const b64 = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(r.result.split(',')[1]);
+          r.onerror = reject;
+          r.readAsDataURL(file);
+        });
+        const res = await api('/api/parse/licenses-pdf', { method: 'POST', body: { pdf: b64 } });
+        if (res.error) throw new Error(res.error);
+        parsed = res.items || [];
+        if (!parsed.length) {
+          resultBox.innerHTML = '⚠ PDF 中未识别到营业执照信息';
+        } else {
+          const preview = parsed.slice(0, 5).map((it) => `<li>${esc(it.name)}${it.city ? ' · ' + esc(it.city) : ''}${it.zip ? ' · ' + esc(it.zip) : ''}</li>`).join('');
+          resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
+          okBtn.disabled = false;
+        }
+      } catch (e) {
+        resultBox.textContent = '❌ ' + e.message;
+        okBtn.disabled = true;
+      }
+    };
+  }
 
   const doParse = async () => {
     const text = ta.value;
@@ -1128,6 +1182,26 @@ document.addEventListener('click', async (e) => {
       case 'edit-record':
         openEditRecord(Number(t.dataset.id));
         break;
+      case 'view-license': {
+        const lic = state.pools.licenses.find((l) => l.id === Number(t.dataset.id));
+        if (!lic) break;
+        const rows = [
+          ['资料类型', lic.type || '组织'],
+          ['组织名称', lic.name],
+          ['法定名称', lic.legal_name || '—'],
+          ['街道地址', lic.address || '—'],
+          ['门牌号', lic.apt || '—'],
+          ['邮编', lic.zip || '—'],
+          ['市/区', lic.city || '—'],
+        ].map(([k, v]) => `<tr><th>${k}</th><td><span class="copyable" data-copy="${esc(String(v))}" title="点击复制">${esc(String(v))}</span></td></tr>`).join('');
+        openModal(`
+          <div class="modal-head"><h3>营业执照详情</h3><button class="modal-close" data-action="close-modal">✕</button></div>
+          <div class="modal-body">
+            <table class="detail-table"><tbody>${rows}</tbody></table>
+          </div>
+          <div class="modal-foot"><button class="btn btn-primary" data-action="close-modal">关闭</button></div>`, { large: false });
+        break;
+      }
       case 'del-pool': {
         const kind = t.dataset.kind;
         const id = Number(t.dataset.id);
