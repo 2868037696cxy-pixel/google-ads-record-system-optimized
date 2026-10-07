@@ -622,7 +622,8 @@ function renderPool(kind) {
                     </select>`;
                     return `<tr style="--i:${i}">${rest
                       .slice(0, statusIdx)
-                      .concat([statusHtml, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
+                      .map((c) => `<td>${c}</td>`)
+                      .concat([`<td>${statusHtml}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
                       .join('')}</tr>`;
                   })
                   .join('')}
