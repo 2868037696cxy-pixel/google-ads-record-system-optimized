@@ -1119,6 +1119,9 @@ tbody tr:last-child td { border-bottom: none; }
   transition: border-color var(--t-fast), background var(--t-fast);
 }
 
+/* 全局 input{width:100%} 会把这里的复选框撑满，需单独还原为默认宽度 */
+.picker-item input[type="checkbox"] { width: auto; flex: 0 0 auto; }
+
 .picker-item:hover { border-color: var(--line-strong); background: var(--surface-2); }
 .picker-item.disabled { opacity: 0.4; cursor: not-allowed; }
 .picker-item .mono { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
