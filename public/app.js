@@ -1193,3 +1193,6 @@ document.addEventListener('change', (e) => {
 refresh().catch((err) => {
   document.getElementById('main').innerHTML = `<div class="empty"><div class="empty-ico">⚠</div><h3>加载失败</h3><p>${esc(err.message)}</p></div>`;
 });
+
+// 首次入场动画播放一次；之后所有 render 不再重放（避免搜索/切换时整页跳动）
+setTimeout(() => document.body.classList.remove('boot'), 800);
