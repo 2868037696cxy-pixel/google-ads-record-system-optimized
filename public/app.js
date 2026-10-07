@@ -37,6 +37,14 @@ function toast(msg, type = 'ok') {
   }, type === 'error' ? 4200 : 2600);
 }
 
+// 导入结果中重复项的提示文案：跳过 N 条（列出前几个具体值）
+function dupNote(res) {
+  if (!res || !res.skipped) return '';
+  const list = (res.duplicates || []).slice(0, 3).join('、');
+  const more = res.skipped > 3 ? ` 等 ${res.skipped} 条` : '';
+  return `，跳过重复 ${res.skipped} 条（${list}${more}）`;
+}
+
 async function copyText(t) {
   try {
     await navigator.clipboard.writeText(t);
@@ -685,7 +693,7 @@ async function openImportModal(kind) {
     if (!parsed.length) return;
     try {
       const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
-      toast(`✅ 导入成功：新增 ${res.added} 条${res.skipped ? `，跳过重复 ${res.skipped} 条` : ''}`);
+      toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
       closeModal();
       await refresh();
     } catch (e) {
@@ -792,8 +800,8 @@ function openAutoImport() {
     try {
       const res = await api('/api/import/auto', { method: 'POST', body: parsed });
       const parts = [];
-      if (parsed.emails.length) parts.push(`邮箱 +${res.emails.added}${res.emails.skipped ? `（重复 ${res.emails.skipped}）` : ''}`);
-      if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${res.proxies.skipped ? `（重复 ${res.proxies.skipped}）` : ''}`);
+      if (parsed.emails.length) parts.push(`邮箱 +${res.emails.added}${dupNote(res.emails)}`);
+      if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${dupNote(res.proxies)}`);
       toast(`✅ 导入成功：${parts.join('，')}`);
       closeModal();
       await refresh();

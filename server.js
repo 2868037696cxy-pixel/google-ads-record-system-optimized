@@ -453,17 +453,29 @@ const DUP_KEYS = {
   licenses: (it) => (x) => x.name === it.name,
 };
 
+// 重复项展示用的标识（提示用户具体哪些被跳过）
+function dupLabel(type) {
+  return (it) => {
+    if (type === 'emails') return it.user;
+    if (type === 'licenses') return it.name;
+    if (type === 'cards') return it.number;
+    if (type === 'proxies') return `${it.host}:${it.port}${it.user ? ` @${it.user}` : ''}`;
+    return '';
+  };
+}
+
 function importItems(type, items) {
-  let added = 0, skipped = 0;
+  let added = 0;
+  const skipped = [];
   for (const it of items) {
     const isDup = db[type].some(DUP_KEYS[type](it));
-    if (isDup) { skipped++; continue; }
+    if (isDup) { skipped.push(it); continue; }
     const row = { id: nextId(type), status: '未使用', created_at: nowLocal(), ...it };
     db[type].push(row);
     added++;
   }
   saveDb();
-  return { added, skipped };
+  return { added, skipped: skipped.length, duplicates: skipped.map(dupLabel(type)) };
 }
 
 /* ---------------- 记录创建 ---------------- */
