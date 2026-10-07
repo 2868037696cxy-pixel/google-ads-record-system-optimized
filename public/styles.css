@@ -16,8 +16,8 @@
   /* 文字（带蓝绿倾向的中性色） */
   --text: #e9eef6;
   --muted: #98a4b8;
-  --faint: #5c6a80;
-  --ghost: #3d495e;
+  --faint: #7a88a0;
+  --ghost: #5c6a80;
 
   /* 主色：电光荧光绿 */
   --accent: #c8f65d;
@@ -497,7 +497,7 @@ body::after {
 
 .mini { font-size: 11px; color: var(--ghost); font-weight: 400; letter-spacing: 0; }
 
-input, textarea, select {
+input:not([type="checkbox"]):not([type="radio"]), textarea, select {
   font: inherit;
   font-size: 13px;
   color: var(--text);
@@ -507,6 +507,13 @@ input, textarea, select {
   padding: 8px 12px;
   width: 100%;
   transition: border-color var(--t-fast) var(--ease-quart), box-shadow var(--t-fast) var(--ease-quart), background var(--t-fast) var(--ease-quart);
+}
+
+input[type="checkbox"], input[type="radio"] {
+  width: auto;
+  flex: 0 0 auto;
+  cursor: pointer;
+  accent-color: var(--accent);
 }
 
 input::placeholder, textarea::placeholder { color: var(--ghost); }
@@ -1148,9 +1155,6 @@ tbody tr:last-child td { border-bottom: none; }
   cursor: pointer;
   transition: border-color var(--t-fast), background var(--t-fast);
 }
-
-/* 全局 input{width:100%} 会把这里的复选框撑满，需单独还原为默认宽度 */
-.picker-item input[type="checkbox"] { width: auto; flex: 0 0 auto; }
 
 .picker-item:hover { border-color: var(--line-strong); background: var(--surface-2); }
 .picker-item.disabled { opacity: 0.4; cursor: not-allowed; }

@@ -28,6 +28,7 @@ async function api(path, opts = {}) {
 function toast(msg, type = 'ok') {
   const el = document.createElement('div');
   el.className = `toast ${type === 'ok' ? '' : type}`;
+  el.setAttribute('role', type === 'error' ? 'alert' : 'status');
   el.textContent = msg;
   document.getElementById('toast-root').appendChild(el);
   setTimeout(() => {
@@ -120,7 +121,7 @@ function openModal(html, { large = false } = {}) {
   closeModal();
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-overlay" data-action="modal-overlay">
-    <div class="modal ${large ? 'modal-lg' : ''}">
+    <div class="modal ${large ? 'modal-lg' : ''}" role="dialog" aria-modal="true">
       ${html}
     </div>
   </div>`;
@@ -371,7 +372,7 @@ function renderWorkbench() {
         <div class="panel-title">创建记录</div>
       </div>
       <div class="toolbar">
-        <input class="search" id="rec-q" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
+        <input class="search" id="rec-q" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
         <div class="tabs">
           ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" data-action="rstatus" data-v="${s}">${s}</button>`).join('')}
         </div>
@@ -456,6 +457,9 @@ function renderRecordsTable(list) {
 async function doCreate() {
   const domains = state.form.domains.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (!domains.length) return toast('请至少填写一个域名', 'warn');
+  const btn = document.querySelector('[data-action="create"]');
+  const oldText = btn?.textContent;
+  if (btn) { btn.disabled = true; btn.textContent = '创建中…'; }
   const body = {
     country: state.form.country,
     product: state.form.product,
@@ -480,6 +484,7 @@ async function doCreate() {
     await refresh();
   } catch (e) {
     toast(e.message, 'error');
+    if (btn) { btn.disabled = false; btn.textContent = oldText; }
   }
 }
 
@@ -595,7 +600,7 @@ function renderPool(kind) {
     </div>
     <div class="panel">
       <div class="toolbar">
-        <input class="search" id="pool-q" placeholder="搜索…" value="${esc(state.poolQ)}">
+        <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
         <div class="tabs">
           ${['全部', '未使用', '已使用', '停用'].map((s) => `<button class="tab ${state.poolStatus === s ? 'active' : ''}" data-action="pool-status" data-v="${s}">${s}</button>`).join('')}
         </div>
@@ -632,6 +637,54 @@ function renderPool(kind) {
       }
     </div>
   `;
+}
+
+// 资源库搜索时只刷新表格，避免重建搜索框导致失焦
+function renderPoolTableInto() {
+  const kind = state.page;
+  const conf = KINDS.find((k) => k.key === kind);
+  const tableConf = POOL_TABLE[kind];
+  const q = state.poolQ.trim().toLowerCase();
+  const list = state.pools[kind].filter((x) => {
+    if (state.poolStatus !== '全部' && x.status !== state.poolStatus) return false;
+    if (!q) return true;
+    return Object.values(x).some((v) => String(v ?? '').toLowerCase().includes(q));
+  });
+  const panel = document.querySelector('#main .panel');
+  if (!panel) return;
+  const old = panel.querySelector('.table-wrap, .empty');
+  if (old) old.remove();
+  if (state.pools[kind].length === 0) {
+    panel.insertAdjacentHTML('beforeend', `<div class="empty">
+      <div class="empty-ico">⇩</div>
+      <h3>还没有${conf.label}数据</h3>
+      <p>点击右上角「批量导入」，支持粘贴以下格式（一行一条）：</p>
+      <code>${esc(POOL_FORMAT[kind])}</code>
+    </div>`);
+  } else {
+    panel.insertAdjacentHTML('beforeend', `<div class="table-wrap"><table>
+      <thead><tr>${tableConf.cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
+      <tbody>
+        ${list
+          .map((item, i) => {
+            const cells = tableConf.row(item);
+            const statusIdx = tableConf.cols.indexOf('状态');
+            const rest = [...cells];
+            let statusHtml = `<select class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
+              ${['未使用', '已使用', '停用'].map((s) => `<option ${item.status === s ? 'selected' : ''}>${s}</option>`).join('')}
+            </select>`;
+            return `<tr style="--i:${i}">${rest
+              .slice(0, statusIdx)
+              .map((c) => `<td>${c}</td>`)
+              .concat([`<td>${statusHtml}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
+              .join('')}</tr>`;
+          })
+          .join('')}
+      </tbody>
+    </table></div>`);
+  }
+  const selCount = panel.querySelector('.sel-count');
+  if (selCount) selCount.textContent = `${list.length} 条`;
 }
 
 /* ============ 导入弹窗 ============ */
@@ -1083,12 +1136,12 @@ document.addEventListener('change', async (e) => {
       const id = Number(t.dataset.id);
       if (t.checked) state.sel.add(id);
       else state.sel.delete(id);
-      render();
+      refreshSelectionUI();
     } else if (action === 'sel-all') {
       const list = getFilteredRecords();
       if (t.checked) list.forEach((r) => state.sel.add(r.id));
       else state.sel.clear();
-      render();
+      refreshSelectionUI();
     }
   } catch (err) {
     toast(err.message, 'error');
@@ -1103,7 +1156,9 @@ document.addEventListener('input', (e) => {
     el.setSelectionRange(el.value.length, el.value.length);
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
-    render();
+    const el = e.target;
+    renderPoolTableInto();
+    el.setSelectionRange(el.value.length, el.value.length);
   } else if (e.target.id?.startsWith('f-')) {
     const key = e.target.id.replace('f-', '');
     const map = { country: 'country', product: 'product', start: 'start_seq', ipreg: 'ip_reg_time', idcard: 'id_card', domains: 'domains' };
@@ -1155,6 +1210,27 @@ function renderRecordsTableInto(input) {
   tablePanel.insertAdjacentHTML('beforeend', renderRecordsTable(getFilteredRecords()));
   const selCount = tablePanel.querySelector('.sel-count');
   if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
+}
+
+// 勾选/全选后只刷新勾选相关 UI（行高亮、全选框、计数、删除按钮），不重建整页
+function refreshSelectionUI() {
+  const rows = document.querySelectorAll('#main tbody tr[data-id]');
+  rows.forEach((tr) => {
+    const id = Number(tr.dataset.id);
+    const checked = state.sel.has(id);
+    tr.classList.toggle('selected', checked);
+    const cb = tr.querySelector('input[data-action="sel-row"]');
+    if (cb) cb.checked = checked;
+  });
+  const allCb = document.querySelector('#main thead input[data-action="sel-all"]');
+  if (allCb) {
+    const visible = getFilteredRecords();
+    allCb.checked = visible.length > 0 && visible.every((r) => state.sel.has(r.id));
+  }
+  const selCount = document.querySelector('#main .sel-count');
+  if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
+  const delBtn = document.querySelector('[data-action="delete-selected"]');
+  if (delBtn) delBtn.disabled = state.sel.size === 0;
 }
 
 document.addEventListener('change', (e) => {

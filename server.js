@@ -467,15 +467,21 @@ function dupLabel(type) {
 function importItems(type, items) {
   let added = 0;
   const skipped = [];
+  const seen = new Set();
+  const label = dupLabel(type);
   for (const it of items) {
+    // 同批次内也去重：以 dupLabel 作为本次批次的键
+    const batchKey = label(it);
+    if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
     const isDup = db[type].some(DUP_KEYS[type](it));
     if (isDup) { skipped.push(it); continue; }
+    if (batchKey) seen.add(batchKey);
     const row = { id: nextId(type), status: '未使用', created_at: nowLocal(), ...it };
     db[type].push(row);
     added++;
   }
   saveDb();
-  return { added, skipped: skipped.length, duplicates: skipped.map(dupLabel(type)) };
+  return { added, skipped: skipped.length, duplicates: skipped.map(label) };
 }
 
 /* ---------------- 记录创建 ---------------- */
@@ -516,7 +522,7 @@ function createRecords(body) {
   const product = String(body.product || '').trim();
   const rawDomains = Array.isArray(body.domains)
     ? body.domains
-    : String(body.domains || '').split(/\r?\n|[,,\s]+/);
+    : String(body.domains || '').split(/\r?\n|[,\s]+/);
   const domains = rawDomains
     .map((s) => String(s).trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
     .filter(Boolean);
@@ -635,11 +641,13 @@ function updateRecord(id, body) {
     const nu = targetId == null ? null : db[coll].find((x) => x.id === targetId);
     if (targetId != null && !nu) return;
     rec[`${prefix}_id`] = nu ? nu.id : null;
-    const snaps = nu ? SNAP[prefix](nu) : {};
-    for (const key of Object.keys(SNAP[prefix](nu || { }))) {
-      rec[key] = snaps[key] ?? '';
+    // 清空旧快照字段，再填入新关联资源的快照
+    for (const key of Object.keys(SNAP[prefix]({}))) rec[key] = '';
+    if (nu) {
+      const snaps = SNAP[prefix](nu);
+      for (const key of Object.keys(snaps)) rec[key] = snaps[key] ?? '';
+      nu.status = '已使用';
     }
-    if (nu) nu.status = '已使用';
   };
 
   reassign('email', 'emails', body.email_id);
