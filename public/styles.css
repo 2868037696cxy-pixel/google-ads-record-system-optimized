@@ -624,17 +624,18 @@ select {
   white-space: nowrap;
   position: relative;
   transition:
-    transform var(--t-fast) var(--ease-quart),
-    background var(--t-fast) var(--ease-quart),
-    border-color var(--t-fast) var(--ease-quart),
-    box-shadow var(--t-mid) var(--ease-quart),
-    opacity var(--t-fast) linear;
+    transform 140ms var(--ease-quart),
+    background 140ms var(--ease-quart),
+    border-color 140ms var(--ease-quart),
+    box-shadow 200ms var(--ease-quart),
+    color 140ms var(--ease-quart),
+    opacity 140ms linear;
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
 
-.btn:active { transform: scale(0.97); }
-.btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.btn:active:not(:disabled) { transform: translateY(1px) scale(0.98); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
 /* 键盘焦点环（无障碍） */
 .btn:focus-visible,
@@ -645,49 +646,88 @@ select {
   box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-dim), 0 0 0 1px var(--accent-line);
 }
 
+/* —— 主按钮：荧光绿渐变，带内高光 + 外光晕 —— */
 .btn-primary {
-  background: linear-gradient(160deg, var(--accent-strong), var(--accent));
+  background: linear-gradient(160deg, var(--accent-strong) 0%, var(--accent) 55%, var(--accent-deep) 100%);
   color: var(--accent-ink);
-  box-shadow: 0 3px 16px -4px rgba(200, 246, 93, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  box-shadow:
+    0 4px 14px -3px rgba(200, 246, 93, 0.5),
+    0 1px 0 rgba(255, 255, 255, 0.5) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.08) inset;
 }
 
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-strong);
-  box-shadow: 0 6px 24px -4px rgba(200, 246, 93, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.5);
+  background: linear-gradient(160deg, #eaff9a 0%, var(--accent-strong) 55%, var(--accent) 100%);
+  box-shadow:
+    0 8px 22px -4px rgba(200, 246, 93, 0.65),
+    0 1px 0 rgba(255, 255, 255, 0.6) inset,
+    0 -1px 0 rgba(0, 0, 0, 0.06) inset;
   transform: translateY(-1px);
 }
 
 .btn-primary:active:not(:disabled) {
-  background: var(--accent-deep);
-  box-shadow: 0 2px 10px -2px rgba(200, 246, 93, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.3);
-  transform: translateY(0) scale(0.98);
+  background: linear-gradient(160deg, var(--accent) 0%, var(--accent-deep) 100%);
+  box-shadow:
+    0 2px 8px -2px rgba(200, 246, 93, 0.4),
+    0 1px 2px rgba(0, 0, 0, 0.15) inset;
+  transform: translateY(0) scale(0.97);
 }
 
+/* —— 幽灵按钮：描边 + 透明底 —— */
 .btn-ghost {
-  background: transparent;
+  background: rgba(163, 190, 228, 0.02);
   color: var(--muted);
-  border-color: var(--line);
+  border-color: var(--line-strong);
 }
 
 .btn-ghost:hover:not(:disabled) {
   color: var(--text);
-  background: rgba(163, 190, 228, 0.06);
-  border-color: var(--line-strong);
+  background: rgba(163, 190, 228, 0.07);
+  border-color: rgba(163, 190, 228, 0.25);
+  transform: translateY(-1px);
 }
 
-.btn-ghost:active:not(:disabled) { background: rgba(163, 190, 228, 0.12); }
+.btn-ghost:active:not(:disabled) {
+  background: rgba(163, 190, 228, 0.12);
+  transform: translateY(0);
+}
 
+/* —— 危险按钮 —— */
 .btn-danger {
-  background: rgba(248, 113, 113, 0.1);
-  color: var(--red);
-  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.28);
 }
 
-.btn-danger:hover:not(:disabled) { background: rgba(248, 113, 113, 0.18); }
-.btn-danger:active:not(:disabled) { background: rgba(248, 113, 113, 0.26); }
+.btn-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.16);
+  color: var(--red);
+  border-color: rgba(248, 113, 113, 0.45);
+  transform: translateY(-1px);
+}
 
-.btn-sm { padding: 5px 11px; font-size: 12px; border-radius: 7px; }
+.btn-danger:active:not(:disabled) {
+  background: rgba(248, 113, 113, 0.24);
+  transform: translateY(0);
+}
 
+/* —— 加载态：旋转点 + 隐藏文字 —— */
+.btn-loading { pointer-events: none; }
+.btn-loading::after {
+  content: "";
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin 0.7s linear infinite;
+  margin-left: 2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn-sm { padding: 5px 12px; font-size: 12px; border-radius: 7px; }
+
+/* —— 侧边栏幽灵按钮 —— */
 .ghost-btn {
   display: flex;
   align-items: center;
@@ -702,30 +742,32 @@ select {
   border-radius: var(--r-sm);
   padding: 9px 12px;
   cursor: pointer;
-  transition: color var(--t-fast), border-color var(--t-fast), background var(--t-fast), box-shadow var(--t-fast);
+  transition: color 140ms, border-color 140ms, background 140ms, transform 140ms var(--ease-quart);
 }
 
-.ghost-btn:hover { color: var(--text); border-color: var(--line-strong); background: var(--surface-2); }
+.ghost-btn:hover { color: var(--text); border-color: var(--accent-line); background: var(--surface-2); transform: translateY(-1px); }
+.ghost-btn:active { transform: translateY(0); }
 
+/* —— 行内操作按钮 —— */
 .icon-btn {
   font: inherit;
   font-size: 11.5px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--faint);
   background: transparent;
   border: 1px solid transparent;
   border-radius: 6px;
   padding: 4px 10px;
   cursor: pointer;
-  transition: all var(--t-fast) var(--ease-quart);
+  transition: color 140ms, background 140ms, border-color 140ms, transform 120ms var(--ease-quart);
 }
 
-.icon-btn:hover { color: var(--text); border-color: var(--line-strong); background: rgba(163, 190, 228, 0.06); }
-.icon-btn:active { transform: scale(0.95); }
-.icon-btn.danger:hover { color: var(--red); border-color: rgba(248, 113, 113, 0.4); background: rgba(248, 113, 113, 0.08); }
-.icon-btn.danger:active { background: rgba(248, 113, 113, 0.14); }
+.icon-btn:hover { color: var(--text); border-color: var(--line-strong); background: rgba(163, 190, 228, 0.08); }
+.icon-btn:active { transform: scale(0.94); }
+.icon-btn.danger { color: #e57373; }
+.icon-btn.danger:hover { color: var(--red); border-color: rgba(248, 113, 113, 0.45); background: rgba(248, 113, 113, 0.1); }
 
-.row-actions { display: flex; gap: 6px; opacity: 0.4; transition: opacity var(--t-fast); }
+.row-actions { display: flex; gap: 6px; opacity: 0.35; transition: opacity 140ms; }
 tr:hover .row-actions { opacity: 1; }
 
 /* ============================================================
@@ -767,21 +809,21 @@ tr:hover .row-actions { opacity: 1; }
   background: none;
   border: none;
   border-radius: 7px;
-  padding: 4px 12px;
+  padding: 5px 13px;
   cursor: pointer;
-  transition: color var(--t-fast) var(--ease-quart), background var(--t-fast) var(--ease-quart), box-shadow var(--t-fast) var(--ease-quart);
+  transition: color 140ms var(--ease-quart), background 140ms var(--ease-quart), box-shadow 140ms var(--ease-quart), transform 120ms var(--ease-quart);
   user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
 
-.tab:hover { color: var(--muted); background: rgba(163, 190, 228, 0.05); }
+.tab:hover { color: var(--muted); background: rgba(163, 190, 228, 0.06); }
 
-.tab:active { transform: scale(0.96); }
+.tab:active { transform: scale(0.95); }
 
 .tab.active {
   color: var(--accent-strong);
-  background: rgba(200, 246, 93, 0.12);
-  box-shadow: inset 0 0 0 1px rgba(200, 246, 93, 0.2);
+  background: linear-gradient(180deg, rgba(200, 246, 93, 0.18), rgba(200, 246, 93, 0.1));
+  box-shadow: inset 0 0 0 1px rgba(200, 246, 93, 0.28), 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
 .sel-count { font-size: 12px; color: var(--faint); white-space: nowrap; }

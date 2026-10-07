@@ -82,6 +82,26 @@ function poolCount(kind, status = '未使用') {
   return state.pools[kind].filter((x) => x.status === status).length;
 }
 
+// 解析「起始编号」输入：支持纯数字（如 6）或完整指纹名（如 10.8ads6）
+// 纯数字 → 前缀取今日日期 + "ads"，序号为该数字
+// 完整指纹名 → 提取末尾数字为序号，前面的部分为前缀
+function parseFpStart(input) {
+  const raw = String(input || '').trim();
+  const dk = todayKey();
+  const defaultPrefix = `${dk}ads`;
+  if (!raw) return { prefix: defaultPrefix, seq: state.next?.seq || 1, display: defaultPrefix + (state.next?.seq || 1) };
+  if (/^\d+$/.test(raw)) {
+    const seq = parseInt(raw, 10);
+    return { prefix: defaultPrefix, seq, display: defaultPrefix + seq };
+  }
+  const m = raw.match(/^(.+?)(\d+)$/);
+  if (m) {
+    return { prefix: m[1], seq: parseInt(m[2], 10), display: raw };
+  }
+  // 没有数字结尾，当作纯前缀，序号自动取下一个
+  return { prefix: raw, seq: state.next?.seq || 1, display: raw + (state.next?.seq || 1) };
+}
+
 /* ============ 状态 ============ */
 
 const KINDS = [
@@ -198,12 +218,10 @@ function renderWorkbench() {
   const main = document.getElementById('main');
   const domains = f.domains.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const count = domains.length || 0;
-  const startSeq = parseInt(f.start_seq, 10) || state.next?.seq || 1;
-  const dk = todayKey();
-
+  const fp = parseFpStart(f.start_seq);
   const fpPreview = count > 0
-    ? (count === 1 ? `${dk}ads${startSeq}` : `${dk}ads${startSeq} ~ ${dk}ads${startSeq + count - 1}`)
-    : `${dk}ads${startSeq}`;
+    ? (count === 1 ? `${fp.prefix}${fp.seq}` : `${fp.prefix}${fp.seq} ~ ${fp.prefix}${fp.seq + count - 1}`)
+    : `${fp.prefix}${fp.seq}`;
 
   const avail = {
     emails: poolCount('emails'),
@@ -314,8 +332,8 @@ function renderWorkbench() {
             <input id="f-product" value="${esc(f.product)}" placeholder="呼吸机">
           </div>
           <div class="field col-2">
-            <label>起始编号 <span class="mini">自动</span></label>
-            <input id="f-start" class="mono" type="number" min="1" value="${esc(f.start_seq)}">
+            <label>指纹起始 <span class="mini">数字或全名，如 6 或 10.8ads6</span></label>
+            <input id="f-start" class="mono" value="${esc(f.start_seq)}" placeholder="${todayKey()}ads1">
           </div>
           <div class="field col-2">
             <label>IP注册时间</label>
@@ -459,12 +477,14 @@ async function doCreate() {
   if (!domains.length) return toast('请至少填写一个域名', 'warn');
   const btn = document.querySelector('[data-action="create"]');
   const oldText = btn?.textContent;
-  if (btn) { btn.disabled = true; btn.textContent = '创建中…'; }
+  if (btn) { btn.disabled = true; btn.classList.add('btn-loading'); btn.textContent = '创建中'; }
+  const fp = parseFpStart(state.form.start_seq);
   const body = {
     country: state.form.country,
     product: state.form.product,
     domains,
-    start_seq: parseInt(state.form.start_seq, 10) || undefined,
+    start_seq: fp.seq,
+    fp_prefix: fp.prefix,
     date_key: todayKey(),
     ip_reg_time: state.form.ip_reg_time,
     id_card: state.form.id_card,
@@ -480,11 +500,11 @@ async function doCreate() {
     toast(`✅ 已创建 ${list.length} 条记录：${list[0].fingerprint}${list.length > 1 ? ' ~ ' + list[list.length - 1].fingerprint : ''}`);
     state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
     state.form.domains = '';
-    state.form.start_seq = String(list[list.length - 1].seq + 1);
+    state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
     await refresh();
   } catch (e) {
     toast(e.message, 'error');
-    if (btn) { btn.disabled = false; btn.textContent = oldText; }
+    if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
   }
 }
 
@@ -568,7 +588,8 @@ function renderPool(kind) {
   const conf = KINDS.find((k) => k.key === kind);
   const tableConf = POOL_TABLE[kind];
   const q = state.poolQ.trim().toLowerCase();
-  const list = state.pools[kind].filter((x) => {
+  const sorted = [...state.pools[kind]].sort((a, b) => b.id - a.id);
+  const list = sorted.filter((x) => {
     if (state.poolStatus !== '全部' && x.status !== state.poolStatus) return false;
     if (!q) return true;
     return Object.values(x).some((v) => String(v ?? '').toLowerCase().includes(q));
@@ -645,7 +666,8 @@ function renderPoolTableInto() {
   const conf = KINDS.find((k) => k.key === kind);
   const tableConf = POOL_TABLE[kind];
   const q = state.poolQ.trim().toLowerCase();
-  const list = state.pools[kind].filter((x) => {
+  const sorted = [...state.pools[kind]].sort((a, b) => b.id - a.id);
+  const list = sorted.filter((x) => {
     if (state.poolStatus !== '全部' && x.status !== state.poolStatus) return false;
     if (!q) return true;
     return Object.values(x).some((v) => String(v ?? '').toLowerCase().includes(q));
@@ -1177,13 +1199,12 @@ function updateCreatePreview() {
   if (!preview) return;
   const domains = state.form.domains.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const count = domains.length || 0;
-  const startSeq = parseInt(state.form.start_seq, 10) || state.next?.seq || 1;
-  const dk = todayKey();
-  const fp = count > 0
-    ? (count === 1 ? `${dk}ads${startSeq}` : `${dk}ads${startSeq} ~ ${dk}ads${startSeq + count - 1}`)
-    : `${dk}ads${startSeq}`;
+  const fp = parseFpStart(state.form.start_seq);
+  const fpPreview = count > 0
+    ? (count === 1 ? `${fp.prefix}${fp.seq}` : `${fp.prefix}${fp.seq} ~ ${fp.prefix}${fp.seq + count - 1}`)
+    : `${fp.prefix}${fp.seq}`;
   const avail = { emails: poolCount('emails'), cards: poolCount('cards') };
-  preview.querySelector('.fp').textContent = fp;
+  preview.querySelector('.fp').textContent = fpPreview;
   const btn = preview.querySelector('[data-action="create"]');
   btn.disabled = count === 0;
   btn.textContent = count > 0 ? `立即创建 ${count} 条` : '立即创建';

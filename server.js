@@ -528,6 +528,7 @@ function createRecords(body) {
     .filter(Boolean);
   const count = domains.length || Math.max(1, Math.min(500, parseInt(body.count, 10) || 1));
   const dateKey = String(body.date_key || '').trim() || todayKey();
+  const fpPrefix = String(body.fp_prefix || '').trim() || `${dateKey}ads`;
   let seq = parseInt(body.start_seq, 10);
   if (!Number.isFinite(seq) || seq < 1) seq = nextSeq();
 
@@ -564,7 +565,7 @@ function createRecords(body) {
     const rec = {
       id: nextId('records'),
       seq,
-      fingerprint: `${dateKey}ads${seq}`,
+      fingerprint: `${fpPrefix}${seq}`,
       country, product, domain,
       name: buildName(country, product, domain),
       email_id: email ? email.id : null,
