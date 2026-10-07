@@ -524,13 +524,13 @@ const POOL_TABLE = {
     cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '状态', '导入时间', '操作'],
     row: (p) => [
       `<span class="faint mono">${p.id}</span>`,
-      `<span class="mono">${esc(p.sn) || '<span class="faint">—</span>'}</span>`,
+      `<span class="mono copyable" data-copy="${esc(p.sn)}" title="点击复制">${esc(p.sn) || '<span class="faint">—</span>'}</span>`,
       `<span class="pill pill-amber"><span class="dot"></span>${esc(p.type || 'socks5')}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.host)}" title="点击复制">${esc(p.host)}</span>`,
-      `<span class="mono">${esc(p.port)}</span>`,
+      `<span class="mono copyable" data-copy="${esc(p.port)}" title="点击复制">${esc(p.port)}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.user)}" title="点击复制">${sens(p.user)}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.pass)}" title="点击复制">${sens(p.pass)}</span>`,
-      `<span class="dim">${esc(p.country) || '<span class="faint">—</span>'}</span>`,
+      `<span class="dim copyable" data-copy="${esc(p.country)}" title="点击复制">${esc(p.country) || '<span class="faint">—</span>'}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.ip)}" title="点击复制">${esc(p.ip) || '<span class="faint">—</span>'}</span>`,
     ],
   },
@@ -539,7 +539,7 @@ const POOL_TABLE = {
     row: (c) => [
       `<span class="faint mono">${c.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(c.number)}" title="点击复制">${sens(c.number)}</span>`,
-      `<span class="mono">${esc(c.expiry) || '<span class="faint">—</span>'}</span>`,
+      `<span class="mono copyable" data-copy="${esc(c.expiry)}" title="点击复制">${esc(c.expiry) || '<span class="faint">—</span>'}</span>`,
       `<span class="mono copyable" data-copy="${esc(c.cvv)}" title="点击复制">${sens(c.cvv)}</span>`,
     ],
   },
@@ -1033,15 +1033,18 @@ function openEditRecord(id) {
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-action]');
 
-  // 复制
+  // 复制：优先用 data-copy 属性，否则兜底复制非交互单元格的文本
   const copyEl = e.target.closest('[data-copy]');
-  if (copyEl && !copyEl.dataset.copy) {
-    // noop
+  if (copyEl && copyEl.dataset.copy) {
+    copyText(copyEl.dataset.copy);
+    return;
   }
-  if (e.target.closest('[data-copy]')) {
-    const el = e.target.closest('[data-copy]');
-    if (el.dataset.copy) {
-      copyText(el.dataset.copy);
+  // 兜底：点击表格中纯文本单元格（不含按钮/下拉/复选框）时复制其内容
+  const td = e.target.closest('td');
+  if (td && !td.querySelector('button, select, input, a, [data-action]')) {
+    const txt = td.textContent.trim();
+    if (txt && txt !== '—') {
+      copyText(txt);
       return;
     }
   }

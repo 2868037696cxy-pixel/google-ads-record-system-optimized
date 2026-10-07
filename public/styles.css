@@ -970,6 +970,11 @@ tbody tr:last-child td { border-bottom: none; }
 .copyable { cursor: copy; }
 .copyable:hover { color: var(--accent-strong); }
 
+/* 表格中纯文本单元格（无按钮/下拉/复选框）点击可复制 */
+tbody td { cursor: copy; }
+tbody td:has(button, select, input, a) { cursor: default; }
+tbody td:hover:not(:has(button, select, input, a)) { color: var(--accent-strong); }
+
 .faint { color: var(--ghost); }
 .dim { color: var(--faint); font-size: 12px; }
 .masked { letter-spacing: 2px; color: var(--faint); font-size: 11px; }
