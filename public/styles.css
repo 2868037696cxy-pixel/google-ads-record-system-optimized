@@ -986,12 +986,8 @@ tbody tr:last-child td { border-bottom: none; }
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(5, 7, 11, 0.72);
-  backdrop-filter: blur(6px);
-  animation: fade-in 160ms var(--ease-quart) both;
+  background: rgba(5, 7, 11, 0.8);
 }
-
-@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
 
 .modal {
   width: min(620px, 100%);
@@ -1005,14 +1001,12 @@ tbody tr:last-child td { border-bottom: none; }
     0 0 0 1px rgba(0, 0, 0, 0.5),
     0 32px 80px -16px rgba(0, 0, 0, 0.75),
     inset 0 1px 0 rgba(255, 255, 255, 0.05);
-  animation: pop 240ms var(--ease) both;
-  will-change: transform, opacity;
-  backface-visibility: hidden;
+  animation: modal-in 180ms linear both;
 }
 
-@keyframes pop {
-  from { opacity: 0; transform: translateY(8px) scale(0.985); }
-  to { opacity: 1; transform: none; }
+@keyframes modal-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
 }
 
 .modal-lg { width: min(840px, 100%); }
