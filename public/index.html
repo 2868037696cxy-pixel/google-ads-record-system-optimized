@@ -29,13 +29,24 @@
         <button class="ghost-btn w-full" id="revealBtn" data-action="toggle-reveal">
           <span class="dot dot-eye"></span><span id="revealLabel">敏感信息：已隐藏</span>
         </button>
-        <p class="foot-note">数据存储在服务端 data.json<br>请勿随意分享给他人</p>
+        <div id="desktopTools" hidden>
+          <div class="desktop-actions">
+            <button class="ghost-btn" data-action="desktop-backup" title="导出全部记录和资源">备份</button>
+            <button class="ghost-btn" data-action="desktop-restore" title="从完整备份恢复">恢复</button>
+            <button class="ghost-btn" data-action="desktop-data" title="打开本地数据文件夹">数据目录</button>
+          </div>
+          <p class="foot-note" id="desktopVersion">Windows 桌面版</p>
+        </div>
+        <p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
+        <button class="ghost-btn w-full" data-action="retry-load" title="重新读取数据（Ctrl+R）">重新连接</button>
+        <p class="foot-note">记录与资源保存在本机<br>备份包含敏感信息，请妥善保存</p>
       </div>
     </aside>
-    <main class="main" id="main"></main>
+    <main class="main" id="main"><section class="connection-panel" role="status"><h1>正在打开工作台</h1><p>正在加载界面…</p><noscript>请启用 JavaScript 后重试。</noscript></section></main>
   </div>
   <div id="modal-root"></div>
   <div id="toast-root"></div>
-  <script src="/app.js?v=20261007b"></script>
+  <script src="/licenses.js?v=1.1.0"></script>
+  <script src="/app.js?v=1.1.0"></script>
 </body>
 </html>

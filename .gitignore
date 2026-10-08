@@ -1,3 +1,7 @@
 node_modules/
 data.json
 *.log
+dist/
+*.tmp
+backups/
+.desktop-test/

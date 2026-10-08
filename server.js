@@ -1,10 +1,13 @@
 const path = require('node:path');
 const fs = require('node:fs');
-const fastify = require('fastify')({ logger: true });
+const crypto = require('node:crypto');
+const fastify = require('fastify')({ logger: true, bodyLimit: 16 * 1024 * 1024 });
 const fastifyStatic = require('@fastify/static');
+const { createStorage, validateSnapshot } = require('./lib/storage');
 
 const ROOT = __dirname;
-const DATA_FILE = path.join(ROOT, 'data.json');
+const DATA_FILE = process.env.DATA_FILE || path.join(ROOT, 'data.json');
+const storage = createStorage(DATA_FILE);
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
 const POOL_TYPES = ['emails', 'proxies', 'cards', 'licenses'];
@@ -12,6 +15,7 @@ const STATUSES = ['未使用', '已使用', '停用'];
 const RECORD_STATUSES = ['正常', '异常', '停用'];
 
 let db = {
+  documents: {},
   counters: { emails: 0, proxies: 0, cards: 0, licenses: 0, records: 0 },
   emails: [],
   proxies: [],
@@ -21,23 +25,20 @@ let db = {
 };
 
 function loadDb() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      db = { ...db, ...parsed };
-      for (const t of POOL_TYPES) if (!Array.isArray(db[t])) db[t] = [];
-      if (!Array.isArray(db.records)) db.records = [];
-      db.counters = db.counters || {};
-    }
-  } catch (e) {
-    console.error('读取数据文件失败:', e);
-  }
+  db = storage.load(db);
 }
 
-function saveDb() {
-  const tmp = DATA_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-  fs.renameSync(tmp, DATA_FILE);
+function mutate(operation) {
+  const previous = structuredClone(db);
+  try {
+    const result = operation();
+    if (result?.error) return reply400(result.error);
+    storage.save(db);
+    return result;
+  } catch (error) {
+    db = previous;
+    throw error;
+  }
 }
 
 function nowLocal() {
@@ -434,15 +435,40 @@ async function extractPdfText(buf) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), useSystemFonts: true });
-  const pdf = await loadingTask.promise;
-  const pages = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const tc = await page.getTextContent();
-    const items = tc.items.map((it) => it.str).filter(Boolean);
-    pages.push(items.join('\n'));
+  try {
+    const pdf = await loadingTask.promise;
+    if (pdf.numPages > 50) return reply400('PDF 最多支持 50 页');
+    const pages = [];
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const tc = await page.getTextContent();
+      pages.push(tc.items.map((it) => it.str).filter(Boolean).join('\n'));
+    }
+    return pages.join('\n\n');
+  } finally {
+    await loadingTask.destroy();
   }
-  return pages.join('\n\n');
+}
+
+function decodePdf(base64) {
+  if (typeof base64 !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(base64)) return reply400('PDF 内容格式不正确');
+  const bytes = Buffer.from(base64, 'base64');
+  if (bytes.length > 10 * 1024 * 1024) return reply400('PDF 文件不能超过 10 MB');
+  if (!bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))) return reply400('请选择有效 PDF 文件');
+  return bytes;
+}
+
+function parseCertificate(text) {
+  const lines = String(text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const start = lines.findIndex((line) => /certifies and attests that:/i.test(line));
+  if (start >= 0) {
+    const name = lines[start + 1] || '';
+    const address = lines[start + 2] || '';
+    const city = (lines[start + 3] || '').match(/^(?:DK-)?(\d{4})\s+(.+)$/);
+    if (name && city) return [{ name, legal_name: name, address, apt: '', zip: city[1], city: city[2], type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '' }];
+  }
+  const structured = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(text);
+  return structured ? parseLicenses(text) : [];
 }
 
 /* ---------------- 营业执照解析 ---------------- */
@@ -524,7 +550,33 @@ function dupLabel(type) {
   };
 }
 
+const IMPORT_FIELDS = {
+  emails: ['user', 'pass', 'fakey'],
+  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
+  cards: ['number', 'expiry', 'cvv'],
+  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
+};
+
+function normalizeImport(type, item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) return reply400('导入内容格式不正确');
+  const row = Object.fromEntries(IMPORT_FIELDS[type].map((key) => [key, String(item[key] ?? '').trim()]));
+  if (type === 'emails' && !EMAIL_RE.test(row.user)) return reply400('存在无效邮箱，请检查导入内容');
+  if (type === 'proxies' && (!row.host || (row.port && (!/^\d+$/.test(row.port) || Number(row.port) < 1 || Number(row.port) > 65535)))) return reply400('代理主机或端口无效');
+  if (type === 'cards') {
+    row.number = row.number.replace(/[ -]/g, '');
+    if (!/^\d{12,19}$/.test(row.number)) return reply400('信用卡号格式不正确');
+  }
+  if (type === 'licenses') {
+    if (!row.name) return reply400('营业执照名称不能为空');
+    row.legal_name ||= row.name;
+    row.zip = row.zip.replace(/^DK-/i, '');
+  }
+  return row;
+}
+
 function importItems(type, items) {
+  if (!Array.isArray(items) || items.length > 5000) return reply400('单次导入最多 5000 条');
+  items = items.map((item) => normalizeImport(type, item));
   let added = 0;
   const skipped = [];
   const seen = new Set();
@@ -536,11 +588,10 @@ function importItems(type, items) {
     const isDup = db[type].some(DUP_KEYS[type](it));
     if (isDup) { skipped.push(it); continue; }
     if (batchKey) seen.add(batchKey);
-    const row = { id: nextId(type), status: '未使用', created_at: nowLocal(), ...it };
+    const row = { ...normalizeImport(type, it), id: nextId(type), status: '未使用', created_at: nowLocal() };
     db[type].push(row);
     added++;
   }
-  saveDb();
   return { added, skipped: skipped.length, duplicates: skipped.map(label) };
 }
 
@@ -555,11 +606,14 @@ function buildName(country, product, domain) {
 }
 
 function pickPool(pool, ids, count, label) {
+  if (ids !== undefined && (!Array.isArray(ids) || ids.some((id) => !Number.isSafeInteger(id) || id < 1))) return { error: `${label}选择格式不正确` };
   const chosen = [];
   const used = new Set();
   for (const id of ids || []) {
+    if (chosen.length >= count) break;
     const it = pool.find((x) => x.id === id);
-    if (it && !used.has(it.id) && it.status !== '停用') {
+    if (!it || it.status !== '未使用') return { error: `${label}所选资源不存在或不可用，请刷新后重新选择` };
+    if (!used.has(it.id)) {
       chosen.push(it);
       used.add(it.id);
     }
@@ -592,6 +646,14 @@ function createRecords(body) {
   let seq = parseInt(body.start_seq, 10);
   if (!Number.isFinite(seq) || seq < 1) seq = nextSeq();
 
+  if (count > 500) return { error: '单次最多创建 500 条记录' };
+  if (!Number.isSafeInteger(seq) || !Number.isSafeInteger(seq + count)) return { error: '指纹编号无效' };
+  if (new Set(domains).size !== domains.length) return { error: '域名列表存在重复，请检查后再创建' };
+  const fingerprints = new Set(db.records.map((r) => r.fingerprint));
+  for (let i = 0; i < count; i++) {
+    if (fingerprints.has(`${fpPrefix}${seq + i}`)) return { error: '指纹名称已存在，请调整起始编号' };
+  }
+
   const pickedEmails = pickPool(db.emails, body.email_ids, count, '可用邮箱');
   if (pickedEmails.error) return { error: pickedEmails.error };
   const pickedCards = pickPool(db.cards, body.card_ids, count, '可用信用卡');
@@ -602,10 +664,13 @@ function createRecords(body) {
   const proxyMode = ['shared', 'auto', 'none'].includes(body.proxy_mode) ? body.proxy_mode : 'shared';
   let sharedProxy = null;
   if (proxyMode === 'shared') {
-    if (body.proxy_id) sharedProxy = db.proxies.find((p) => p.id === body.proxy_id) || null;
+    if (body.proxy_id) {
+      sharedProxy = db.proxies.find((p) => p.id === Number(body.proxy_id) && p.status !== '停用') || null;
+      if (!sharedProxy) return { error: '所选代理不存在或已停用' };
+    }
     if (!sharedProxy) {
       const last = db.records[db.records.length - 1];
-      if (last && last.proxy_id != null) sharedProxy = db.proxies.find((p) => p.id === last.proxy_id) || null;
+      if (last && last.proxy_id != null) sharedProxy = db.proxies.find((p) => p.id === last.proxy_id && p.status !== '停用') || null;
     }
   }
   let autoProxies = [];
@@ -660,7 +725,6 @@ function createRecords(body) {
     created.push(rec);
     seq++;
   }
-  saveDb();
   return { created };
 }
 
@@ -688,6 +752,16 @@ function releaseIfUnused(prefix, oldId, excludeRecId) {
 function updateRecord(id, body) {
   const rec = db.records.find((r) => r.id === id);
   if (!rec) return { error: '记录不存在' };
+
+  for (const [prefix, coll] of Object.entries({ email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' })) {
+    const value = body[`${prefix}_id`];
+    if (value === undefined || value === null || Number(value) === rec[`${prefix}_id`]) continue;
+    const target = db[coll].find((item) => item.id === Number(value));
+    if (!target || target.status === '停用') return { error: '所选资源不存在或已停用' };
+    if (prefix !== 'proxy' && (target.status !== '未使用' || db.records.some((r) => r.id !== rec.id && r[`${prefix}_id`] === target.id))) {
+      return { error: '所选资源已被其他记录使用' };
+    }
+  }
 
   for (const k of ['country', 'product', 'domain', 'ip_reg_time', 'id_card', 'status']) {
     if (k in body) rec[k] = String(body[k] ?? '').trim();
@@ -717,7 +791,6 @@ function updateRecord(id, body) {
   reassign('license', 'licenses', body.license_id);
 
   rec.name = buildName(rec.country, rec.product, rec.domain);
-  saveDb();
   return { record: rec };
 }
 
@@ -728,7 +801,6 @@ function deleteRecords(ids) {
   for (const prefix of ['email', 'proxy', 'card', 'license']) {
     for (const r of removed) releaseIfUnused(prefix, r[`${prefix}_id`], r.id);
   }
-  saveDb();
   return { deleted: removed.length };
 }
 
@@ -784,6 +856,19 @@ function buildCsv(records) {
 
 /* ---------------- 路由 ---------------- */
 
+fastify.addHook('preValidation', async (req) => {
+  if (!req.url.startsWith('/api/') || !['POST', 'PATCH'].includes(req.method)) return;
+  if (req.body !== undefined && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return reply400('请求内容必须为对象');
+  if (req.body?.ids !== undefined && (!Array.isArray(req.body.ids) || req.body.ids.some((id) => !Number.isSafeInteger(id) || id < 1))) return reply400('记录编号格式不正确');
+});
+
+fastify.addHook('onSend', async (req, reply, payload) => {
+  reply.header('X-Content-Type-Options', 'nosniff');
+  reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+  return payload;
+});
+
 fastify.get('/api/bootstrap', async () => {
   const pools = {};
   for (const t of POOL_TYPES) pools[t] = db[t];
@@ -813,67 +898,106 @@ fastify.post('/api/import/auto', async (req) => {
     emails = r.emails;
     proxies = r.proxies;
   }
-  const emailRes = importItems('emails', emails);
-  const proxyRes = importItems('proxies', proxies);
-  return { emails: emailRes, proxies: proxyRes };
+  return mutate(() => ({ emails: importItems('emails', emails), proxies: importItems('proxies', proxies) }));
 });
 
 fastify.post('/api/parse/:type', async (req) => {
   const type = req.params.type;
-  if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
+  if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const items = PARSERS[type](req.body?.text);
   return { items };
 });
 
-// 营业执照 PDF 导入：接收 base64 PDF，提取文本并解析
+// Parse without saving. Only confirmed imports retain the original PDF.
 fastify.post('/api/parse/licenses-pdf', async (req) => {
-  const b64 = req.body?.pdf;
-  if (!b64) return { error: '未收到 PDF 文件' };
+  const bytes = decodePdf(req.body?.pdf);
   try {
-    const buf = Buffer.from(b64, 'base64');
-    const text = await extractPdfText(buf);
-    const items = parseLicenses(text);
-    return { items, text };
-  } catch (e) {
-    return { error: 'PDF 解析失败：' + e.message };
+    const text = await extractPdfText(bytes);
+    return { items: parseCertificate(text), text };
+  } catch (error) {
+    fastify.log.warn({ err: error }, 'PDF extraction failed');
+    return reply400('PDF 解析失败，请选择可读取的 PDF 或手动填写信息');
   }
 });
 
 fastify.post('/api/import/:type', async (req) => {
   const type = req.params.type;
-  if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
+  if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
-  return importItems(type, items);
+  return mutate(() => {
+    const result = importItems(type, items);
+    if (type === 'licenses') {
+      let updated = 0;
+      for (const item of items) {
+        const license = db.licenses.find((row) => row.name === String(item.name).trim());
+        if (license && Object.keys(item).some((key) => key !== 'name' && IMPORT_FIELDS.licenses.includes(key))) {
+          const supplied = Object.fromEntries(IMPORT_FIELDS.licenses.filter((key) => key in item).map((key) => [key, item[key]]));
+          Object.assign(license, normalizeImport('licenses', { ...license, ...supplied }));
+          updated++;
+        }
+      }
+      result.updated = updated;
+    }
+    if (type === 'licenses' && req.body?.pdf) {
+      if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
+      const bytes = decodePdf(req.body.pdf);
+      const id = crypto.createHash('sha256').update(bytes).digest('hex');
+      const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
+      db.documents[id] = { filename, base64: bytes.toString('base64') };
+      const license = db.licenses.find((item) => item.name === String(items[0].name).trim());
+      Object.assign(license, normalizeImport('licenses', items[0]), { document_id: id, document_name: filename, document_size: bytes.length });
+      result.attached = 1;
+    }
+    return result;
+  });
 });
 
-fastify.patch('/api/pool/:type/:id', async (req) => {
+function licenseDocument(id) {
+  const license = db.licenses.find((item) => item.id === Number(id));
+  const document = license && db.documents[license.document_id];
+  if (!document) throw new Error('这份营业执照尚未保存原 PDF');
+  return { ...document, id: license.document_id };
+}
+
+fastify.get('/api/licenses/:id/pdf', async (req, reply) => {
+  let document;
+  try { document = licenseDocument(req.params.id); }
+  catch { return reply.code(404).send({ error: '未保存原 PDF' }); }
+  reply.header('Content-Type', 'application/pdf');
+  reply.header('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(document.filename)}`);
+  reply.header('Cache-Control', 'no-store');
+  return reply.send(Buffer.from(document.base64, 'base64'));
+});
+
+fastify.patch('/api/pool/:type/:id', async (req) => mutate(() => {
   const type = req.params.type;
-  if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
+  if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const it = db[type].find((x) => x.id === Number(req.params.id));
-  if (!it) return { error: '不存在' };
-  if ('status' in req.body) {
-    if (!STATUSES.includes(req.body.status)) return { error: '无效状态' };
+  if (!it) return reply400('资源不存在');
+  if ('status' in (req.body || {})) {
+    if (!STATUSES.includes(req.body.status)) return reply400('无效状态');
+    const prefix = { emails: 'email', proxies: 'proxy', cards: 'card', licenses: 'license' }[type];
+    if (req.body.status === '未使用' && db.records.some((r) => r[`${prefix}_id`] === it.id)) return reply400('资源仍关联记录，不能标记为未使用');
     it.status = req.body.status;
   }
-  for (const k of ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip', 'name', 'number', 'expiry', 'cvv']) {
-    if (k in req.body) it[k] = String(req.body[k] ?? '');
-  }
-  saveDb();
+  const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in (req.body || {})).map((key) => [key, req.body[key]]));
+  Object.assign(it, normalizeImport(type, { ...it, ...changed }));
   return { item: it };
-});
+}));
 
-fastify.delete('/api/pool/:type/:id', async (req) => {
+fastify.delete('/api/pool/:type/:id', async (req) => mutate(() => {
   const type = req.params.type;
-  if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
+  if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const id = Number(req.params.id);
+  const prefix = { emails: 'email', proxies: 'proxy', cards: 'card', licenses: 'license' }[type];
+  if (db.records.some((r) => r[`${prefix}_id`] === id)) return reply400('资源仍关联记录，请先解除关联');
   const before = db[type].length;
   db[type] = db[type].filter((x) => x.id !== id);
-  saveDb();
   return { deleted: before - db[type].length };
-});
+}));
 
 fastify.post('/api/records', async (req) => {
-  const res = createRecords(req.body || {});
+  const res = mutate(() => createRecords(req.body || {}));
   if (res.error) return reply400(res.error);
   return res;
 });
@@ -885,7 +1009,7 @@ function reply400(msg) {
 }
 
 fastify.patch('/api/records/:id', async (req) => {
-  const res = updateRecord(Number(req.params.id), req.body || {});
+  const res = mutate(() => updateRecord(Number(req.params.id), req.body || {}));
   if (res.error) return reply400(res.error);
   return res;
 });
@@ -893,11 +1017,11 @@ fastify.patch('/api/records/:id', async (req) => {
 fastify.post('/api/records/batch-delete', async (req) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return { deleted: 0 };
-  return deleteRecords(ids);
+  return mutate(() => deleteRecords(ids));
 });
 
 fastify.delete('/api/records/:id', async (req) => {
-  return deleteRecords([Number(req.params.id)]);
+  return mutate(() => deleteRecords([Number(req.params.id)]));
 });
 
 fastify.post('/api/export/adspower', async (req) => {
@@ -925,14 +1049,19 @@ fastify.setNotFoundHandler((req, reply) => {
 
 loadDb();
 
-const start = async () => {
+const start = async ({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '127.0.0.1', token = '' } = {}) => {
+  if (token) fastify.addHook('onRequest', async (req, reply) => {
+    if (req.url.startsWith('/api/') && req.headers['x-desktop-token'] !== token) return reply.code(401).send({ error: '仅允许桌面应用访问' });
+  });
   try {
-    await fastify.listen({ port: Number(process.env.PORT) || 3000, host: '0.0.0.0' });
-    console.log('工作台已启动: http://localhost:' + (process.env.PORT || 3000));
+    const address = await fastify.listen({ port, host });
+    console.log('工作台已启动: ' + address);
+    return address;
   } catch (e) {
     fastify.log.error(e);
-    process.exit(1);
+    throw e;
   }
 };
 
-start();
+module.exports = { licenseDocument, start, close: () => fastify.close(), snapshot: () => structuredClone(db), restore: (data) => mutate(() => { db = validateSnapshot(data); return { restored: true }; }) };
+if (require.main === module) start().catch(() => { process.exitCode = 1; });

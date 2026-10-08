@@ -15,12 +15,19 @@ async function api(path, opts = {}) {
   const hasBody = opts.body !== undefined;
   const headers = { ...(opts.headers || {}) };
   if (hasBody) headers['Content-Type'] = 'application/json';
-  const res = await fetch(path, {
-    headers,
-    ...opts,
-    body: hasBody ? JSON.stringify(opts.body) : undefined,
-  });
-  const data = await res.json().catch(() => ({}));
+  let res;
+  try {
+    res = await fetch(path, {
+      ...opts, headers,
+      signal: opts.signal || AbortSignal.timeout(20000),
+      body: hasBody ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (error) {
+    if (error.name === 'TimeoutError') throw new Error('连接超时，请稍后重试');
+    if (error.name === 'AbortError') throw error;
+    throw new Error('无法连接本地服务，请重新连接或重启工作台');
+  }
+  const data = await res.json().catch(() => { throw new Error('服务响应异常，请重新连接'); });
   if (!res.ok) throw new Error(data.message || data.error || `请求失败 (${res.status})`);
   return data;
 }
@@ -70,8 +77,8 @@ function download(filename, text) {
 }
 
 function todayKey() {
-  const d = new Date();
-  return `${d.getMonth() + 1}.${d.getDate()}`;
+  const parts = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric' }).formatToParts(new Date());
+  return `${parts.find((p) => p.type === 'month').value}.${parts.find((p) => p.type === 'day').value}`;
 }
 
 function fmtCard(num) {
@@ -203,12 +210,18 @@ function render() {
 
 async function refresh() {
   const data = await api('/api/bootstrap');
+  if (!data?.pools || !Array.isArray(data.records) || !data.next || !KINDS.every((k) => Array.isArray(data.pools[k.key]))) {
+    throw new Error('数据格式不正确，请检查备份或重启工作台');
+  }
   state.pools = data.pools;
   state.records = data.records;
   state.next = data.next;
   state.loaded = true;
   if (!state.form.start_seq) state.form.start_seq = data.next.seq;
   render();
+  bindLabels();
+  const connection = document.getElementById('connectionStatus');
+  if (connection) { connection.textContent = '本地服务已连接'; connection.className = 'connection-status connected'; }
 }
 
 /* ============ 工作台 ============ */
@@ -259,8 +272,7 @@ function renderWorkbench() {
 
   const filtered = getFilteredRecords();
 
-  const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][new Date().getDay()];
-  const todayCN = `${new Date().getMonth() + 1}月${new Date().getDate()}日 · ${week}`;
+  const todayCN = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
 
   main.innerHTML = `
     <div class="page-head">
@@ -454,7 +466,7 @@ function renderRecordsTable(list) {
             <td class="mono copyable" data-copy="${esc(r.proxy_host ? `${r.proxy_host}:${r.proxy_port}:${r.proxy_user}:${r.proxy_pass}` : '')}" title="点击复制完整代理">${proxy}</td>
             <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_cvv}` : '')}" title="点击复制完整卡号">${card}</td>
             <td class="dim">${esc(r.ip_reg_time) || '<span class="faint">—</span>'}</td>
-            <td>${esc(r.license_name) || '<span class="faint">—</span>'}</td>
+            <td>${r.license_id ? `<button class="license-link" data-action="view-license" data-id="${r.license_id}">${esc(r.license_name)}</button>` : '<span class="faint">—</span>'}</td>
             <td class="dim">${esc(r.id_card) || '<span class="faint">—</span>'}</td>
             <td>
               <select class="status-select ${r.status === '正常' ? 's-green' : r.status === '异常' ? 's-red' : 's-blue'}" data-action="rec-status" data-id="${r.id}">
@@ -729,6 +741,7 @@ function renderPoolTableInto() {
 /* ============ 导入弹窗 ============ */
 
 async function openImportModal(kind) {
+  if (kind === 'licenses') return openLicenseImport();
   const conf = KINDS.find((k) => k.key === kind);
   openModal(`
     <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
@@ -1095,12 +1108,13 @@ document.addEventListener('click', async (e) => {
   // 复制：优先用 data-copy 属性，否则兜底复制非交互单元格的文本
   const copyEl = e.target.closest('[data-copy]');
   if (copyEl && copyEl.dataset.copy) {
+    if (copyEl.querySelector('.masked')) return toast('请先显示敏感信息，再复制该字段', 'warn');
     copyText(copyEl.dataset.copy);
     return;
   }
   // 兜底：点击表格中纯文本单元格（不含按钮/下拉/复选框）时复制其内容
   const td = e.target.closest('td');
-  if (td && !td.querySelector('button, select, input, a, [data-action]')) {
+  if (td && !td.querySelector('.masked, button, select, input, a, [data-action]')) {
     const txt = td.textContent.trim();
     if (txt && txt !== '—') {
       copyText(txt);
@@ -1113,6 +1127,20 @@ document.addEventListener('click', async (e) => {
 
   try {
     switch (action) {
+      case 'retry-load':
+        await connect();
+        break;
+      case 'desktop-backup': {
+        const result = await window.desktop.backup();
+        if (result.success) toast('完整备份已导出');
+        break;
+      }
+      case 'desktop-restore':
+        await window.desktop.restore();
+        break;
+      case 'desktop-data':
+        await window.desktop.openDataFolder();
+        break;
       case 'nav': {
         state.page = t.dataset.page;
         render();
@@ -1166,7 +1194,7 @@ document.addEventListener('click', async (e) => {
       case 'delete-selected': {
         const ids = [...state.sel];
         if (!ids.length) return;
-        confirmModal('删除所选记录', `将删除 <b>${ids.length}</b> 条记录，关联的邮箱 / 信用卡 / 营业执照会自动释放回「未使用」（代理不动）。`, async () => {
+        confirmModal('删除所选记录', `将删除 <b>${ids.length}</b> 条记录，不再被其他记录使用的资源会自动释放回「未使用」。`, async () => {
           await api('/api/records/batch-delete', { method: 'POST', body: { ids } });
           state.sel.clear();
           toast('已删除');
@@ -1187,30 +1215,29 @@ document.addEventListener('click', async (e) => {
       case 'edit-record':
         openEditRecord(Number(t.dataset.id));
         break;
-      case 'view-license': {
-        const lic = state.pools.licenses.find((l) => l.id === Number(t.dataset.id));
-        if (!lic) break;
-        const rows = [
-          ['资料类型', lic.type || '组织'],
-          ['组织名称', lic.name],
-          ['法定名称', lic.legal_name || '—'],
-          ['街道地址', lic.address || '—'],
-          ['门牌号', lic.apt || '—'],
-          ['邮编', lic.zip || '—'],
-          ['市/区', lic.city || '—'],
-        ].map(([k, v]) => `<tr><th>${k}</th><td><span class="copyable" data-copy="${esc(String(v))}" title="点击复制">${esc(String(v))}</span></td></tr>`).join('');
-        openModal(`
-          <div class="modal-head"><h3>营业执照详情</h3><button class="modal-close" data-action="close-modal">✕</button></div>
-          <div class="modal-body">
-            <table class="detail-table"><tbody>${rows}</tbody></table>
-          </div>
-          <div class="modal-foot"><button class="btn btn-primary" data-action="close-modal">关闭</button></div>`, { large: false });
+      case 'view-license':
+        openLicenseDetails(Number(t.dataset.id));
+        break;
+      case 'open-license-pdf': {
+        const id = Number(t.dataset.id);
+        if (window.desktop) await window.desktop.openLicensePdf(id);
+        else {
+          const response = await fetch(`/api/licenses/${id}/pdf`);
+          if (!response.ok) throw new Error('未保存原 PDF');
+          const url = URL.createObjectURL(await response.blob());
+          const anchor = document.createElement('a');
+          anchor.href = url; anchor.download = '营业执照.pdf'; anchor.click();
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+        }
         break;
       }
+      case 'reveal-license-pdf':
+        await window.desktop.revealLicensePdf(Number(t.dataset.id));
+        break;
       case 'del-pool': {
         const kind = t.dataset.kind;
         const id = Number(t.dataset.id);
-        confirmModal('删除资源', '已创建的记录不受影响（记录中保存了快照）。', async () => {
+        confirmModal('删除资源', '请先解除关联后再删除。删除后的原 PDF 仍可从历史完整备份恢复。', async () => {
           await api(`/api/pool/${kind}/${id}`, { method: 'DELETE' });
           toast('已删除');
           await refresh();
@@ -1369,9 +1396,52 @@ document.addEventListener('change', (e) => {
 
 /* ============ 启动 ============ */
 
-refresh().catch((err) => {
-  document.getElementById('main').innerHTML = `<div class="empty"><div class="empty-ico">⚠</div><h3>加载失败</h3><p>${esc(err.message)}</p></div>`;
-});
+let connecting = false;
 
-// 首次入场动画播放一次；之后所有 render 不再重放（避免搜索/切换时整页跳动）
-setTimeout(() => document.body.classList.remove('boot'), 800);
+async function connect() {
+  if (connecting) return;
+  connecting = true;
+  const main = document.getElementById('main');
+  const status = document.getElementById('connectionStatus');
+  if (status) { status.textContent = '正在连接…'; status.className = 'connection-status'; }
+  if (!state.loaded) main.innerHTML = '<section class="connection-panel" role="status"><span class="connection-spinner" aria-hidden="true"></span><h1>正在打开工作台</h1><p>正在读取本地记录和资源</p></section>';
+  const retry = document.querySelector('[data-action="retry-load"]');
+  if (retry) { retry.disabled = true; retry.textContent = '正在连接…'; }
+  try {
+    await refresh();
+  } catch (error) {
+    if (status) { status.textContent = '连接未完成'; status.className = 'connection-status disconnected'; }
+    // Keep existing records and form input visible if a later refresh fails.
+    if (state.loaded) toast(error.message, 'error');
+    else main.innerHTML = `<section class="connection-panel" role="alert"><span class="empty-ico">⚠</span><h1>暂时无法打开工作台</h1><p>${esc(error.message)}</p><button class="btn btn-primary" data-action="retry-load">重新连接</button></section>`;
+  } finally {
+    connecting = false;
+    const retry = document.querySelector('[data-action="retry-load"]');
+    if (retry) { retry.disabled = false; retry.textContent = '重新连接'; }
+    document.body.classList.remove('boot');
+  }
+}
+
+function bindLabels() {
+  document.querySelectorAll('.field').forEach((field) => {
+    const label = field.querySelector('label');
+    const input = field.querySelector('input[id],select[id],textarea[id]');
+    if (label && input) label.htmlFor = input.id;
+  });
+}
+new MutationObserver(bindLabels).observe(document.getElementById('main'), { childList: true, subtree: true });
+new MutationObserver(bindLabels).observe(document.getElementById('modal-root'), { childList: true, subtree: true });
+
+if (window.desktop) {
+  document.getElementById('desktopTools').hidden = false;
+  window.desktop.info().then((info) => {
+    document.getElementById('desktopVersion').textContent = `Windows 桌面版 · v${info.version}`;
+  }).catch(() => {});
+}
+document.addEventListener('keydown', (event) => {
+  if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'r') {
+    event.preventDefault();
+    connect();
+  }
+});
+connect();
