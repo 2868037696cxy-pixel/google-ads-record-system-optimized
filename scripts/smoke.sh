@@ -3,14 +3,28 @@
 # 用法：bash scripts/smoke.sh
 set -euo pipefail
 
+wait_for_health() {
+  local port="$1" log="$2"
+  for _ in $(seq 1 15); do
+    local code
+    code=$(curl -s -o /dev/null --max-time 5 -w "%{http_code}" "http://localhost:$port/api/health" 2>/dev/null) || code="000"
+    if [[ "$code" != "000" ]]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "❌ 服务在端口 $port 上启动失败（可能端口被占用），查看 $log"
+  exit 1
+}
+
 PORT="${PORT:-3210}"
 DB="$(mktemp -d)/smoke.sqlite"
 export PORT DB_PATH="$DB"
 
 node server.js > /tmp/ads-smoke.log 2>&1 &
 SRV=$!
-trap 'kill $SRV 2>/dev/null' EXIT
-sleep 3
+trap 'kill $SRV ${SRV2:-} 2>/dev/null' EXIT
+wait_for_health "$PORT" /tmp/ads-smoke.log
 
 pass=0; fail=0
 check() { # $1 描述 $2 curl 参数...
@@ -42,7 +56,8 @@ check "统计接口" "$BASE/api/stats"
 check "备份列表" "$BASE/api/backups"
 curl -sf -X POST "$BASE/api/backups" > /dev/null && echo "✅ 手动备份" && pass=$((pass+1)) || { echo "❌ 手动备份"; fail=$((fail+1)); }
 BID=$(curl -s "$BASE/api/backups" | python3 -c "import json,sys; print(json.load(sys.stdin)[0]['id'])")
-curl -sf -X POST "$BASE/api/backups/$BID/restore" > /dev/null && echo "✅ 备份恢复" && pass=$((pass+1)) || { echo "❌ 备份恢复"; fail=$((fail+1)); }
+RREV=$(curl -s "$BASE/api/ads" | python3 -c "import json,sys; print(json.load(sys.stdin)['rev'])")
+curl -sf -X POST "$BASE/api/backups/$BID/restore" -H 'Content-Type: application/json' -d "{\"rev\":$RREV}" > /dev/null && echo "✅ 备份恢复" && pass=$((pass+1)) || { echo "❌ 备份恢复"; fail=$((fail+1)); }
 check "选项新增" -X POST "$BASE/api/options" -H 'Content-Type: application/json' -d '{"kind":"product","value":"冒烟测试产品"}'
 curl -sf -X DELETE "$BASE/api/options/product/%E5%86%92%E7%83%9F%E6%B5%8B%E8%AF%95%E4%BA%A7%E5%93%81" > /dev/null \
   && echo "✅ 选项删除" && pass=$((pass+1)) || { echo "❌ 选项删除"; fail=$((fail+1)); }
@@ -50,7 +65,7 @@ curl -sf -X DELETE "$BASE/api/options/product/%E5%86%92%E7%83%9F%E6%B5%8B%E8%AF%
 # 访问密码
 APP_PASSWORD=secret123 PORT=$((PORT+1)) DB_PATH="$(mktemp -d)/auth.sqlite" node server.js > /tmp/ads-smoke-auth.log 2>&1 &
 SRV2=$!
-sleep 3
+wait_for_health "$((PORT+1))" /tmp/ads-smoke-auth.log
 ABASE="http://localhost:$((PORT+1))"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$ABASE/api/ads")
 [ "$CODE" = "401" ] && echo "✅ 未登录被拒绝（401）" && pass=$((pass+1)) || { echo "❌ 401 鉴权（got $CODE）"; fail=$((fail+1)); }
