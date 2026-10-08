@@ -38,16 +38,7 @@
     'W55水分', '激光水平仪', '光伏检测仪', '手持电锯', '挖机水平仪'
   ];
 
-  const PMS = [
-    { product: '索尼助听器', markets: ['奥地利', '匈牙利', '罗马尼亚', '保加利亚', '波兰'], hot: ['波兰'] },
-    { product: '呼吸机', markets: ['波兰', '德国', '保加利亚', '斯洛伐克'], hot: ['德国'] },
-    { product: '紧索套件', markets: ['保加利亚', '斯洛伐克', '德国', '意大利'], hot: ['斯洛伐克', '意大利'] },
-    { product: '汽车读卡器', markets: ['斯洛伐克', '意大利', '波兰', '葡萄牙'], hot: ['葡萄牙'] },
-    { product: '卡车导航', markets: ['罗马尼亚', '德国', '意大利', '西班牙', '保加利亚'], hot: ['保加利亚'] },
-    { product: '自行车码表', markets: ['西班牙', '葡萄牙', '意大利'], hot: ['西班牙'] },
-    { product: '血糖仪', markets: ['德国', '奥地利', '西班牙', '保加利亚', '波兰', '意大利'], hot: ['西班牙', '保加利亚', '意大利'] },
-    { product: '激光水平仪', markets: ['波兰', '罗马尼亚', '西班牙', '德国'], hot: ['波兰', '罗马尼亚', '西班牙'] }
-  ];
+  // P2-6: PMS 硬编码已删除，市场建议改为基于真实数据统计（marketHints）
 
   const BADGE_CLASS = {
     '暂停': 'pause',
@@ -112,17 +103,54 @@
     "'": '&#39;'
   }[m]));
 
-  const today = () => new Date().toISOString().slice(0, 10);
+  const localDate = (d = new Date()) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  const today = () => localDate();
   const uid = (p) => `${p}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const validDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(new Date(`${v}T00:00:00`).getTime());
+  const validDate = (v) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+    if (!m) return false;
+    const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+    if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+    const dt = new Date(y, mo - 1, d);
+    return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
+  };
+
+  // DH-6/DH-18: 欧洲/美式数字自适应解析（最后分隔符为小数点）
+  const parseNum = (v) => {
+    let s = String(v ?? '').trim().replace(/[，\s￥¥$€£]/g, '');
+    if (!s) return NaN;
+    const lastComma = s.lastIndexOf(',');
+    const lastDot = s.lastIndexOf('.');
+    if (lastComma > lastDot) {
+      const afterComma = s.slice(lastComma + 1);
+      if (lastDot === -1 && /^\d{3}$/.test(afterComma)) {
+        s = s.replace(/,/g, '');
+      } else {
+        s = s.replace(/\./g, '').replace(',', '.');
+      }
+    } else {
+      s = s.replace(/,/g, '');
+    }
+    const n = Number(s);
+    return Number.isFinite(n) ? n : NaN;
+  };
 
   const toNum = (v) => {
-    const n = Number(String(v ?? 0).replace(',', '.'));
+    const n = parseNum(v);
     return Number.isFinite(n) ? n : 0;
   };
 
-  const money = (v) => Math.max(0, toNum(v));
-  const intNum = (v) => Math.max(0, Math.floor(money(v)));
+  const money = (v) => parseNum(v);
+
+  const intNum = (v) => {
+    const n = money(v);
+    return Number.isFinite(n) ? Math.floor(n) : NaN;
+  };
 
   const fmt = (v) => toNum(v).toLocaleString('zh-CN', {
     minimumFractionDigits: 2,
@@ -130,25 +158,6 @@
   });
 
   const fmtI = (v) => toNum(v).toLocaleString('zh-CN');
-
-  const debounce = (fn, delay) => {
-    let timer = null;
-    return (...args) => {
-      clearTimeout(timer);
-      timer = setTimeout(() => fn(...args), delay);
-    };
-  };
-
-  const throttle = (fn, limit) => {
-    let inThrottle = false;
-    return (...args) => {
-      if (!inThrottle) {
-        fn(...args);
-        inThrottle = true;
-        setTimeout(() => inThrottle = false, limit);
-      }
-    };
-  };
 
   // ============================================
   // 数据规范化
@@ -186,11 +195,18 @@
     if (!ad.product) errors.push({ field: 'product', message: '产品不能为空' });
     if (!ad.market) errors.push({ field: 'market', message: '市场不能为空' });
     if (!validDate(ad.createdAt)) errors.push({ field: 'createdAt', message: '创建日期无效' });
-    if (ad.budget < 0) errors.push({ field: 'budget', message: '预算不能为负数' });
+
+    if (!Number.isFinite(ad.budget)) {
+      errors.push({ field: 'budget', message: '预算必须是有效数字' });
+    } else if (ad.budget < 0) {
+      errors.push({ field: 'budget', message: '预算不能为负数' });
+    }
 
     for (const d of ad.daily) {
       if (!validDate(d.date)) errors.push({ field: 'daily.date', message: '每日日期无效' });
-      if (d.spend < 0 || d.orders < 0 || d.revenue < 0) {
+      if (!Number.isFinite(d.spend) || !Number.isFinite(d.orders) || !Number.isFinite(d.revenue)) {
+        errors.push({ field: 'daily.data', message: '每日数据必须是有效数字' });
+      } else if (d.spend < 0 || d.orders < 0 || d.revenue < 0) {
         errors.push({ field: 'daily.data', message: '每日数据不能为负数' });
       }
     }
@@ -236,7 +252,7 @@
       : (window.ADS_API_BASE || '') + path;
 
     const headers = {
-      'Content-Type': 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {})
     };
     if (State.authToken) headers['x-app-token'] = State.authToken;
@@ -310,57 +326,69 @@
   // Toast 通知系统
   // ============================================
   const toast = (function() {
-    let currentTimer = null;
+  const MAX = 3;
+  const DISPLAY_MS = 3200;
+  const FADE_MS = 300;
 
-    return function(message, type = '') {
-      const el = $('#toast');
-      if (!el) return;
+  return function(message, type = '') {
+    const container = $('#toast');
+    if (!container || !message) return;
 
-      // 清除之前的动画
-      el.classList.remove('show', 'success', 'warn', 'error');
+    const item = document.createElement('div');
+    item.className = 'toast-item' + (type ? ' ' + type : '');
+    item.textContent = message;
 
-      // 设置新内容
-      el.textContent = message;
-      el.className = `toast ${type}`;
+    container.appendChild(item);
 
-      // 强制重排以触发动画
-      void el.offsetWidth;
+    while (container.children.length > MAX) {
+      const oldest = container.firstElementChild;
+      if (oldest) {
+        const t = oldest._toastTimers;
+        if (t) {
+          clearTimeout(t.out);
+          clearTimeout(t.remove);
+        }
+        oldest.remove();
+      }
+    }
 
-      // 显示 toast
-      requestAnimationFrame(() => {
-        el.classList.add('show');
-      });
+    void item.offsetWidth;
+    requestAnimationFrame(() => item.classList.add('show'));
 
-      // 自动隐藏
-      clearTimeout(currentTimer);
-      currentTimer = setTimeout(() => {
-        el.classList.remove('show');
-      }, 3000);
-    };
-  })();
+    const outTimer = setTimeout(() => {
+      item.classList.add('out');
+    }, DISPLAY_MS);
+
+    const removeTimer = setTimeout(() => {
+      if (item.parentNode) item.remove();
+    }, DISPLAY_MS + FADE_MS);
+
+    item._toastTimers = { out: outTimer, remove: removeTimer };
+  };
+})();
 
   // ============================================
   // 状态管理函数
   // ============================================
   function pushUndo() {
-    State.undoStack.push(JSON.stringify(State.ads));
-    if (State.undoStack.length > CONFIG.UNDO_STACK_SIZE) {
+    const snap = JSON.stringify(State.ads);
+    State.undoStack.push(snap);
+    // DH-13: 大快照降级——单份超 5MB 时只保留最近 5 份
+    if (snap.length > 5 * 1024 * 1024) {
+      while (State.undoStack.length > 5) State.undoStack.shift();
+    } else if (State.undoStack.length > CONFIG.UNDO_STACK_SIZE) {
       State.undoStack.shift();
     }
     State.redoStack.length = 0;
   }
 
   function markDirty(skipUndo = false) {
-    if (!skipUndo) {
-      State.dirty = true;
-    }
-
-    updateStats(State.view === 'market' ? filteredAds() : State.ads);
-
-    // 延迟保存
-    clearTimeout(State.saveTimer);
-    State.saveTimer = setTimeout(() => saveNow(false), CONFIG.AUTO_SAVE_DELAY);
-  }
+  if (!skipUndo) pushUndo();
+  State.dirty = true;
+  updateStats(State.view === 'market' ? filteredAds() : State.ads);
+  clearTimeout(State.saveTimer);
+  State.saveTimer = setTimeout(() => saveNow(false), CONFIG.AUTO_SAVE_DELAY);
+}
 
   // ============================================
   // 服务器交互
@@ -414,61 +442,78 @@
   }
 
   async function saveNow(manual = false) {
-    // 验证数据
-    const errors = State.ads.flatMap((ad) =>
-      validateAd(ad).map((msg) => `#${ad.no || ad.id}: ${msg.message}`)
-    );
-
-    if (errors.length) {
-      toast(errors[0], 'warn');
-      return;
+  if (State.saving) {
+    if (manual) {
+      toast('正在保存中，请稍候', 'warn');
     }
+    return null;
+  }
 
+  // 验证数据
+  const errors = State.ads.flatMap((ad) =>
+    validateAd(ad).map((msg) => `#${ad.no || ad.id}: ${msg.message}`)
+  );
+
+  if (errors.length) {
+    toast(errors[0], 'warn');
+    return null;
+  }
+
+  let conflicted = false;
+  State.saving = true;
+
+  try {
+    setLoading(true, '保存到服务器数据库...');
+
+    const result = await api('/api/ads', {
+      method: 'PUT',
+      body: JSON.stringify(pack('save', State.ads)),
+      signal: AbortSignal.timeout(CONFIG.API_TIMEOUT)
+    });
+
+    State.dirty = false;
+    if (typeof result.rev === 'number') State.rev = result.rev;
+
+    // 更新健康状态
     try {
-      setLoading(true, '保存到服务器数据库...');
-
-      const result = await api('/api/ads', {
-        method: 'PUT',
-        body: JSON.stringify(pack('save', State.ads)),
+      State.serverHealth = await api('/api/health', {
         signal: AbortSignal.timeout(CONFIG.API_TIMEOUT)
       });
+    } catch (e) {
+      // 忽略
+    }
 
-      State.dirty = false;
-      if (typeof result.rev === 'number') State.rev = result.rev;
+    updateDbStatus(
+      '服务端 SQLite 已连接',
+      `已保存 ${result.count ?? State.ads.length} 条 · ${new Date().toLocaleTimeString('zh-CN')}`,
+      'ok'
+    );
 
-      // 更新健康状态
-      try {
-        State.serverHealth = await api('/api/health', {
-          signal: AbortSignal.timeout(CONFIG.API_TIMEOUT)
-        });
-      } catch (e) {
-        // 忽略
-      }
+    if (manual) {
+      toast('已保存到服务端 SQLite 数据库', 'success');
+    }
 
-      updateDbStatus(
-        '服务端 SQLite 已连接',
-        `已保存 ${result.count ?? State.ads.length} 条 · ${new Date().toLocaleTimeString('zh-CN')}`,
-        'ok'
-      );
+    updateStats(State.view === 'market' ? filteredAds() : State.ads);
+    return result;
 
-      if (manual) {
-        toast('已保存到服务端 SQLite 数据库', 'success');
-      }
-
-      updateStats(State.view === 'market' ? filteredAds() : State.ads);
-
-    } catch (err) {
-      console.error('[Save Error]', err);
-      if (err.conflict) {
-        conflictBox(err.serverRev);
-        return;
-      }
-      updateDbStatus('保存失败', '服务端数据库不可写', 'warn');
-      toast(`保存失败：${err.message}`, 'warn');
-    } finally {
-      setLoading(false);
+  } catch (err) {
+    console.error('[Save Error]', err);
+    if (err.conflict) {
+      conflicted = true;
+      conflictBox(err.serverRev);
+      return null;
+    }
+    updateDbStatus('保存失败', '服务端数据库不可写', 'warn');
+    toast(`保存失败：${err.message}`, 'warn');
+    return null;
+  } finally {
+    State.saving = false;
+    setLoading(false);
+    if (State.dirty && !conflicted) {
+      saveNow(false);
     }
   }
+}
 
   // ---- 保存冲突：服务端版本已变化（专用双按钮弹窗）----
   function conflictBox(serverRev) {
@@ -516,15 +561,48 @@
         ? `${(h.dbSizeBytes / 1024).toFixed(1)} KB`
         : '未知';
 
-      alert(
-        `诊断通过\n\n` +
-        `存储方式：服务端 SQLite\n` +
-        `数据库文件：${h.dbPath}\n` +
-        `数据库大小：${dbSize}\n` +
-        `广告数：${h.adsCount}\n` +
-        `每日记录数：${h.dailyCount}\n\n` +
-        `浏览器只负责显示页面，清空浏览器缓存不会删除服务器数据库。`
-      );
+      const diagBox = document.createElement('div');
+      diagBox.id = 'diagBox';
+      diagBox.className = 'overlay open';
+      diagBox.innerHTML = `
+        <div class="dialog">
+          <h3>系统诊断</h3>
+          <div class="kv"><span>存储方式</span><b>服务端 SQLite</b></div>
+          <div class="kv"><span>数据库文件</span><b>${esc(h.dbPath || '未知')}</b></div>
+          <div class="kv"><span>数据库大小</span><b>${dbSize}</b></div>
+          <div class="kv"><span>广告数</span><b>${h.adsCount}</b></div>
+          <div class="kv"><span>每日记录数</span><b>${h.dailyCount}</b></div>
+          <div class="kv"><span>数据版本</span><b>v${State.rev}</b></div>
+          <div class="kv"><span>鉴权状态</span><b>${State.serverHealth?.authEnabled ? '已启用' : '未启用'}</b></div>
+          <p class="hint" style="margin-top:8px">浏览器只负责显示页面，清空浏览器缓存不会删除服务器数据库。</p>
+          <div class="dialog-btns">
+            <button class="btn small" id="diagCopy">复制信息</button>
+            <button class="btn small" id="diagClose">关闭</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(diagBox);
+
+      $('#diagCopy').addEventListener('click', async () => {
+        const copyText =
+          `存储方式：服务端 SQLite\n` +
+          `数据库文件：${h.dbPath || '未知'}\n` +
+          `数据库大小：${dbSize}\n` +
+          `广告数：${h.adsCount}\n` +
+          `每日记录数：${h.dailyCount}\n` +
+          `数据版本：v${State.rev}\n` +
+          `鉴权状态：${State.serverHealth?.authEnabled ? '已启用' : '未启用'}`;
+        try {
+          await navigator.clipboard.writeText(copyText);
+          toast('已复制诊断信息', 'success');
+        } catch {
+          toast('复制失败', 'warn');
+        }
+      });
+
+      $('#diagClose').addEventListener('click', () => {
+        $('#diagBox')?.remove();
+      });
 
       updateDbStatus(
         '服务端 SQLite 正常',
@@ -533,7 +611,25 @@
       );
 
     } catch (err) {
-      alert(`诊断失败：${err.message}\n请确认已经运行 npm start`);
+      const diagBox = document.createElement('div');
+      diagBox.id = 'diagBox';
+      diagBox.className = 'overlay open';
+      diagBox.innerHTML = `
+        <div class="dialog">
+          <h3>系统诊断</h3>
+          <p>诊断失败：${esc(err.message)}</p>
+          <p class="hint">请确认已经运行 npm start</p>
+          <div class="dialog-btns">
+            <button class="btn small" id="diagClose">关闭</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(diagBox);
+
+      $('#diagClose').addEventListener('click', () => {
+        $('#diagBox')?.remove();
+      });
+
       updateDbStatus('服务端数据库未连接', '请先运行 npm start', 'warn');
     }
   }
@@ -542,7 +638,6 @@
     try {
       const r = await api('/api/backups', {
         method: 'POST',
-        body: '{}',
         signal: AbortSignal.timeout(CONFIG.API_TIMEOUT)
       });
       toast(`已创建服务端备份 #${r.backupId}`, 'success');
@@ -580,61 +675,79 @@
       const c = calc(ad);
       rows.push([
         ad.no, ad.product, ad.market, ad.status, ad.budget, ad.createdAt,
-        fmt(c.spend), fmtI(c.orders), fmt(c.revenue), fmt(c.profit),
-        c.roi == null ? '' : fmt(c.roi),
-        c.margin == null ? '' : fmt(c.margin),
+        c.spend.toFixed(2), c.orders, c.revenue.toFixed(2), c.profit.toFixed(2),
+        c.roi == null ? '' : c.roi.toFixed(2),
+        c.margin == null ? '' : c.margin.toFixed(2),
         ad.note
       ]);
     });
 
+    rows.push(['##daily']);
+    rows.push(['广告编号', '日期', '消耗', '单量', '收入', '备注']);
+
+    State.ads.forEach((ad) => {
+      (ad.daily || []).forEach((d) => {
+        rows.push([
+          ad.no,
+          d.date,
+          Number(d.spend).toFixed(2),
+          d.orders,
+          Number(d.revenue).toFixed(2),
+          d.note
+        ]);
+      });
+    });
+
+    // DH-2: CSV 公式注入防护（= + - @ 开头加单引号前缀，Excel 视为纯文本）
+    const csvSafe = (v) => {
+      const s = String(v ?? '');
+      return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+    };
+
     const csv = '\ufeff' + rows.map((r) =>
-      r.map((x) => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')
+      r.map((x) => `"${csvSafe(x).replace(/"/g, '""')}"`).join(',')
     ).join('\n');
 
     download(`ads_table_${today()}.csv`, csv, 'text/csv;charset=utf-8');
     toast('已导出 CSV 表格', 'success');
   }
 
-  function exportExcel() {
-    const rows = [['编号', '产品', '市场', '状态', '预算', '创建日期',
-                   '总消耗', '总单量', '收入', '利润', 'ROI%', '毛利率%', '备注']];
+  async function exportExcel() {
+    try {
+      const base = window.ADS_API_BASE || '';
+      const headers = {};
+      if (State.authToken) {
+        headers['x-app-token'] = State.authToken;
+      }
 
-    State.ads.forEach((ad) => {
-      const c = calc(ad);
-      rows.push([
-        ad.no, ad.product, ad.market, ad.status, ad.budget, ad.createdAt,
-        fmt(c.spend), fmtI(c.orders), fmt(c.revenue), fmt(c.profit),
-        c.roi == null ? '' : fmt(c.roi),
-        c.margin == null ? '' : fmt(c.margin),
-        ad.note
-      ]);
-    });
+      const res = await fetch(`${base}/api/export/xlsx`, {
+        method: 'GET',
+        headers
+      });
 
-    const html = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>广告数据报表</title>
-<style>
-body { font-family: Arial, 'Microsoft YaHei', sans-serif; padding: 20px; }
-table { width: 100%; border-collapse: collapse; }
-td, th { border: 1px solid #ccc; padding: 8px; }
-th { background: #f5f5f5; font-weight: bold; }
-tr:nth-child(even) { background: #fafafa; }
-</style>
-</head>
-<body>
-<h1>广告数据报表</h1>
-<p>导出时间：${new Date().toLocaleString('zh-CN')}</p>
-<p>共 ${State.ads.length} 条记录</p>
-<table>
-${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v)}</th>`).join('')}</tr>`).join('')}
-</table>
-</body>
-</html>`;
+      if (!res.ok) {
+        let msg = res.statusText || `HTTP ${res.status}`;
+        try {
+          const data = await res.json();
+          if (data && data.message) msg = data.message;
+        } catch (e) {}
+        throw new Error(msg);
+      }
 
-    download(`ads_excel_${today()}.xls`, html, 'application/vnd.ms-excel;charset=utf-8');
-    toast('已导出 Excel 表格', 'success');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ads_${today()}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      toast('已导出 Excel 表格', 'success');
+    } catch (err) {
+      toast(`导出失败：${err.message || err}`, 'warning');
+    }
   }
 
   // ============================================
@@ -658,30 +771,174 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     throw new Error('无法识别导入格式');
   }
 
-  function parseCsv(text) {
-    const lines = text.replace(/<[^>]+>/g, '\t').split(/\r?\n/).filter(Boolean);
-    if (lines.length < 2) return [];
+  // ==== parseCsvRows ====
+  function parseCsvRows(text) {
+    const s = (text || '').replace(/^\ufeff/, '');
+    const rows = [];
+    let i = 0;
+    const len = s.length;
+    let row = [];
+    let field = '';
+    let quoted = false;
 
-    const split = (line) => line.split(/,|\t/).map((x) =>
-      x.replace(/^"|"$/g, '').trim()
-    );
-    const header = split(lines[0]);
-    const idx = (...names) => names.map((n) => header.indexOf(n)).find((i) => i >= 0);
+    function pushRow() {
+      row.push(field);
+      if (row.some((c) => c !== '')) rows.push(row);
+      row = [];
+      field = '';
+    }
 
-    return lines.slice(1).map((line) => {
-      const r = split(line);
-      return normalizeAd({
-        no: r[idx('编号', 'no')] || '',
-        product: r[idx('产品', 'product')] || '',
-        market: r[idx('市场', 'market')] || '',
-        status: r[idx('状态', 'status')] || '测试中',
-        budget: r[idx('预算', 'budget')] || 0,
-        createdAt: r[idx('创建日期', 'createdAt')] || today(),
-        note: r[idx('备注', 'note')] || ''
-      });
-    });
+    while (i < len) {
+      const c = s[i];
+      if (quoted) {
+        if (c === '"') {
+          if (i + 1 < len && s[i + 1] === '"') {
+            field += '"';
+            i += 2;
+          } else {
+            quoted = false;
+            i++;
+          }
+        } else {
+          field += c;
+          i++;
+        }
+      } else {
+        if (c === ',') {
+          row.push(field);
+          field = '';
+          i++;
+        } else if (c === '\r' || c === '\n') {
+          row.push(field);
+          field = '';
+          if (c === '\r' && i + 1 < len && s[i + 1] === '\n') i++;
+          i++;
+          pushRow();
+        } else if (c === '"') {
+          quoted = true;
+          i++;
+        } else {
+          field += c;
+          i++;
+        }
+      }
+    }
+
+    row.push(field);
+    if (row.some((c) => c !== '')) rows.push(row);
+    return rows;
   }
 
+  // ==== readFileTextSmart ====
+  async function readFileTextSmart(file) {
+    const buf = await file.arrayBuffer();
+    const bytes = new Uint8Array(buf);
+    let off = 0;
+    if (bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF) {
+      off = 3;
+    }
+    const slice = bytes.slice(off);
+    const utf8 = new TextDecoder('utf-8').decode(slice);
+    if (!utf8.includes('\uFFFD')) return utf8;
+    try {
+      return new TextDecoder('gbk', { fatal: true }).decode(slice);
+    } catch (e) {
+      return utf8;
+    }
+  }
+
+  // ==== parseCsv ====
+  function parseCsv(text) {
+    const rows = parseCsvRows(text);
+    let sepIdx = -1;
+    for (let i = 0; i < rows.length; i++) {
+      if (rows[i][0] && rows[i][0].trim() === '##daily') {
+        sepIdx = i;
+        break;
+      }
+    }
+
+    const hasDailySection = sepIdx >= 0;
+    const adRows = hasDailySection ? rows.slice(0, sepIdx) : rows;
+    const dailyRows = hasDailySection ? rows.slice(sepIdx + 1) : [];
+    const ads = [];
+    let skipped = 0;
+    let dailyCount = 0;
+
+    const adHeader = adRows[0] || [];
+    const col = (...names) =>
+      names.map((n) => adHeader.findIndex((h) => h.trim() === n)).find((i) => i >= 0);
+
+    for (let i = 1; i < adRows.length; i++) {
+      const r = adRows[i];
+      const no = (r[col('编号', 'no')] || '').trim();
+      const product = (r[col('产品', 'product')] || '').trim();
+      const market = (r[col('市场', 'market')] || '').trim();
+      if (!no || !product || !market) {
+        skipped++;
+        continue;
+      }
+      const createdAt = (r[col('创建日期', 'createdAt')] || '').trim();
+      if (createdAt && !validDate(createdAt)) {
+        skipped++;
+        continue;
+      }
+      const status = (r[col('状态', 'status')] || '').trim();
+      const budgetRaw = r[col('预算', 'budget')];
+      const note = (r[col('备注', 'note')] || '').trim();
+
+      const ad = normalizeAd({
+        no,
+        product,
+        market,
+        status: status || '测试中',
+        budget: budgetRaw || 0,
+        createdAt: createdAt || today(),
+        note: note || ''
+      });
+      ad.daily = [];
+      ads.push(ad);
+    }
+
+    if (hasDailySection && dailyRows.length > 0) {
+      const dHeader = dailyRows[0] || [];
+      const dCol = (...names) =>
+        names.map((n) => dHeader.findIndex((h) => h.trim() === n)).find((i) => i >= 0);
+      const adMap = new Map(ads.map((a) => [a.no, a]));
+
+      for (let i = 1; i < dailyRows.length; i++) {
+        const r = dailyRows[i];
+        const adNo = (r[dCol('广告编号', 'adNo', 'no')] || '').trim();
+        const ad = adMap.get(adNo);
+        if (!ad) {
+          skipped++;
+          continue;
+        }
+        const date = (r[dCol('日期', 'date')] || '').trim();
+        if (!date || !validDate(date)) {
+          skipped++;
+          continue;
+        }
+        const spendRaw = r[dCol('消耗', 'spend')];
+        const ordersRaw = r[dCol('单量', 'orders', 'order')];
+        const revenueRaw = r[dCol('收入', 'revenue')];
+        const note = (r[dCol('备注', 'note')] || '').trim();
+
+        ad.daily.push(normalizeDaily({
+          date,
+          spend: spendRaw || 0,
+          orders: ordersRaw || 0,
+          revenue: revenueRaw || 0,
+          note: note || ''
+        }));
+        dailyCount++;
+      }
+    }
+
+    return { ads, dailyCount, skipped, hasDailySection };
+  }
+
+  // ==== importFile ====
   function importFile() {
     const input = $('#importInput');
     if (!input) return;
@@ -690,50 +947,60 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
       const file = e.target.files[0];
       if (!file) return;
 
-      const reader = new FileReader();
-      reader.onload = async () => {
-        try {
-          const text = String(reader.result || '');
-          const incoming = /\.json$/i.test(file.name)
-            ? parseImport(JSON.parse(text))
-            : parseCsv(text);
+      // DH-10: 文件大小保护
+      const MAX_IMPORT_SIZE = 20 * 1024 * 1024;
+      if (file.size > MAX_IMPORT_SIZE) {
+        toast(`文件过大（${(file.size / 1048576).toFixed(1)}MB），超过 20MB 限制，请拆分后导入`, 'error');
+        return;
+      }
 
-          if (!incoming.length) {
-            throw new Error('没有识别到数据');
-          }
-
-          // 验证数据
-          const errors = incoming.flatMap((ad) => validateAd(ad));
-          if (errors.length) {
-            throw new Error(errors[0].message);
-          }
-
-          confirmBox(
-            '导入数据',
-            `检测到 ${incoming.length} 条记录。确认后写入服务端 SQLite。`,
-            async () => {
-              pushUndo();
-              const map = new Map(State.ads.map((a) => [a.id, a]));
-              incoming.forEach((a) => map.set(a.id, a));
-              State.ads = Array.from(map.values()).map(normalizeAd);
-              State.dirty = true;
-              renderShell();
-              await saveNow(true);
-            }
-          );
-
-        } catch (err) {
-          alert(`导入失败：${err.message}`);
-        } finally {
-          input.value = '';
+      try {
+        // xlsx 走后端真 Excel 解析（二进制，不走文本解码）
+        if (/\.xlsx?$/i.test(file.name)) {
+          const fd = new FormData();
+          fd.append('file', file);
+          const res = await fetch((window.ADS_API_BASE || '') + '/api/import/xlsx', {
+            method: 'POST',
+            headers: State.authToken ? { 'x-app-token': State.authToken } : {},
+            body: fd
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || `导入失败：HTTP ${res.status}`);
+          pushUndo();
+          await loadFromServer();
+          toast(`导入完成：${data.count} 条广告、${data.dailyCount} 条每日记录${data.skipped ? `，跳过 ${data.skipped} 行` : ''}`, 'success');
+          return;
         }
-      };
 
-      reader.readAsText(file);
+        const text = await readFileTextSmart(file);
+        let incoming;
+        let parsed;
+
+        if (/\.json$/i.test(file.name)) {
+          incoming = parseImport(JSON.parse(text));
+        } else {
+          parsed = parseCsv(text);
+          incoming = parsed.ads;
+        }
+
+        if (!incoming.length) {
+          throw new Error('没有识别到数据');
+        }
+
+        pushUndo();
+        State.ads = incoming;
+        if (parsed && Array.isArray(parsed.dailies)) {
+          State.dailies = parsed.dailies;
+        }
+        toast(`导入完成：${incoming.length} 条广告${parsed && Array.isArray(parsed.dailies) ? `、${parsed.dailies.length} 条每日记录` : ''}`, 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        input.value = '';
+      }
     };
-
-    input.click();
   }
+
 
   // ============================================
   // UI 更新函数
@@ -814,7 +1081,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
   function compareAds(a, b) {
     const ca = calc(a), cb = calc(b);
-    const get = (ad, c) => ({
+const get = (ad, c) => ({
       createdAt: ad.createdAt,
       no: ad.no,
       product: ad.product,
@@ -823,7 +1090,9 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
       spend: c.spend,
       orders: c.orders,
       cost: c.cost,
-      profit: c.profit
+      profit: c.profit,
+      roi: c.roi,
+      margin: c.margin
     })[State.sortKey] ?? '';
 
     const av = get(a, ca), bv = get(b, cb);
@@ -930,12 +1199,14 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
               <input id="dateTo" class="inp inp-sm" type="date" placeholder="结束日期">
             </div>
             <div class="row2">
-              <select id="sortSel" class="inp inp-sm">
+<select id="sortSel" class="inp inp-sm">
                 <option value="createdAt" ${State.sortKey === 'createdAt' ? 'selected' : ''}>按创建日期</option>
                 <option value="spend" ${State.sortKey === 'spend' ? 'selected' : ''}>按消耗</option>
                 <option value="orders" ${State.sortKey === 'orders' ? 'selected' : ''}>按单量</option>
                 <option value="cost" ${State.sortKey === 'cost' ? 'selected' : ''}>按成本</option>
                 <option value="profit" ${State.sortKey === 'profit' ? 'selected' : ''}>按利润</option>
+                <option value="roi" ${State.sortKey === 'roi' ? 'selected' : ''}>按 ROI</option>
+                <option value="margin" ${State.sortKey === 'margin' ? 'selected' : ''}>按毛利率</option>
                 <option value="no" ${State.sortKey === 'no' ? 'selected' : ''}>按编号</option>
               </select>
               <select id="sortDir" class="inp inp-sm">
@@ -1160,10 +1431,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
               </div>
             </div>
           </section>
-          <section class="panel">
-            <div class="ph">产品市场建议</div>
-            <div class="pb">${marketHints(ad.product)}</div>
-          </section>
+          ${(() => { const h = marketHints(ad.product); return h ? `<section class="panel"><div class="ph">产品市场建议</div><div class="pb">${h}</div></section>` : ''; })()}
         </div>
       </div>
     `;
@@ -1410,14 +1678,26 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   }
 
   function marketHints(product) {
-    const p = PMS.find((x) => x.product === product);
-    if (!p) return '<div class="hint">暂无该产品的市场建议。</div>';
-
+    let enabled = true;
+    try { enabled = localStorage.getItem('ads_market_hints') !== 'off'; } catch {}
+    if (!enabled || !product) return '';
+    const byMarket = {};
+    State.ads.forEach((ad) => {
+      if (ad.product !== product) return;
+      const m = ad.market || '未选市场';
+      const c = calc(ad);
+      if (!byMarket[m]) byMarket[m] = { profit: 0, orders: 0, count: 0 };
+      byMarket[m].profit += c.profit;
+      byMarket[m].orders += c.orders;
+      byMarket[m].count++;
+    });
+    const rows = Object.entries(byMarket).sort((a, b) => b[1].profit - a[1].profit).slice(0, 5);
+    if (!rows.length) return '';
     return `
       <div class="pm">
-        <div class="pm-name">${esc(product)}</div>
-        ${p.markets.map((m) =>
-          `<span class="mpill ${p.hot.includes(m) ? 'hot' : ''}">${esc(m)}${p.hot.includes(m) ? ' 热' : ''}</span>`
+        <div class="pm-name">${esc(product)} <span class="muted-sm">按真实利润统计</span></div>
+        ${rows.map(([m, v], i) =>
+          `<span class="mpill ${i < 2 ? 'hot' : ''}">${esc(m)} · 利润€${fmt(v.profit)} · ${fmtI(v.orders)}单${i < 2 ? ' 热' : ''}</span>`
         ).join('')}
       </div>
     `;
@@ -1541,7 +1821,14 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           </div>
         </section>
 
-        <section class="panel">
+                <section class="panel">
+          <div class="ph">显示设置</div>
+          <div class="pb stack">
+            <label class="row"><input type="checkbox" id="hintToggle" checked> 显示产品市场建议（基于真实数据统计）</label>
+          </div>
+        </section>
+
+<section class="panel">
           <div class="ph">系统信息</div>
           <div class="pb stack">
             <div class="kv"><span>数据版本</span><b>v${State.rev}</b></div>
@@ -1554,6 +1841,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     `;
 
     loadBackupList();
+    try { const ht = document.getElementById('hintToggle'); if (ht) { ht.checked = localStorage.getItem('ads_market_hints') !== 'off'; ht.addEventListener('change', (e) => { try { localStorage.setItem('ads_market_hints', e.target.checked ? 'on' : 'off'); } catch {} }); } } catch {}
     updateStats();
   }
 
@@ -1606,7 +1894,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   function restoreBackup(id) {
     confirmBox('恢复备份', `确定从备份 #${id} 恢复吗？当前数据会被替换（恢复前会自动快照当前数据，可撤销）。`, async () => {
       try {
-        const r = await api(`/api/backups/${id}/restore`, { method: 'POST' });
+        const r = await api(`/api/backups/${id}/restore`, { method: 'POST', body: JSON.stringify({ rev: State.rev }) });
         if (typeof r.rev === 'number') State.rev = r.rev;
         await loadFromServer();
         toast(`已从备份 #${id} 恢复 ${r.count} 条记录`, 'success');
@@ -1623,7 +1911,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     for (let i = offset + n - 1; i >= offset; i--) {
       const d = new Date(t);
       d.setDate(d.getDate() - i);
-      out.push(d.toISOString().slice(0, 10));
+      out.push(localDate(d));
     }
     return out;
   }
@@ -1657,6 +1945,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     if (!prev && cur) return '<span class="delta up">新</span>';
     if (!prev && !cur) return '<span class="delta na">—</span>';
     const d = ((cur - prev) / Math.abs(prev)) * 100;
+    const up = cur > prev;
     const good = invert ? !up : up;
     const cls = Math.abs(d) < 0.05 ? 'na' : (good ? 'up' : 'down');
     const arrow = Math.abs(d) < 0.05 ? '' : (up ? '▲' : '▼');
@@ -1794,7 +2083,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
         }
       }
     });
-    return alerts.slice(0, 6);
+    return alerts;
   }
 
   function animateNum(el, target, format) {
@@ -1888,11 +2177,15 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           <section class="panel">
             <div class="ph">智能预警 <span class="muted-sm">${alerts.length}</span></div>
             <div class="pb alerts">
-              ${alerts.length ? alerts.map((a) => `
+              ${alerts.length ? (() => {
+                const shown = alerts.slice(0, 6);
+                const more = alerts.length - shown.length;
+                return shown.map((a) => `
                 <div class="alert ${a.level}" data-act="openAd" data-id="${a.ad.id}">
                   <b>${esc(a.ad.no || '')} · ${esc(a.ad.product || '')}</b>
                   <span>${esc(a.text)}</span>
-                </div>`).join('')
+                </div>`).join('') + (more > 0 ? `<div class="hint">还有 ${more} 条预警，去列表查看</div>` : '');
+              })()
                 : `<div class="empty-sm">暂无预警，投放状态健康</div>`}
             </div>
           </section>
@@ -2062,48 +2355,85 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   // ============================================
   // 数据操作
   // ============================================
-  function editAd(ad, key, value) {
-    if (!ad._editing) {
-      pushUndo();
-      ad._editing = true;
-      setTimeout(() => delete ad._editing, 800);
-    }
+  function updateAdCardAndMetrics(ad, c) {
+  const cardBtn = document.querySelector('#adList [data-act="select"][data-id="' + ad.id + '"]');
+  if (!cardBtn) { renderList(); return; }
+  const card = cardBtn.closest('.card');
+  const nameEl = card.querySelector('.card-name');
+  if (nameEl) nameEl.innerHTML = `#${highlight(ad.no || '未编号')} · ${highlight(ad.product || '未命名')}`;
+  const metaEl = card.querySelector('.card-meta');
+  if (metaEl) metaEl.innerHTML = `<span>${highlight(ad.market || '未选市场')}</span><span class="badge ${BADGE_CLASS[ad.status] || 'sky'}">${esc(ad.status)}</span><span>€${fmt(c.spend)}</span><span>${fmtI(c.orders)}单</span>${c.overBudget ? '<span class="bad">成本预警</span>' : ''}`;
+  card.classList.toggle('active', ad.id === State.selectedId);
+  card.classList.toggle('warn-row', c.overBudget);
+  card.style.setProperty('--accent', ACCENT_COLORS[ad.status] || 'var(--line)');
 
-    if (key === 'budget') value = money(value);
-    ad[key] = value;
-
-    markDirty(true);
-    renderList();
+  if (State.selectedId !== ad.id) return;
+  const detail = document.getElementById('detail');
+  if (!detail) return;
+  const titleEl = detail.querySelector('.big-title');
+  if (titleEl) titleEl.innerHTML = `#${esc(ad.no || '未编号')} · ${esc(ad.product || '未命名')}`;
+  const pillsEl = detail.querySelector('.pills');
+  if (pillsEl) pillsEl.innerHTML = `<span class="pill">市场：${esc(ad.market || '-')}</span><span class="pill">状态：${esc(ad.status)}</span><span class="pill">创建：${esc(ad.createdAt)}</span>${c.overBudget ? '<span class="pill bad">成本超过预算预警</span>' : ''}`;
+  const metricBs = detail.querySelectorAll('.metrics .metric b');
+  if (metricBs.length >= 5) {
+    metricBs[0].textContent = `€${fmt(ad.budget)}`;
+    metricBs[1].textContent = `€${fmt(c.spend)}`;
+    metricBs[2].textContent = fmtI(c.orders);
+    metricBs[3].textContent = `€${fmt(c.cost)}`;
+    metricBs[4].textContent = c.roi === null ? '-' : fmt(c.roi) + '%';
+    metricBs[4].className = c.profit >= 0 ? 'good' : 'bad';
   }
+}
+
+  function editAd(ad, key, value) {
+  if (!ad._editing) {
+    pushUndo();
+    ad._editing = true;
+    setTimeout(() => delete ad._editing, 800);
+  }
+  if (key === 'budget') value = money(value);
+  ad[key] = value;
+  markDirty(true);
+  updateAdCardAndMetrics(ad, calc(ad));
+}
 
   function editDaily(ad, id, key, value) {
-    const d = ad.daily.find((x) => x.id === id);
-    if (!d) return;
-
-    if (!ad._editing) {
-      pushUndo();
-      ad._editing = true;
-      setTimeout(() => delete ad._editing, 800);
-    }
-
-    if (key === 'date' && !validDate(value)) {
-      toast('日期无效', 'warn');
-      return;
-    }
-
-    if (['spend', 'revenue'].includes(key)) {
-      value = money(value);
-    }
-
-    if (key === 'orders') {
-      value = intNum(value);
-    }
-
-    d[key] = value;
-    markDirty(true);
-    renderDetail(ad.id);
-    renderList();
+  const d = (ad.daily || []).find(x => x.id === id);
+  if (!d) return;
+  if (!ad._editing) {
+    pushUndo();
+    ad._editing = true;
+    setTimeout(() => delete ad._editing, 800);
   }
+  if (key === 'date' && !validDate(value)) {
+    toast('日期无效', 'warn');
+    return;
+  }
+
+  if (['spend', 'revenue'].includes(key)) {
+    value = money(value);
+  } else if (key === 'orders') {
+    value = intNum(value);
+  }
+  d[key] = value;
+  markDirty(true);
+
+  const active = document.activeElement;
+  const sel = active && typeof active.selectionStart === 'number' ? { start: active.selectionStart, end: active.selectionEnd, dir: active.selectionDirection } : null;
+
+  const rowInput = document.querySelector('#detail input[data-daily][data-id="' + id + '"]');
+  if (rowInput) {
+    const costTd = rowInput.closest('tr').querySelector('td.cost');
+    if (costTd) costTd.textContent = `€${fmt(toNum(d.orders) ? toNum(d.spend) / toNum(d.orders) : 0)}`;
+  }
+
+  updateAdCardAndMetrics(ad, calc(ad));
+
+  if (active && document.contains(active)) {
+    active.focus();
+    try { if (sel && active.setSelectionRange) active.setSelectionRange(sel.start, sel.end, sel.dir); } catch (e) {}
+  }
+}
 
   // 自动编号：扫描现有 AD-数字 格式，返回下一个可用编号
   function nextAdNo() {
@@ -2242,20 +2572,42 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
       return;
     }
 
-    const next = prompt(`将 ${ids.length} 条广告改为状态：\n${STATUS.join(' / ')}`, '暂停');
-    if (!STATUS.includes(next)) {
-      toast('状态无效', 'warn');
-      return;
-    }
+    const box = document.createElement('div');
+    box.id = 'statusBox';
+    box.className = 'overlay open';
+    box.innerHTML = `
+      <div class="dialog">
+        <h3>批量改状态</h3>
+        <p>将 ${ids.length} 条广告的状态改为：</p>
+        <p style="margin:8px 0"><select id="statusSel" class="inp">
+          ${[...STATUS].map(s => `<option value="${esc(s)}"${s === '暂停' ? ' selected' : ''}>${esc(s)}</option>`).join('')}
+        </select></p>
+        <div class="dialog-btns">
+          <button class="btn small" id="statusCancel">取消</button>
+          <button class="btn danger small" id="statusOk">确认修改</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(box);
 
-    pushUndo();
-    State.ads.forEach((a) => {
-      if (ids.includes(a.id)) a.status = next;
-    });
+    $('#statusCancel').onclick = () => $('#statusBox')?.remove();
+    $('#statusOk').onclick = () => {
+      const next = $('#statusSel').value;
+      if (!STATUS.has(next)) {
+        toast('状态无效', 'warn');
+        return;
+      }
 
-    State.dirty = true;
-    renderList();
-    saveNow(false);
+      pushUndo();
+      State.ads.forEach((a) => {
+        if (ids.includes(a.id)) a.status = next;
+      });
+
+      State.dirty = true;
+      renderList();
+      saveNow(false);
+      $('#statusBox')?.remove();
+    };
   }
 
   function batchDelete() {
@@ -2362,6 +2714,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
     const marketBtns = marketNavHTML();
 
     document.body.innerHTML = `
+      <input type="checkbox" id="drawerToggle" hidden>
       <div class="app">
         <aside class="sidebar" id="sidebar">
           <div class="sb-head">
@@ -2443,7 +2796,7 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
                 <span class="nav-ico">⇧</span>
                 <span class="nav-text">导入数据</span>
               </button>
-              <input id="importInput" class="hidden" type="file" accept=".json,.csv,.tsv,.xls,text/csv,application/json">
+              <input id="importInput" class="hidden" type="file" accept=".json,.csv,.xlsx,.xls,text/csv,application/json">
               <button class="nav-btn" data-act="clear">
                 <span class="nav-ico">⌧</span>
                 <span class="nav-text">清空数据</span>
@@ -2464,14 +2817,16 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
 
         <main class="main">
           <header class="top">
+            <label for="drawerToggle" class="menu-btn" aria-label="打开导航菜单">☰</label>
             <div class="crumb">
               <span id="bc1">工作台</span> / <b id="bc2">广告列表</b>
             </div>
-            <div class="top-right">
+<div class="top-right">
               <button class="palette-trigger" data-act="palette" title="命令面板 (Ctrl+K)">⌕ <kbd>⌘K</kbd></button>
               <span class="hint">Ctrl+S 保存 · Ctrl+Z 撤销 · N 新增</span>
               <span id="countTxt"></span>
               <button class="icon" data-act="theme">◐</button>
+              ${State.serverHealth?.authEnabled ? '<button class="icon" data-act="logout" title="退出登录">⏻</button>' : ''}
             </div>
           </header>
 
@@ -2507,7 +2862,8 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
         </div>
       </div>
 
-      <div id="toast" class="toast"></div>
+      <div id="toast" class="toast-wrap" role="status" aria-live="polite"></div>
+      <label for="drawerToggle" class="drawer-backdrop" aria-hidden="true"></label>
     `;
   }
 
@@ -2527,9 +2883,14 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
           $('#sidebar').classList.toggle('collapsed');
           break;
 
-        case 'theme':
-          document.documentElement.dataset.theme =
-            document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+case 'theme':
+          setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+          break;
+
+case 'logout':
+          try { sessionStorage.removeItem('ads_token'); } catch {}
+          State.authToken = '';
+          renderLoginGate();
           break;
 
         case 'nav':
@@ -2690,44 +3051,43 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
       }
     });
 
-    // 键盘快捷键
+    // 键盘快捷键（DH-8/9：输入框内不触发 N/撤销/重做）
     document.addEventListener('keydown', async (e) => {
-      // Cmd/Ctrl + K: 命令面板
+      const inField = (el) => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
+
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         togglePalette();
         return;
       }
 
-      // Ctrl/Cmd + S: 保存
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         await saveNow(true);
         return;
       }
 
-      // Ctrl/Cmd + Shift + Z 或 Ctrl/Cmd + Y: 重做
       if ((e.ctrlKey || e.metaKey) && (e.shiftKey && e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'y')) {
+        if (inField(e.target)) return;
         e.preventDefault();
         redo();
         return;
       }
 
-      // Ctrl/Cmd + Z: 撤销
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        if (inField(e.target)) return;
         e.preventDefault();
         undo();
         return;
       }
 
-      // N: 新增广告（在列表视图）
       if (!e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'n' &&
-          (State.view === 'list' || State.view === 'market')) {
+      (State.view === 'list' || State.view === 'market')) {
+        if (inField(e.target)) return;
         $('#qa')?.classList.add('open');
         $('#qNo')?.focus();
       }
 
-      // Escape: 关闭对话框
       if (e.key === 'Escape') {
         if (!$('#cmdPalette')?.hidden) { togglePalette(false); return; }
         closeConfirm();
@@ -2749,8 +3109,14 @@ ${rows.map((r, i) => `<tr>${r.map((v) => i ? `<td>${esc(v)}</td>` : `<th>${esc(v
   // 启动应用
   // ============================================
   function boot() {
+    try { const st = localStorage.getItem('ads_theme'); if (st === 'dark' || st === 'light') document.documentElement.dataset.theme = st; } catch {}
     renderAppShell();
     bindEvents();
+    // ★4 骨架屏：默认视图为 dashboard 时，先渲染 shimmer 占位，数据回来后 renderDashboard 整体替换
+    if (State.view === 'dashboard') {
+      const c = document.getElementById('content');
+      if (c) c.innerHTML = dashSkeletonHTML();
+    }
     loadFromServer();
   }
 
