@@ -67,8 +67,8 @@ async function copyText(t) {
   toast('已复制到剪贴板');
 }
 
-function download(filename, text) {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+function download(filename, text, type = 'text/plain;charset=utf-8') {
+  const blob = new Blob([text], { type });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = filename;
@@ -132,6 +132,9 @@ const state = {
   picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
   form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
   loaded: false,
+  creating: false,
+  recordPage: 1,
+  poolPage: 1,
 };
 
 const MASK = '••••••';
@@ -144,24 +147,42 @@ function sens(value) {
 
 /* ============ 弹窗 ============ */
 
+let modalOpener = null;
+
 function openModal(html, { large = false } = {}) {
   closeModal();
+  modalOpener = document.activeElement;
   const root = document.getElementById('modal-root');
   root.innerHTML = `<div class="modal-overlay" data-action="modal-overlay">
-    <div class="modal ${large ? 'modal-lg' : ''}" role="dialog" aria-modal="true">
+    <div class="modal ${large ? 'modal-lg' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
       ${html}
     </div>
   </div>`;
+  const title = root.querySelector('h3');
+  if (title) title.id = 'modal-title';
+  const focus = root.querySelector('input:not([type=file]):not([type=checkbox]), textarea, select') || root.querySelector('button') || root.querySelector('.modal');
+  focus.focus();
   document.addEventListener('keydown', escListener);
 }
 
 function escListener(e) {
   if (e.key === 'Escape') closeModal();
+  if (e.key === 'Tab') {
+    const modal = document.querySelector('#modal-root .modal');
+    if (!modal) return;
+    const inputs = [...modal.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((input) => !input.disabled && input.getClientRects().length);
+    if (!inputs.length) { e.preventDefault(); modal.focus(); return; }
+    const first = inputs[0]; const last = inputs.at(-1);
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === modal)) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal)) { e.preventDefault(); first.focus(); }
+  }
 }
 
 function closeModal() {
   document.getElementById('modal-root').innerHTML = '';
   document.removeEventListener('keydown', escListener);
+  if (modalOpener?.isConnected) modalOpener.focus();
+  modalOpener = null;
 }
 
 function confirmModal(title, text, onOk, okLabel = '确认删除') {
@@ -173,12 +194,16 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
       <button class="btn btn-ghost" data-action="close-modal">取消</button>
       <button class="btn btn-danger" id="confirm-ok-btn">${esc(okLabel)}</button>
     </div>`);
-  document.getElementById('confirm-ok-btn').onclick = async () => {
+  const confirm = document.getElementById('confirm-ok-btn');
+  confirm.onclick = async () => {
+    if (confirm.disabled) return;
+    confirm.disabled = true;
     try {
       await onOk();
-      closeModal();
+      if (confirm.isConnected) closeModal();
     } catch (err) {
       toast(err.message || '操作失败', 'error');
+      confirm.disabled = false;
     }
   };
 }
@@ -204,7 +229,7 @@ function renderNav() {
 
 function render() {
   renderNav();
-  if (state.page === 'workbench') renderWorkbench();
+  if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
 }
 
@@ -215,6 +240,13 @@ async function refresh() {
   }
   state.pools = data.pools;
   state.records = data.records;
+  const recordIds = new Set(data.records.map((record) => record.id));
+  state.sel = new Set([...state.sel].filter((id) => recordIds.has(id)));
+  for (const kind of Object.keys(state.picked)) {
+    const available = new Set(data.pools[kind].filter((item) => item.status === '未使用').map((item) => item.id));
+    state.picked[kind] = new Set([...state.picked[kind]].filter((id) => available.has(id)));
+  }
+  if (state.form.proxy_id && !data.pools.proxies.some((proxy) => String(proxy.id) === String(state.form.proxy_id) && proxy.status !== '停用')) state.form.proxy_id = '';
   state.next = data.next;
   state.loaded = true;
   if (!state.form.start_seq) state.form.start_seq = data.next.seq;
@@ -252,7 +284,7 @@ function renderWorkbench() {
     .concat(
       state.pools.proxies
         .map(
-          (p) => `<option value="${p.id}" ${String(f.proxy_id) === String(p.id) ? 'selected' : ''}>${esc(
+          (p) => `<option value="${p.id}" ${String(f.proxy_id) === String(p.id) ? 'selected' : ''} ${p.status === '停用' ? 'disabled' : ''}>${esc(
             `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（${p.status}）`
           )}</option>`
         )
@@ -392,7 +424,7 @@ function renderWorkbench() {
             ${count > avail.emails ? `<span class="warn">⚠ 邮箱仅剩 ${avail.emails} 条</span>` : ''}
             ${count > avail.cards ? `<span class="warn">⚠ 信用卡仅剩 ${avail.cards} 张</span>` : ''}
           </span>
-          <button class="btn btn-primary" data-action="create" ${count === 0 ? 'disabled' : ''}>立即创建 ${count > 0 ? count + ' 条' : ''}</button>
+          <button class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `立即创建 ${count > 0 ? count + ' 条' : ''}`}</button>
         </div>
       </div>
     </div>
@@ -427,6 +459,21 @@ function getFilteredRecords() {
   });
 }
 
+function paginate(items, kind) {
+  const key = kind === 'records' ? 'recordPage' : 'poolPage';
+  const pages = Math.max(1, Math.ceil(items.length / 50));
+  state[key] = Math.max(1, Math.min(state[key], pages));
+  return { items: items.slice((state[key] - 1) * 50, state[key] * 50), total: items.length, page: state[key], pages };
+}
+
+function renderPagination(kind, page) {
+  if (page.total <= 50) return '';
+  return `<div class="table-pagination"><span role="status">共 ${page.total} 条 · 第 ${page.page} / ${page.pages} 页 · 每页 50 条</span><div>
+    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-page="${page.page - 1}" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
+    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-page="${page.page + 1}" ${page.page >= page.pages ? 'disabled' : ''}>下一页</button>
+  </div></div>`;
+}
+
 function renderRecordsTable(list) {
   if (!state.records.length) {
     return `<div class="empty">
@@ -438,10 +485,12 @@ function renderRecordsTable(list) {
   if (!list.length) {
     return `<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的记录</h3><p>换个关键词或筛选条件试试</p></div>`;
   }
+  const page = paginate(list, 'records');
+  list = page.items;
   const allChecked = list.length && list.every((r) => state.sel.has(r.id));
   return `<div class="table-wrap"><table>
     <thead><tr>
-      <th style="width:34px"><input type="checkbox" data-action="sel-all" ${allChecked ? 'checked' : ''}></th>
+      <th style="width:34px"><input type="checkbox" data-action="sel-all" aria-label="全选当前页" ${allChecked ? 'checked' : ''}></th>
       <th>指纹名称</th><th>名称</th><th>域名</th><th>谷歌邮箱</th><th>邮箱密码</th><th>2FA</th>
       <th>代理</th><th>信用卡</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
       <th>状态</th><th style="width:110px">操作</th>
@@ -463,7 +512,7 @@ function renderRecordsTable(list) {
             <td class="mono copyable" data-copy="${esc(r.email_user)}" title="点击复制">${esc(r.email_user) || '<span class="faint">—</span>'}</td>
             <td class="mono copyable" data-copy="${esc(r.email_pass)}" title="点击复制">${sens(r.email_pass)}</td>
             <td class="mono copyable" data-copy="${esc(r.email_fakey)}" title="点击复制">${sens(r.email_fakey)}</td>
-            <td class="mono copyable" data-copy="${esc(r.proxy_host ? `${r.proxy_host}:${r.proxy_port}:${r.proxy_user}:${r.proxy_pass}` : '')}" title="点击复制完整代理">${proxy}</td>
+            <td class="mono copyable" data-sensitive="${Boolean(r.proxy_user || r.proxy_pass)}" data-copy="${esc(r.proxy_host ? `${r.proxy_host}:${r.proxy_port}:${r.proxy_user}:${r.proxy_pass}` : '')}" title="点击复制完整代理">${proxy}</td>
             <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_cvv}` : '')}" title="点击复制完整卡号">${card}</td>
             <td class="dim">${esc(r.ip_reg_time) || '<span class="faint">—</span>'}</td>
             <td>${r.license_id ? `<button class="license-link" data-action="view-license" data-id="${r.license_id}">${esc(r.license_name)}</button>` : '<span class="faint">—</span>'}</td>
@@ -481,12 +530,15 @@ function renderRecordsTable(list) {
         })
         .join('')}
     </tbody>
-  </table></div>`;
+  </table></div>${renderPagination('records', page)}`;
 }
 
 async function doCreate() {
+  if (state.creating) return;
   const domains = state.form.domains.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   if (!domains.length) return toast('请至少填写一个域名', 'warn');
+  if (domains.length > 500) return toast('单次最多创建 500 条记录，请分批创建', 'warn');
+  state.creating = true;
   const btn = document.querySelector('[data-action="create"]');
   const oldText = btn?.textContent;
   if (btn) { btn.disabled = true; btn.classList.add('btn-loading'); btn.textContent = '创建中'; }
@@ -517,6 +569,9 @@ async function doCreate() {
   } catch (e) {
     toast(e.message, 'error');
     if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
+  } finally {
+    state.creating = false;
+    updateCreatePreview();
   }
 }
 
@@ -598,147 +653,105 @@ host port user pass`,
   cards: `4367970152619097 06/29 596
 4367970159932238 06/29 364
 4367970169748392 06/29 786`,
-  licenses: `支持两种方式：
-① 纯文本（一行一个公司名）：
-CC TEKNIK ApS
-Capital Service ApS
-
-② 带标签的结构化文本（PDF 自动提取后即为此格式）：
-资料类型：组织
-组织名称：TOLDERLUNDS AUTO ApS
-法定名称：TOLDERLUNDS AUTO ApS
-街道地址：Pedersholmparken 1
-邮编：3600
-市/区：Frederikssund`,
+  licenses: `一个 PDF 对应一条营业执照记录。
+选择 PDF 后校对公司名称、法定名称、地址、邮编和城市，再确认保存。
+未识别的字段可手动填写，原 PDF 会与该条资料一起保存。`,
 };
 
-function renderPool(kind) {
-  const conf = KINDS.find((k) => k.key === kind);
-  const tableConf = POOL_TABLE[kind];
+function getFilteredPool(kind) {
   const q = state.poolQ.trim().toLowerCase();
-  const sorted = [...state.pools[kind]].sort((a, b) => b.id - a.id);
-  const list = sorted.filter((x) => {
-    if (state.poolStatus !== '全部' && x.status !== state.poolStatus) return false;
-    if (!q) return true;
-    return Object.values(x).some((v) => String(v ?? '').toLowerCase().includes(q));
+  return [...state.pools[kind]].sort((a, b) => b.id - a.id).filter((item) => {
+    if (state.poolStatus !== '全部' && item.status !== state.poolStatus) return false;
+    return !q || Object.values(item).some((value) => String(value ?? '').toLowerCase().includes(q));
   });
-  const total = state.pools[kind].length;
-  const unused = poolCount(kind);
-  const used = poolCount(kind, '已使用');
-  const off = poolCount(kind, '停用');
-
-  const statHtml = (label, v, cls) =>
-    `<div class="stat"><div class="k"><span class="dot ${cls}"></span>${label}</div><div class="v">${v}</div></div>`;
-
-  document.getElementById('main').innerHTML = `
-    <div class="page-head">
-      <div>
-        <h1>${conf.label}</h1>
-        <p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p>
-      </div>
-      <div class="head-actions">
-        ${kind === 'emails' || kind === 'proxies' ? `<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>` : ''}
-        <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">批量导入</button>
-      </div>
-    </div>
-    <div class="stats">
-      ${statHtml('全部', total, 'bg')}
-      ${statHtml('未使用', unused, 'dot-green-ic')}
-      ${statHtml('已使用', used, 'dot-blue-ic')}
-      ${statHtml('停用', off, 'dot-red-ic')}
-    </div>
-    <div class="panel">
-      <div class="toolbar">
-        <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
-        <div class="tabs">
-          ${['全部', '未使用', '已使用', '停用'].map((s) => `<button class="tab ${state.poolStatus === s ? 'active' : ''}" data-action="pool-status" data-v="${s}">${s}</button>`).join('')}
-        </div>
-        <span class="sel-count">${list.length} 条</span>
-      </div>
-      ${
-        total === 0
-          ? `<div class="empty">
-              <div class="empty-ico">⇩</div>
-              <h3>还没有${conf.label}数据</h3>
-              <p>点击右上角「批量导入」，支持粘贴以下格式（一行一条）：</p>
-              <code>${esc(POOL_FORMAT[kind])}</code>
-            </div>`
-          : `<div class="table-wrap"><table class="pool-table">
-              <colgroup>${(tableConf.widths || []).map((w) => `<col${w ? ` style="width:${w}"` : ''}>`).join('')}</colgroup>
-              <thead><tr>${tableConf.cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
-              <tbody>
-                ${list
-                  .map((item, i) => {
-                    const cells = tableConf.row(item);
-                    const statusIdx = tableConf.cols.indexOf('状态');
-                    const rest = [...cells];
-                    let statusHtml = `<select class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
-                      ${['未使用', '已使用', '停用'].map((s) => `<option ${item.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-                    </select>`;
-                    return `<tr style="--i:${i}">${rest
-                      .slice(0, statusIdx)
-                      .map((c) => `<td>${c}</td>`)
-                      .concat([`<td>${statusHtml}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
-                      .join('')}</tr>`;
-                  })
-                  .join('')}
-              </tbody>
-            </table></div>`
-      }
-    </div>
-  `;
 }
 
-// 资源库搜索时只刷新表格，避免重建搜索框导致失焦
+function renderPoolTable(kind, list) {
+  const conf = KINDS.find((item) => item.key === kind);
+  const table = POOL_TABLE[kind];
+  if (!state.pools[kind].length) return `<div class="empty">
+    <div class="empty-ico">⇩</div><h3>还没有${conf.label}数据</h3>
+    <p>${kind === 'licenses' ? '点击右上角「导入营业执照」，上传一份 PDF 并校对资料。' : '点击右上角「批量导入」，支持粘贴以下格式（一行一条）：'}</p>
+    <code>${esc(POOL_FORMAT[kind])}</code></div>`;
+  if (!list.length) return '<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的资源</h3><p>换个关键词或筛选条件试试</p></div>';
+  const page = paginate(list, 'pools');
+  const reference = { emails: 'email_id', proxies: 'proxy_id', cards: 'card_id', licenses: 'license_id' }[kind];
+  const linkedIds = new Set(state.records.map((record) => record[reference]));
+  return `<div class="table-wrap"><table class="pool-table">
+    <colgroup>${(table.widths || []).map((width) => `<col${width ? ` style="width:${width}"` : ''}>`).join('')}</colgroup>
+    <thead><tr>${table.cols.map((column) => `<th>${column}</th>`).join('')}</tr></thead><tbody>
+    ${page.items.map((item, index) => {
+      const statusIndex = table.cols.indexOf('状态');
+      const linked = linkedIds.has(item.id);
+      const status = `<select aria-label="资源 ${item.id} 状态" class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
+        ${['未使用', '已使用', '停用'].map((value) => `<option ${item.status === value ? 'selected' : ''} ${value === '未使用' && linked ? 'disabled' : ''}>${value}</option>`).join('')}</select>`;
+      const cells = table.row(item).slice(0, statusIndex).map((cell) => `<td>${cell}</td>`);
+      cells.push(`<td>${status}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}" ${linked ? 'disabled title="请先在记录中解除关联"' : ''}>删除</button></div></td>`);
+      return `<tr style="--i:${index}">${cells.join('')}</tr>`;
+    }).join('')}</tbody></table></div>${renderPagination('pools', page)}`;
+}
+
+function renderPool(kind) {
+  const conf = KINDS.find((item) => item.key === kind);
+  const list = getFilteredPool(kind);
+  const stat = (label, count, dot) => `<div class="stat"><div class="k"><span class="dot ${dot}"></span>${label}</div><div class="v">${count}</div></div>`;
+  document.getElementById('main').innerHTML = `
+    <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p></div>
+      <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>' : ''}
+        <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
+    <div class="stats">${stat('全部', state.pools[kind].length, 'bg')}${stat('未使用', poolCount(kind), 'dot-green-ic')}${stat('已使用', poolCount(kind, '已使用'), 'dot-blue-ic')}${stat('停用', poolCount(kind, '停用'), 'dot-red-ic')}</div>
+    <div class="panel"><div class="toolbar">
+      <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
+      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}</button>`).join('')}</div>
+      <span class="sel-count">${list.length} 条</span></div>${renderPoolTable(kind, list)}</div>`;
+}
+
 function renderPoolTableInto() {
-  const kind = state.page;
-  const conf = KINDS.find((k) => k.key === kind);
-  const tableConf = POOL_TABLE[kind];
-  const q = state.poolQ.trim().toLowerCase();
-  const sorted = [...state.pools[kind]].sort((a, b) => b.id - a.id);
-  const list = sorted.filter((x) => {
-    if (state.poolStatus !== '全部' && x.status !== state.poolStatus) return false;
-    if (!q) return true;
-    return Object.values(x).some((v) => String(v ?? '').toLowerCase().includes(q));
-  });
   const panel = document.querySelector('#main .panel');
   if (!panel) return;
-  const old = panel.querySelector('.table-wrap, .empty');
-  if (old) old.remove();
-  if (state.pools[kind].length === 0) {
-    panel.insertAdjacentHTML('beforeend', `<div class="empty">
-      <div class="empty-ico">⇩</div>
-      <h3>还没有${conf.label}数据</h3>
-      <p>点击右上角「批量导入」，支持粘贴以下格式（一行一条）：</p>
-      <code>${esc(POOL_FORMAT[kind])}</code>
-    </div>`);
-  } else {
-    panel.insertAdjacentHTML('beforeend', `<div class="table-wrap"><table>
-      <thead><tr>${tableConf.cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
-      <tbody>
-        ${list
-          .map((item, i) => {
-            const cells = tableConf.row(item);
-            const statusIdx = tableConf.cols.indexOf('状态');
-            const rest = [...cells];
-            let statusHtml = `<select class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
-              ${['未使用', '已使用', '停用'].map((s) => `<option ${item.status === s ? 'selected' : ''}>${s}</option>`).join('')}
-            </select>`;
-            return `<tr style="--i:${i}">${rest
-              .slice(0, statusIdx)
-              .map((c) => `<td>${c}</td>`)
-              .concat([`<td>${statusHtml}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
-              .join('')}</tr>`;
-          })
-          .join('')}
-      </tbody>
-    </table></div>`);
-  }
-  const selCount = panel.querySelector('.sel-count');
-  if (selCount) selCount.textContent = `${list.length} 条`;
+  const list = getFilteredPool(state.page);
+  panel.querySelectorAll('.table-wrap, .empty, .table-pagination').forEach((element) => element.remove());
+  panel.insertAdjacentHTML('beforeend', renderPoolTable(state.page, list));
+  const count = panel.querySelector('.sel-count');
+  if (count) count.textContent = `${list.length} 条`;
 }
 
 /* ============ 导入弹窗 ============ */
+
+function bindImportPreview(textarea, button, resultBox, route, onResult) {
+  let revision = 0;
+  let timer;
+  let controller;
+  const parse = async () => {
+    const current = ++revision;
+    controller?.abort();
+    controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]);
+    const text = textarea.value;
+    button.disabled = true;
+    if (!text.trim()) { resultBox.textContent = '等待粘贴内容…'; return; }
+    resultBox.textContent = '正在识别最新内容…';
+    try {
+      const result = await api(route, { method: 'POST', body: { text }, signal });
+      if (current !== revision || !textarea.isConnected || textarea.value !== text) return;
+      onResult(result);
+    } catch (error) {
+      if (current === revision && textarea.isConnected && error.name !== 'AbortError') resultBox.textContent = error.message;
+    }
+  };
+  const invalidate = () => {
+    ++revision;
+    controller?.abort();
+    button.disabled = true;
+    resultBox.textContent = textarea.value.trim() ? '正在识别最新内容…' : '等待粘贴内容…';
+    clearTimeout(timer);
+  };
+  textarea.addEventListener('input', () => {
+    invalidate();
+    timer = setTimeout(parse, 350);
+  });
+  return { parse, invalidate };
+}
 
 async function openImportModal(kind) {
   if (kind === 'licenses') return openLicenseImport();
@@ -746,12 +759,6 @@ async function openImportModal(kind) {
   openModal(`
     <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
-      ${kind === 'licenses' ? `
-      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
-        <input type="file" id="pdf-file" accept=".pdf,application/pdf" style="display:none">
-        <button class="btn btn-ghost btn-sm" id="pick-pdf">📄 选择 PDF 文件</button>
-        <span class="faint" id="pdf-name" style="font-size:11px"></span>
-      </div>` : ''}
       <pre class="format-hint">${esc(POOL_FORMAT[kind])}</pre>
       <textarea id="import-text" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
       <div class="parse-result" id="parse-result">等待粘贴内容…</div>
@@ -766,86 +773,35 @@ async function openImportModal(kind) {
   const resultBox = document.getElementById('parse-result');
   const okBtn = document.getElementById('import-ok');
   let parsed = [];
-
-  // PDF 上传（仅营业执照）
-  const pdfInput = document.getElementById('pdf-file');
-  const pickPdf = document.getElementById('pick-pdf');
-  const pdfName = document.getElementById('pdf-name');
-  if (pickPdf && pdfInput) {
-    pickPdf.onclick = () => pdfInput.click();
-    pdfInput.onchange = async () => {
-      const file = pdfInput.files[0];
-      if (!file) return;
-      pdfName.textContent = file.name;
-      resultBox.innerHTML = '⏳ 正在解析 PDF…';
+  let saving = false;
+  bindImportPreview(ta, okBtn, resultBox, `/api/parse/${kind}`, (res) => {
+    parsed = res.items || [];
+    if (!parsed.length) {
+      resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
       okBtn.disabled = true;
-      try {
-        const b64 = await new Promise((resolve, reject) => {
-          const r = new FileReader();
-          r.onload = () => resolve(r.result.split(',')[1]);
-          r.onerror = reject;
-          r.readAsDataURL(file);
-        });
-        const res = await api('/api/parse/licenses-pdf', { method: 'POST', body: { pdf: b64 } });
-        if (res.error) throw new Error(res.error);
-        parsed = res.items || [];
-        if (!parsed.length) {
-          resultBox.innerHTML = '⚠ PDF 中未识别到营业执照信息';
-        } else {
-          const preview = parsed.slice(0, 5).map((it) => `<li>${esc(it.name)}${it.city ? ' · ' + esc(it.city) : ''}${it.zip ? ' · ' + esc(it.zip) : ''}</li>`).join('');
-          resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
-          okBtn.disabled = false;
-        }
-      } catch (e) {
-        resultBox.textContent = '❌ ' + e.message;
-        okBtn.disabled = true;
-      }
-    };
-  }
-
-  const doParse = async () => {
-    const text = ta.value;
-    if (!text.trim()) {
-      parsed = [];
-      resultBox.innerHTML = '等待粘贴内容…';
-      okBtn.disabled = true;
-      return;
+    } else {
+      const preview = parsed
+        .slice(0, 5)
+        .map((it) => `<li>${esc(Object.values(it).filter(Boolean).join(' · '))}</li>`)
+        .join('');
+      resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
+      okBtn.disabled = false;
     }
-    try {
-      const res = await api(`/api/parse/${kind}`, { method: 'POST', body: { text } });
-      parsed = res.items || [];
-      if (!parsed.length) {
-        resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
-        okBtn.disabled = true;
-      } else {
-        const preview = parsed
-          .slice(0, 5)
-          .map((it) => `<li>${esc(Object.values(it).filter(Boolean).join(' · '))}</li>`)
-          .join('');
-        resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
-        okBtn.disabled = false;
-      }
-    } catch (e) {
-      resultBox.textContent = e.message;
-      okBtn.disabled = true;
-    }
-  };
-
-  let timer = null;
-  ta.addEventListener('input', () => {
-    clearTimeout(timer);
-    timer = setTimeout(doParse, 350);
   });
 
   okBtn.onclick = async () => {
-    if (!parsed.length) return;
+    if (saving || okBtn.disabled || !parsed.length) return;
+    saving = true; okBtn.disabled = true; ta.readOnly = true;
     try {
       const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
       toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
-      closeModal();
+      if (ta.isConnected) closeModal();
       await refresh();
     } catch (e) {
       toast(e.message, 'error');
+      okBtn.disabled = false;
+    } finally {
+      saving = false; ta.readOnly = false;
     }
   };
 
@@ -884,6 +840,7 @@ function openAutoImport() {
   const fileInput = document.getElementById('auto-file');
   const fileName = document.getElementById('auto-file-name');
   let parsed = { emails: [], proxies: [] };
+  let saving = false;
 
   const renderPreview = () => {
     const { emails, proxies } = parsed;
@@ -905,45 +862,34 @@ function openAutoImport() {
     okBtn.textContent = `确认导入（邮箱 ${emails.length} · 代理 ${proxies.length}）`;
   };
 
-  const doParse = async () => {
-    const text = ta.value;
-    if (!text.trim()) {
-      parsed = { emails: [], proxies: [] };
-      resultBox.innerHTML = '等待粘贴内容…';
-      okBtn.disabled = true;
-      okBtn.textContent = '确认导入';
-      return;
-    }
-    try {
-      parsed = await api('/api/parse/auto', { method: 'POST', body: { text } });
-      renderPreview();
-    } catch (e) {
-      resultBox.textContent = e.message;
-      okBtn.disabled = true;
-    }
-  };
-
-  let timer = null;
-  ta.addEventListener('input', () => {
-    clearTimeout(timer);
-    timer = setTimeout(doParse, 350);
+  const preview = bindImportPreview(ta, okBtn, resultBox, '/api/parse/auto', (result) => {
+    parsed = result;
+    renderPreview();
   });
 
   document.getElementById('auto-file-btn').onclick = () => fileInput.click();
   fileInput.addEventListener('change', () => {
     const f = fileInput.files[0];
     if (!f) return;
+    preview.invalidate();
+    if (f.size > 10 * 1024 * 1024) { resultBox.textContent = '文本文件不能超过 10 MB'; return; }
+    okBtn.disabled = true;
     fileName.textContent = f.name;
+    const previousText = ta.value;
     const rd = new FileReader();
     rd.onload = () => {
+      if (!ta.isConnected || fileInput.files[0] !== f || ta.value !== previousText) return;
       ta.value = String(rd.result || '');
-      doParse();
+      preview.parse();
     };
+    rd.onerror = () => { if (ta.isConnected) resultBox.textContent = '文件读取失败，请重新选择'; };
     rd.readAsText(f);
   });
 
   okBtn.onclick = async () => {
-    if (!parsed.emails.length && !parsed.proxies.length) return;
+    if (saving || okBtn.disabled || (!parsed.emails.length && !parsed.proxies.length)) return;
+    saving = true; ta.readOnly = true; fileInput.disabled = true;
+    document.getElementById('auto-file-btn').disabled = true;
     okBtn.disabled = true;
     try {
       const res = await api('/api/import/auto', { method: 'POST', body: parsed });
@@ -951,11 +897,15 @@ function openAutoImport() {
       if (parsed.emails.length) parts.push(`邮箱 +${res.emails.added}${dupNote(res.emails)}`);
       if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${dupNote(res.proxies)}`);
       toast(`✅ 导入成功：${parts.join('，')}`);
-      closeModal();
+      if (ta.isConnected) closeModal();
       await refresh();
     } catch (e) {
       okBtn.disabled = false;
       toast(e.message, 'error');
+    } finally {
+      saving = false; ta.readOnly = false; fileInput.disabled = false;
+      const fileButton = document.getElementById('auto-file-btn');
+      if (ta.isConnected && fileButton) fileButton.disabled = false;
     }
   };
 
@@ -983,8 +933,8 @@ function openPicker(kind) {
       <div class="picker-list" id="picker-list">
         ${items
           .map(
-            (it) => `<label class="picker-item ${it.status === '停用' ? 'disabled' : ''}" data-val="${it.id}" data-text="${esc(mainVal(it))}">
-              <input type="checkbox" ${picked.has(it.id) ? 'checked' : ''} ${it.status === '停用' ? 'disabled' : ''}>
+            (it) => `<label class="picker-item ${it.status !== '未使用' ? 'disabled' : ''}" data-val="${it.id}" data-text="${esc(mainVal(it))}">
+              <input type="checkbox" ${picked.has(it.id) ? 'checked' : ''} ${it.status !== '未使用' ? 'disabled' : ''}>
               <span class="mono">${esc(mainVal(it))}</span>
               <span class="pill ${it.status === '未使用' ? 'pill-green' : it.status === '已使用' ? 'pill-blue' : 'pill-red'}"><span class="dot"></span>${it.status}</span>
             </label>`
@@ -1035,7 +985,7 @@ function openEditRecord(id) {
   if (!r) return;
 
   const poolSelect = (kind, currentId, name) => {
-    const opts = [`<option value="">（保留当前 / 清空）</option>`]
+    const opts = [`<option value="">（清空关联）</option>`]
       .concat(
         state.pools[kind]
           .map((it) => {
@@ -1043,7 +993,8 @@ function openEditRecord(id) {
               : kind === 'cards' ? `${it.number} ${it.expiry}`
               : kind === 'licenses' ? it.name
               : `${it.host}:${it.port} ${it.sn || ''}`;
-            return `<option value="${it.id}" ${it.id === currentId ? 'selected' : ''}>${esc(label)}（${it.status}）</option>`;
+            const disabled = it.id !== currentId && (it.status === '停用' || (kind !== 'proxies' && it.status !== '未使用'));
+            return `<option value="${it.id}" ${it.id === currentId ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${esc(label)}（${it.status}）</option>`;
           })
           .join('')
       );
@@ -1074,7 +1025,10 @@ function openEditRecord(id) {
       <button class="btn btn-primary" id="edit-ok">保存修改</button>
     </div>`, { large: true });
 
-  document.getElementById('edit-ok').onclick = async () => {
+  const save = document.getElementById('edit-ok');
+  save.onclick = async () => {
+    if (save.disabled) return;
+    save.disabled = true;
     const form = document.getElementById('edit-form');
     const val = (n) => form.querySelector(`[name="${n}"]`).value;
     const body = {
@@ -1092,10 +1046,12 @@ function openEditRecord(id) {
     try {
       await api(`/api/records/${id}`, { method: 'PATCH', body });
       toast('✅ 已保存');
-      closeModal();
+      if (form.isConnected) closeModal();
       await refresh();
     } catch (e) {
       toast(e.message, 'error');
+    } finally {
+      save.disabled = false;
     }
   };
 }
@@ -1108,7 +1064,7 @@ document.addEventListener('click', async (e) => {
   // 复制：优先用 data-copy 属性，否则兜底复制非交互单元格的文本
   const copyEl = e.target.closest('[data-copy]');
   if (copyEl && copyEl.dataset.copy) {
-    if (copyEl.querySelector('.masked')) return toast('请先显示敏感信息，再复制该字段', 'warn');
+    if (!state.reveal && (copyEl.dataset.sensitive === 'true' || copyEl.querySelector('.masked'))) return toast('请先显示敏感信息，再复制该字段', 'warn');
     copyText(copyEl.dataset.copy);
     return;
   }
@@ -1142,6 +1098,7 @@ document.addEventListener('click', async (e) => {
         await window.desktop.openDataFolder();
         break;
       case 'nav': {
+        if (state.page !== t.dataset.page) { state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1; }
         state.page = t.dataset.page;
         render();
         break;
@@ -1171,11 +1128,17 @@ document.addEventListener('click', async (e) => {
         break;
       case 'rstatus':
         state.rstatus = t.dataset.v;
+        state.recordPage = 1;
         render();
         break;
       case 'pool-status':
         state.poolStatus = t.dataset.v;
+        state.poolPage = 1;
         render();
+        break;
+      case 'table-page':
+        if (t.dataset.kind === 'records') { state.recordPage = Number(t.dataset.page); renderRecordsTableInto(); }
+        else { state.poolPage = Number(t.dataset.page); renderPoolTableInto(); }
         break;
       case 'export-adspower': {
         const ids = [...state.sel];
@@ -1187,7 +1150,7 @@ document.addEventListener('click', async (e) => {
       case 'export-csv': {
         const ids = [...state.sel];
         const res = await api('/api/export/csv', { method: 'POST', body: { ids } });
-        download(`记录_${todayKey().replace('.', '_')}.csv`, res.text);
+        download(`记录_${todayKey().replace('.', '_')}.csv`, res.text, 'text/csv;charset=utf-8');
         toast(`✅ 已导出 ${res.count} 条 CSV`);
         break;
       }
@@ -1226,7 +1189,7 @@ document.addEventListener('click', async (e) => {
           if (!response.ok) throw new Error('未保存原 PDF');
           const url = URL.createObjectURL(await response.blob());
           const anchor = document.createElement('a');
-          anchor.href = url; anchor.download = '营业执照.pdf'; anchor.click();
+          anchor.href = url; anchor.download = state.pools.licenses.find((license) => license.id === id)?.document_name || '营业执照.pdf'; anchor.click();
           setTimeout(() => URL.revokeObjectURL(url), 30000);
         }
         break;
@@ -1254,6 +1217,7 @@ document.addEventListener('change', async (e) => {
   const t = e.target.closest('[data-action]');
   if (!t) return;
   const action = t.dataset.action;
+  if (action === 'pool-item-status' || action === 'rec-status') t.disabled = true;
   try {
     if (action === 'pool-item-status') {
       await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value } });
@@ -1269,24 +1233,30 @@ document.addEventListener('change', async (e) => {
       else state.sel.delete(id);
       refreshSelectionUI();
     } else if (action === 'sel-all') {
-      const list = getFilteredRecords();
+      const list = paginate(getFilteredRecords(), 'records').items;
       if (t.checked) list.forEach((r) => state.sel.add(r.id));
-      else state.sel.clear();
+      else list.forEach((r) => state.sel.delete(r.id));
       refreshSelectionUI();
     }
   } catch (err) {
+    if (action === 'pool-item-status') t.value = state.pools[t.dataset.kind].find((item) => item.id === Number(t.dataset.id))?.status || t.value;
+    if (action === 'rec-status') t.value = state.records.find((record) => record.id === Number(t.dataset.id))?.status || t.value;
     toast(err.message, 'error');
+  } finally {
+    if (action === 'pool-item-status' || action === 'rec-status') t.disabled = false;
   }
 });
 
 document.addEventListener('input', (e) => {
   if (e.target.id === 'rec-q') {
     state.q = e.target.value;
+    state.recordPage = 1;
     const el = document.getElementById('rec-q');
     renderRecordsTableInto(e.target);
     el.setSelectionRange(el.value.length, el.value.length);
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
+    state.poolPage = 1;
     const el = e.target;
     renderPoolTableInto();
     el.setSelectionRange(el.value.length, el.value.length);
@@ -1314,9 +1284,10 @@ function updateCreatePreview() {
     : `${fp.prefix}${fp.seq}`;
   const avail = { emails: poolCount('emails'), cards: poolCount('cards') };
   preview.querySelector('.fp').textContent = fpPreview;
+  preview.querySelector('span > b').textContent = count;
   const btn = preview.querySelector('[data-action="create"]');
-  btn.disabled = count === 0;
-  btn.textContent = count > 0 ? `立即创建 ${count} 条` : '立即创建';
+  btn.disabled = count === 0 || count > 500 || state.creating;
+  btn.textContent = state.creating ? '创建中' : count > 0 ? `立即创建 ${count} 条` : '立即创建';
   preview.querySelectorAll('.warn').forEach((w) => w.remove());
   const warns = [];
   if (count > avail.emails) warns.push(`⚠ 邮箱仅剩 ${avail.emails} 条`);
@@ -1337,9 +1308,11 @@ function renderRecordsTableInto(input) {
   if (!tablePanel) return;
   const old = tablePanel.querySelector('.table-wrap, .empty');
   if (old) old.remove();
+  tablePanel.querySelector('.table-pagination')?.remove();
   tablePanel.insertAdjacentHTML('beforeend', renderRecordsTable(getFilteredRecords()));
   const selCount = tablePanel.querySelector('.sel-count');
   if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
+  refreshSelectionUI();
 }
 
 // 勾选/全选后只刷新勾选相关 UI（行高亮、全选框、计数、删除按钮），不重建整页
@@ -1354,13 +1327,19 @@ function refreshSelectionUI() {
   });
   const allCb = document.querySelector('#main thead input[data-action="sel-all"]');
   if (allCb) {
-    const visible = getFilteredRecords();
+    const visible = paginate(getFilteredRecords(), 'records').items;
     allCb.checked = visible.length > 0 && visible.every((r) => state.sel.has(r.id));
+    allCb.indeterminate = visible.some((r) => state.sel.has(r.id)) && !allCb.checked;
   }
   const selCount = document.querySelector('#main .sel-count');
   if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
   const delBtn = document.querySelector('[data-action="delete-selected"]');
   if (delBtn) delBtn.disabled = state.sel.size === 0;
+  const label = state.sel.size ? `所选 ${state.sel.size} 条` : '全部';
+  const csvButton = document.querySelector('[data-action="export-csv"]');
+  const adspowerButton = document.querySelector('[data-action="export-adspower"]');
+  if (csvButton) csvButton.textContent = `导出${label} CSV`;
+  if (adspowerButton) adspowerButton.textContent = `导出${label} AdsPower TXT`;
 }
 
 document.addEventListener('change', (e) => {
@@ -1376,7 +1355,7 @@ document.addEventListener('change', (e) => {
         .concat(
           state.pools.proxies
             .map(
-              (p) => `<option value="${p.id}" ${String(state.form.proxy_id) === String(p.id) ? 'selected' : ''}>${esc(
+              (p) => `<option value="${p.id}" ${String(state.form.proxy_id) === String(p.id) ? 'selected' : ''} ${p.status === '停用' ? 'disabled' : ''}>${esc(
                 `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（${p.status}）`
               )}</option>`
             )
@@ -1425,7 +1404,8 @@ async function connect() {
 function bindLabels() {
   document.querySelectorAll('.field').forEach((field) => {
     const label = field.querySelector('label');
-    const input = field.querySelector('input[id],select[id],textarea[id]');
+    const input = field.querySelector('input,select,textarea');
+    if (input && !input.id && input.name) input.id = `${field.closest('#modal-root') ? 'modal' : 'main'}-${input.name}`;
     if (label && input) label.htmlFor = input.id;
   });
 }

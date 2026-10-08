@@ -11,6 +11,7 @@ const storage = createStorage(DATA_FILE);
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
 const POOL_TYPES = ['emails', 'proxies', 'cards', 'licenses'];
+const POOL_PREFIX = { emails: 'email', proxies: 'proxy', cards: 'card', licenses: 'license' };
 const STATUSES = ['未使用', '已使用', '停用'];
 const RECORD_STATUSES = ['正常', '异常', '停用'];
 
@@ -94,6 +95,9 @@ function grabLabeled(t, labels) {
 function parseEmailLine(line) {
   const t = String(line || '').trim();
   if (!t || /^\*{3,}$/.test(t) || ADSPOWER_KV_RE.test(t)) return null;
+  // Proxy credentials such as "user:secret@host:port" contain label-like text.
+  // Recognize the whole proxy before attempting to extract an email fragment.
+  if (parseProxyStr(t)) return null;
   let m;
   if (new RegExp(`(?:${LABEL_ALL})\\s*[:：=]`, 'i').test(t)) {
     let user = grabLabeled(t, LABEL_USER);
@@ -534,9 +538,9 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 
 const DUP_KEYS = {
   emails: (it) => (x) => x.user.toLowerCase() === it.user.toLowerCase(),
-  proxies: (it) => (x) => x.host === it.host && x.port === it.port && x.user === it.user,
+  proxies: (it) => (x) => x.host.toLowerCase() === it.host.toLowerCase() && x.port === it.port && x.user === it.user,
   cards: (it) => (x) => x.number === it.number,
-  licenses: (it) => (x) => x.name === it.name,
+  licenses: (it) => (x) => x.name.toLowerCase() === it.name.toLowerCase(),
 };
 
 // 重复项展示用的标识（提示用户具体哪些被跳过）
@@ -583,7 +587,7 @@ function importItems(type, items) {
   const label = dupLabel(type);
   for (const it of items) {
     // 同批次内也去重：以 dupLabel 作为本次批次的键
-    const batchKey = label(it);
+    const batchKey = type === 'emails' || type === 'licenses' ? label(it).toLowerCase() : label(it);
     if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
     const isDup = db[type].some(DUP_KEYS[type](it));
     if (isDup) { skipped.push(it); continue; }
@@ -638,16 +642,18 @@ function createRecords(body) {
     ? body.domains
     : String(body.domains || '').split(/\r?\n|[,\s]+/);
   const domains = rawDomains
-    .map((s) => String(s).trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
+    .map((s) => String(s).trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase())
     .filter(Boolean);
-  const count = domains.length || Math.max(1, Math.min(500, parseInt(body.count, 10) || 1));
+  const requestedCount = body.count === undefined ? 1 : Number(body.count);
+  const count = domains.length || requestedCount;
   const dateKey = String(body.date_key || '').trim() || todayKey();
   const fpPrefix = String(body.fp_prefix || '').trim() || `${dateKey}ads`;
-  let seq = parseInt(body.start_seq, 10);
-  if (!Number.isFinite(seq) || seq < 1) seq = nextSeq();
+  const seqInput = body.start_seq;
+  let seq = seqInput === undefined || seqInput === '' ? nextSeq() : Number(seqInput);
 
+  if (!domains.length && (typeof body.count === 'boolean' || !Number.isSafeInteger(count) || count < 1)) return { error: '创建数量必须为 1 到 500 的整数' };
   if (count > 500) return { error: '单次最多创建 500 条记录' };
-  if (!Number.isSafeInteger(seq) || !Number.isSafeInteger(seq + count)) return { error: '指纹编号无效' };
+  if (typeof seqInput === 'boolean' || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(seq + count)) return { error: '指纹编号无效' };
   if (new Set(domains).size !== domains.length) return { error: '域名列表存在重复，请检查后再创建' };
   const fingerprints = new Set(db.records.map((r) => r.fingerprint));
   for (let i = 0; i < count; i++) {
@@ -664,7 +670,8 @@ function createRecords(body) {
   const proxyMode = ['shared', 'auto', 'none'].includes(body.proxy_mode) ? body.proxy_mode : 'shared';
   let sharedProxy = null;
   if (proxyMode === 'shared') {
-    if (body.proxy_id) {
+    if (body.proxy_id !== undefined && body.proxy_id !== null) {
+      if (!Number.isSafeInteger(body.proxy_id) || body.proxy_id < 1) return { error: '所选代理编号无效' };
       sharedProxy = db.proxies.find((p) => p.id === Number(body.proxy_id) && p.status !== '停用') || null;
       if (!sharedProxy) return { error: '所选代理不存在或已停用' };
     }
@@ -740,6 +747,21 @@ const SNAP = {
   license: (l) => ({ license_name: l.name }),
 };
 
+function syncResource(type, resource) {
+  const prefix = POOL_PREFIX[type];
+  const snapshot = SNAP[prefix](resource);
+  for (const record of db.records) {
+    if (record[`${prefix}_id`] === resource.id) Object.assign(record, snapshot);
+  }
+}
+
+function pruneDocuments() {
+  const referenced = new Set(db.licenses.map((license) => license.document_id).filter(Boolean));
+  for (const id of Object.keys(db.documents)) {
+    if (!referenced.has(id)) delete db.documents[id];
+  }
+}
+
 function releaseIfUnused(prefix, oldId, excludeRecId) {
   if (oldId == null) return;
   const stillUsed = db.records.some((r) => r.id !== excludeRecId && r[`${prefix}_id`] === oldId);
@@ -755,8 +777,10 @@ function updateRecord(id, body) {
 
   for (const [prefix, coll] of Object.entries({ email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' })) {
     const value = body[`${prefix}_id`];
-    if (value === undefined || value === null || Number(value) === rec[`${prefix}_id`]) continue;
-    const target = db[coll].find((item) => item.id === Number(value));
+    if (value === undefined || value === null) continue;
+    if (!Number.isSafeInteger(value) || value < 1) return { error: '所选资源编号无效' };
+    if (value === rec[`${prefix}_id`]) continue;
+    const target = db[coll].find((item) => item.id === value);
     if (!target || target.status === '停用') return { error: '所选资源不存在或已停用' };
     if (prefix !== 'proxy' && (target.status !== '未使用' || db.records.some((r) => r.id !== rec.id && r[`${prefix}_id`] === target.id))) {
       return { error: '所选资源已被其他记录使用' };
@@ -828,7 +852,7 @@ function buildAdspower(records) {
     `proxyid=`,
     `ua=`,
     `resolution=`,
-  ].join('\n'));
+  ].map((line) => line.replace(/[\r\n\u2028\u2029]/g, ' ')).join('\n'));
   return blocks.join(`\n${SEP}\n`) + '\n';
 }
 
@@ -840,6 +864,8 @@ function buildCsv(records) {
   ];
   const esc = (v) => {
     v = String(v ?? '');
+    // Spreadsheet viewers must treat formulas and long/zero-prefixed numbers as text.
+    if (/^\s*[=+\-@]|^[\t\r\n]|^\d{12,}$|^0\d+$/.test(v)) v = "'" + v;
     return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
   const lines = [head.join(',')];
@@ -924,29 +950,48 @@ fastify.post('/api/import/:type', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
+  const hasPdf = Object.hasOwn(req.body || {}, 'pdf');
+  if (hasPdf && type !== 'licenses') return reply400('PDF 只能导入到营业执照资料库');
+  if (hasPdf) {
+    if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
+    const bytes = decodePdf(req.body.pdf);
+    const item = normalizeImport('licenses', items[0]);
+    const documentId = crypto.createHash('sha256').update(bytes).digest('hex');
+    const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
+    return mutate(() => {
+      const matches = db.licenses.filter((license) => license.document_id === documentId);
+      if (matches.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
+      const byName = db.licenses.find(DUP_KEYS.licenses(item));
+      if (matches[0] && byName && matches[0].id !== byName.id) return reply400('该 PDF 已属于另一份资料，名称修改与现有组织冲突，请核对后重试');
+      let license = matches[0] || byName;
+      const added = license ? 0 : 1;
+      if (!license) {
+        importItems('licenses', [item]);
+        license = db.licenses.find(DUP_KEYS.licenses(item));
+      }
+      Object.assign(license, normalizeImport('licenses', { ...license, ...items[0] }), {
+        document_id: documentId, document_name: filename, document_size: bytes.length,
+      });
+      db.documents[documentId] = { filename, base64: bytes.toString('base64') };
+      syncResource('licenses', license);
+      pruneDocuments();
+      return { added, updated: added ? 0 : 1, skipped: 0, duplicates: [], attached: 1, license_id: license.id };
+    });
+  }
   return mutate(() => {
     const result = importItems(type, items);
     if (type === 'licenses') {
       let updated = 0;
       for (const item of items) {
-        const license = db.licenses.find((row) => row.name === String(item.name).trim());
+        const license = db.licenses.find(DUP_KEYS.licenses(normalizeImport('licenses', item)));
         if (license && Object.keys(item).some((key) => key !== 'name' && IMPORT_FIELDS.licenses.includes(key))) {
           const supplied = Object.fromEntries(IMPORT_FIELDS.licenses.filter((key) => key in item).map((key) => [key, item[key]]));
           Object.assign(license, normalizeImport('licenses', { ...license, ...supplied }));
+          syncResource('licenses', license);
           updated++;
         }
       }
       result.updated = updated;
-    }
-    if (type === 'licenses' && req.body?.pdf) {
-      if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
-      const bytes = decodePdf(req.body.pdf);
-      const id = crypto.createHash('sha256').update(bytes).digest('hex');
-      const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
-      db.documents[id] = { filename, base64: bytes.toString('base64') };
-      const license = db.licenses.find((item) => item.name === String(items[0].name).trim());
-      Object.assign(license, normalizeImport('licenses', items[0]), { document_id: id, document_name: filename, document_size: bytes.length });
-      result.attached = 1;
     }
     return result;
   });
@@ -981,7 +1026,10 @@ fastify.patch('/api/pool/:type/:id', async (req) => mutate(() => {
     it.status = req.body.status;
   }
   const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in (req.body || {})).map((key) => [key, req.body[key]]));
-  Object.assign(it, normalizeImport(type, { ...it, ...changed }));
+  const normalized = normalizeImport(type, { ...it, ...changed });
+  if (db[type].some((row) => row.id !== it.id && DUP_KEYS[type](normalized)(row))) return reply400('修改后的资源与资料库中现有资源重复');
+  Object.assign(it, normalized);
+  syncResource(type, it);
   return { item: it };
 }));
 
@@ -993,6 +1041,7 @@ fastify.delete('/api/pool/:type/:id', async (req) => mutate(() => {
   if (db.records.some((r) => r[`${prefix}_id`] === id)) return reply400('资源仍关联记录，请先解除关联');
   const before = db[type].length;
   db[type] = db[type].filter((x) => x.id !== id);
+  if (type === 'licenses') pruneDocuments();
   return { deleted: before - db[type].length };
 }));
 

@@ -1321,3 +1321,5 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
 .license-source summary { cursor: pointer; margin-bottom: 12px; }
 .license-source textarea { width: 100%; margin-bottom: 8px; }
 .license-link { color: var(--accent); background: transparent; border: 0; padding: 0; cursor: pointer; font: inherit; }
+.table-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid var(--line-strong); color: var(--muted); font-size: 12px; }
+.table-pagination > div { display: flex; gap: 8px; }
