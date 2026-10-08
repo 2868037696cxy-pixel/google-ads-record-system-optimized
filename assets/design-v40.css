@@ -172,3 +172,189 @@ kbd {
   .rank-row { grid-template-columns: 84px 1fr 64px 44px; }
   .palette-trigger kbd { display: none; }
 }
+
+
+/* ============================================================
+   UI 打磨：移动端抽屉 + stats 横滑（★3）
+   ============================================================ */
+/* ---- 移动端抽屉：桌面端隐藏触发器 ---- */
+.menu-btn, .drawer-backdrop { display: none; }
+
+@media (max-width: 900px) {
+  .drawer-toggle {
+    display: none;
+  }
+
+  #sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(320px, 85vw);
+    z-index: 10020;
+    transform: translateX(-105%);
+    transition: transform 0.3s var(--ease);
+    background: var(--panel);
+    box-shadow: var(--shadow-lg);
+  }
+
+  #drawerToggle:checked ~ .app #sidebar {
+    transform: translateX(0);
+  }
+
+  .menu-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    margin-right: 8px;
+    font-size: 1.5rem;
+    line-height: 1;
+    color: var(--text);
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  #sidebar .toggle {
+    display: none;
+  }
+
+  .drawer-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 10010;
+    background: rgba(0, 0, 0, 0.45);
+  }
+
+  #drawerToggle:checked ~ .drawer-backdrop {
+    display: block;
+  }
+
+  .main .stats {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .main .stats::-webkit-scrollbar {
+    display: none;
+  }
+
+  .main .stats .stat {
+    flex: 0 0 auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #sidebar {
+    transition: none;
+  }
+}
+
+/* ============================================================
+   UI 打磨：Dashboard 骨架屏（★4）
+   ============================================================ */
+/* skeleton */
+.skel {
+  border-radius: var(--radius-md);
+}
+.skel-line { width: 100%; height: 14px; }
+.skel-title { width: 40%; height: 24px; }
+.skel-num { width: 65%; height: 34px; margin: 8px 0; }
+.skel-block { width: 100%; height: 120px; }
+.skel-spark { width: 100%; height: 40px; }
+.skel-seg { width: 72px; height: 32px; }
+.skel-btn { width: 32px; height: 32px; }
+
+.dash-loading .kpi {
+  animation: skelIn .4s var(--ease) both;
+  animation-delay: var(--d, 0s);
+}
+
+@keyframes skelIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dash-loading .skel,
+  .dash-loading .skel.loading-shimmer {
+    background: var(--soft) !important;
+  }
+  .dash-loading .kpi,
+  .dash-loading .skel.loading-shimmer {
+    animation: none !important;
+  }
+}
+
+
+
+/* ============================================================
+   UI 打磨：Toast 队列（★5）
+   ============================================================ */
+.toast-wrap {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 10030;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.toast-item {
+  background: var(--text);
+  color: var(--bg);
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  font-weight: 900;
+  font-size: 13px;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity var(--transition-normal), transform var(--transition-normal);
+  max-width: 360px;
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
+}
+
+.toast-item.show {
+  opacity: 1;
+  transform: none;
+}
+
+.toast-item.out {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.toast-item.success {
+  background: var(--green);
+  color: #fff;
+}
+
+.toast-item.warn {
+  background: #964219;
+  color: #fff;
+}
+
+.toast-item.error {
+  background: var(--red);
+  color: #fff;
+}
+
+@media (max-width: 900px) {
+  .toast-wrap {
+    left: 16px;
+    right: 16px;
+    bottom: 80px;
+    align-items: stretch;
+  }
+}
