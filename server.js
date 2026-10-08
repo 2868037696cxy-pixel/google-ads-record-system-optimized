@@ -13,12 +13,40 @@
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const fastify = require('fastify')({ logger: true });
+const fastify = require('fastify')({ logger: true, bodyLimit: 50 * 1024 * 1024 }); // DH-7: 提高 PUT 上限到 50MB
 const cors = require('@fastify/cors');
 const staticPlugin = require('@fastify/static');
 const Database = require('better-sqlite3');
+const ExcelJS = require('exceljs');
+const multipart = require('@fastify/multipart');
 
 const ROOT = __dirname;
+// DH-20: 登录限速（每 IP 每分钟最多 10 次）
+const loginAttempts = new Map();
+function loginRateLimited(ip) {
+  const now = Date.now();
+  const rec = loginAttempts.get(ip);
+  if (!rec || now > rec.resetAt) {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 60 * 1000 });
+    return false;
+  }
+  rec.count += 1;
+  return rec.count > 10;
+}
+
+const BLOCKED_STATIC_RE = [
+  /^\/data(?:\/|$)/,
+  /^\/scripts(?:\/|$)/,
+  /^\/docs(?:\/|$)/,
+  /^\/node_modules(?:\/|$)/,
+  /^\/\./,
+  /^\/server\.js$/,
+  /^\/package\.json$/,
+  /^\/package-lock\.json$/,
+  /^\/render\.yaml$/,
+  /^\/README\.md$/,
+];
+
 const DATA_DIR = path.join(ROOT, 'data');
 const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'ads.sqlite');
 const PORT = Number(process.env.PORT || 3000);
@@ -51,6 +79,7 @@ db.exec(`
     revenue REAL NOT NULL DEFAULT 0 CHECK (revenue >= 0),
     note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+    UNIQUE (ad_id, date),
     FOREIGN KEY (ad_id) REFERENCES ads(id) ON DELETE CASCADE
   );
   CREATE TABLE IF NOT EXISTS backups (
@@ -71,6 +100,17 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_ads_created ON ads(created_at);
   CREATE INDEX IF NOT EXISTS idx_daily_ad_id ON daily_records(ad_id);
   CREATE INDEX IF NOT EXISTS idx_daily_date ON daily_records(date);
+`);
+
+// ---- P1-2 迁移：存量 (ad_id, date) 去重 + 唯一索引（幂等，重启可重复执行）----
+db.exec(`
+  DELETE FROM daily_records
+  WHERE rowid NOT IN (
+    SELECT MAX(rowid)
+    FROM daily_records
+    GROUP BY ad_id, date
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_daily_ad_date ON daily_records(ad_id, date);
 `);
 
 // ---- 数据版本号（乐观锁）----
@@ -111,12 +151,25 @@ const getOptions = () => {
 };
 
 const STATUS = new Set(['未铺市场', '已铺市场', '测试中', '继续跑', '观察', '暂停']);
-const today = () => new Date().toISOString().slice(0, 10);
+const localDate = (d = new Date()) => {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+const today = () => localDate();
 const now = () => new Date().toISOString();
 const uid = (p) => `${p}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-const validDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''));
-const money = (v) => { const n = Number(String(v ?? 0).replace(',', '.')); return Number.isFinite(n) && n >= 0 ? n : 0; };
-const intNum = (v) => Math.max(0, Math.floor(money(v)));
+const validDate = (v) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+  if (!m) return false;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return false;
+  const dt = new Date(y, mo - 1, d);
+  return dt.getFullYear() === y && dt.getMonth() === mo - 1 && dt.getDate() === d;
+};
+const money = (v) => Number(String(v ?? 0).replace(',', '.'));
+const intNum = (v) => ((n) => Number.isFinite(n) ? Math.floor(n) : NaN)(money(v));
 
 function normalizeDaily(row = {}) {
   return { id: String(row.id || uid('d')), date: validDate(row.date) ? row.date : today(),
@@ -130,19 +183,35 @@ function normalizeAd(row = {}) {
     note: String(row.note || ''), optimizeNote: String(row.optimizeNote || row.optimize_note || ''),
     actionNote: String(row.actionNote || row.action_note || ''),
     createdAt: validDate(row.createdAt || row.created_at) ? (row.createdAt || row.created_at) : today(),
-    daily: Array.isArray(row.daily) ? row.daily.map(normalizeDaily) : [] };
+    daily: Array.isArray(row.daily)
+      ? Array.from(new Map(row.daily.map(normalizeDaily).map(d => [d.date, d])).values())
+      : [] };
 }
 
-function validateAd(ad) {
+function validateAd(ad, allAds) {
   const errors = [];
   if (!ad.no) errors.push('编号不能为空');
   if (!ad.product) errors.push('产品不能为空');
+
+  // DH-4: 编号唯一性（同批 + 库中）
+  const noStr = ad.no != null ? String(ad.no).trim() : '';
+  if (noStr) {
+    const dupInBatch = (allAds || []).some((a) => a !== ad && String(a.no || '').trim() === noStr);
+    const dupInDb = readAds().some((a) => String(a.no || '').trim() === noStr && a.id !== ad.id);
+    if (dupInBatch || dupInDb) errors.push('广告编号重复');
+  }
+
   if (!ad.market) errors.push('市场不能为空');
   if (!validDate(ad.createdAt)) errors.push('创建日期无效');
-  if (ad.budget < 0) errors.push('预算不能为负数');
+  if (!Number.isFinite(ad.budget)) errors.push('预算必须是有效数字');
+  else if (ad.budget < 0) errors.push('预算不能为负数');
   ad.daily.forEach(d => {
     if (!validDate(d.date)) errors.push('每日日期无效');
-    if (d.spend < 0 || d.orders < 0 || d.revenue < 0) errors.push('每日数据不能为负数');
+    if (!Number.isFinite(d.spend) || !Number.isFinite(d.orders) || !Number.isFinite(d.revenue)) {
+      errors.push('每日数据必须是有效数字');
+    } else if (d.spend < 0 || d.orders < 0 || d.revenue < 0) {
+      errors.push('每日数据不能为负数');
+    }
   });
   return errors;
 }
@@ -157,12 +226,23 @@ function calc(ad) {
 }
 
 function readAds() {
+  // DH-17: 单查询 + 内存分组，消除 N+1
   const adRows = db.prepare('SELECT * FROM ads ORDER BY created_at DESC').all();
-  const dailyStmt = db.prepare('SELECT * FROM daily_records WHERE ad_id = ? ORDER BY date DESC');
+  const dailyByAd = new Map();
+  if (adRows.length) {
+    const placeholders = adRows.map(() => '?').join(',');
+    const dailyRows = db.prepare(
+      `SELECT * FROM daily_records WHERE ad_id IN (${placeholders}) ORDER BY date DESC`
+    ).all(...adRows.map(r => r.id));
+    for (const d of dailyRows) {
+      if (!dailyByAd.has(d.ad_id)) dailyByAd.set(d.ad_id, []);
+      dailyByAd.get(d.ad_id).push({ id: d.id, date: d.date, spend: d.spend, orders: d.orders, revenue: d.revenue, note: d.note });
+    }
+  }
   return adRows.map(r => ({ id: r.id, no: r.no, product: r.product, market: r.market,
     budget: r.budget, status: r.status, note: r.note,
     optimizeNote: r.optimize_note, actionNote: r.action_note, createdAt: r.created_at,
-    daily: dailyStmt.all(r.id).map(d => ({ id: d.id, date: d.date, spend: d.spend, orders: d.orders, revenue: d.revenue, note: d.note })) }));
+    daily: dailyByAd.get(r.id) || [] }));
 }
 
 function pack(scope = 'all', ads = readAds()) {
@@ -192,33 +272,84 @@ const replaceAll = db.transaction((ads, scope) => {
 
 // ---- 可选访问密码 ----
 const TOKEN_SALT = 'ads-record-token-v1';
-const expectedToken = APP_PASSWORD
-  ? crypto.createHmac('sha256', APP_PASSWORD).update(TOKEN_SALT).digest('hex')
-  : '';
+const TOKEN_TTL_HOURS = Number(process.env.TOKEN_TTL_HOURS) || 12;
+
+function makeToken(ts) {
+  if (!APP_PASSWORD) return '';
+  const hmac = crypto.createHmac('sha256', APP_PASSWORD).update(TOKEN_SALT + ':' + ts).digest('hex');
+  return `${ts}.${hmac}`;
+}
+function verifyToken(token) {
+  if (!token || typeof token !== 'string' || !APP_PASSWORD) return false;
+  const parts = token.split('.');
+  if (parts.length !== 2) return false;
+  const ts = Number(parts[0]);
+  if (!Number.isFinite(ts) || ts <= 0) return false;
+  const nowMs = Date.now(), ttlMs = TOKEN_TTL_HOURS * 3600 * 1000;
+  if (ts > nowMs + 5 * 60 * 1000) return false;
+  if (nowMs - ts > ttlMs) return false;
+  const expected = makeToken(ts);
+  return token.length === expected.length && crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
+}
 const hashPwd = (p) => crypto.createHash('sha256').update(String(p)).digest('hex');
 const hashExpected = APP_PASSWORD ? hashPwd(APP_PASSWORD) : '';
 
-fastify.register(cors, { origin: true });
+fastify.register(cors, {
+  // DH-19: 只允许同源/无 Origin 与本地局域网
+  origin: (origin, cb) => {
+    if (!origin) return cb(null, true);
+    try {
+      const h = new URL(origin).hostname;
+      const isLocal = h === 'localhost' || h === '127.0.0.1' || h === '[::1]' ||
+        /^192\.168\./.test(h) || /^10\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+      return cb(null, isLocal);
+    } catch {
+      return cb(null, false);
+    }
+  }
+});
+fastify.register(multipart);
 fastify.register(staticPlugin, { root: ROOT, prefix: '/' });
 
 fastify.addHook('onRequest', async (request, reply) => {
+  // DH-1: 静态目录穿越防护（无论是否设置密码都拦截）
+  let pathname;
+  try {
+    const rawUrl = request.raw.url || '';
+    pathname = decodeURIComponent(rawUrl.split('?')[0]);
+  } catch (err) {
+    return reply.code(400).send({ ok: false, error: 'Bad Request' });
+  }
+  if (!pathname.startsWith('/')) pathname = '/' + pathname;
+  const normalized = require('path').normalize(pathname);
+  if (BLOCKED_STATIC_RE.some((re) => re.test(normalized))) {
+    return reply.code(404).send({ ok: false, error: 'Not Found' });
+  }
+
   if (!APP_PASSWORD) return;
-  const url = request.raw.url || '';
-  if (url === '/api/login' || !url.startsWith('/api/')) return; // 登录接口与静态页面放行
+  const rawUrl = request.raw.url || '';
+  const urlPath = rawUrl.split('?')[0];
+  if (urlPath === '/api/login' || urlPath === '/api/healthz' || !rawUrl.startsWith('/api/')) return; // 登录接口/健康检查与静态页面放行
   const token = request.headers['x-app-token'] || '';
-  if (token && token.length === expectedToken.length &&
-      crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expectedToken))) return;
-  return reply.code(401).send({ ok: false, authRequired: true, error: '需要登录' });
+  if (verifyToken(token)) return;
+  return reply.code(401).send({ ok: false, authRequired: true, error: '登录已过期，请重新登录' });
 });
 
 fastify.post('/api/login', async (request, reply) => {
   if (!APP_PASSWORD) return { ok: true, token: '', authDisabled: true };
+  const clientIp = request.ip;
+  if (loginRateLimited(clientIp)) {
+    return reply.code(429).send({ ok: false, error: '尝试过于频繁，请稍后再试' });
+  }
   const pwd = String((request.body || {}).password || '');
   const a = hashPwd(pwd), b = hashExpected;
   const ok = pwd.length > 0 && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
   if (!ok) return reply.code(401).send({ ok: false, error: '密码错误' });
-  return { ok: true, token: expectedToken };
+  loginAttempts.delete(request.ip);
+  return { ok: true, token: makeToken(Date.now()) };
 });
+
+fastify.get('/api/healthz', async () => ({ ok: true, version: '3.0.0' }));
 
 fastify.get('/api/health', async () => {
   const adsCount = db.prepare('SELECT COUNT(*) as n FROM ads').get().n;
@@ -241,10 +372,10 @@ fastify.put('/api/ads', async (request, reply) => {
       error: '数据已被其他窗口修改，请刷新后重试' });
   }
   const incoming = body.ads.map(normalizeAd);
-  const errors = incoming.flatMap(ad => validateAd(ad).map(msg => `#${ad.no || ad.id}: ${msg}`));
+  const errors = incoming.flatMap(ad => validateAd(ad, incoming).map(msg => `#${ad.no || ad.id}: ${msg}`));
   if (errors.length) return reply.code(400).send({ ok: false, error: errors[0], errors });
   const newRev = replaceAll(incoming, body.scope);
-  return { ok: true, count: incoming.length, rev: newRev, savedAt: now() };
+  return { ok: true, count: incoming.length, dailyCount: incoming.reduce((s, a) => s + a.daily.length, 0), rev: newRev, savedAt: now() };
 });
 
 fastify.get('/api/options', async () => ({ ok: true, ...getOptions() }));
@@ -278,10 +409,106 @@ fastify.get('/api/export/json', async () => pack('manual-json'));
 fastify.get('/api/export/csv', async (request, reply) => {
   const rows = [['编号', '产品', '市场', '状态', '预算', '创建日期', '总消耗', '总单量', '收入', '利润', 'ROI%', '毛利率%', '备注']];
   readAds().forEach(ad => { const c = calc(ad); rows.push([ad.no, ad.product, ad.market, ad.status, ad.budget, ad.createdAt, c.spend.toFixed(2), c.orders, c.revenue.toFixed(2), c.profit.toFixed(2), c.roi == null ? '' : c.roi.toFixed(2), c.margin == null ? '' : c.margin.toFixed(2), ad.note]); });
-  const csv = '\ufeff' + rows.map(r => r.map(x => `"${String(x ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
+  rows.push(['##daily']);
+  rows.push(['广告编号', '日期', '消耗', '单量', '收入', '备注']);
+  readAds().forEach(ad => { ad.daily.forEach(d => rows.push([ad.no, d.date, Number(d.spend).toFixed(2), d.orders, Number(d.revenue).toFixed(2), d.note])); });
+  // DH-2: CSV 公式注入防护
+  const csvSafe = (v) => {
+    const s = String(v ?? '');
+    return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+  };
+  const csv = '\ufeff' + rows.map(r => r.map(x => `"${csvSafe(x).replace(/"/g, '""')}"`).join(',')).join('\n');
   reply.header('Content-Type', 'text/csv; charset=utf-8');
   reply.header('Content-Disposition', `attachment; filename="ads_${today()}.csv"`);
   return csv;
+});
+
+fastify.get('/api/export/xlsx', async (request, reply) => {
+  const wb = new ExcelJS.Workbook();
+  const wsAds = wb.addWorksheet('广告');
+  wsAds.addRow(['编号', '产品', '市场', '状态', '预算', '创建日期', '总消耗', '总单量', '收入', '利润', 'ROI%', '毛利率%', '备注']);
+  for (const ad of readAds()) {
+    const c = calc(ad);
+    wsAds.addRow([
+      ad.no, ad.product, ad.market, ad.status,
+      Number(ad.budget), ad.createdAt,
+      Number(c.spend), Number(c.orders), Number(c.revenue), Number(c.profit),
+      c.roi == null ? '' : c.roi, c.margin == null ? '' : c.margin,
+      ad.note || ''
+    ]);
+  }
+  const wsDaily = wb.addWorksheet('每日记录');
+  wsDaily.addRow(['广告编号', '日期', '消耗', '单量', '收入', '备注']);
+  for (const ad of readAds()) {
+    for (const d of ad.daily || []) {
+      wsDaily.addRow([ad.no, d.date, Number(d.spend), Number(d.orders), Number(d.revenue), d.note || '']);
+    }
+  }
+  reply.header('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  reply.header('Content-Disposition', `attachment; filename="ads_${today()}.xlsx"`);
+  return wb.xlsx.writeBuffer();
+});
+
+fastify.post('/api/import/xlsx', async (request, reply) => {
+  try {
+    const data = await request.file();
+    if (!data) return reply.code(400).send({ ok: false, error: '缺少文件' });
+    const buf = await data.toBuffer();
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(buf);
+    let skipped = 0, dailyCount = 0;
+    const incoming = [];
+    const byNo = new Map();
+    const wsAds = wb.getWorksheet('广告');
+    if (wsAds) {
+      const headers = wsAds.getRow(1).values.slice(1).map(h => String(h ?? '').trim());
+      const col = (name) => headers.indexOf(name);
+      wsAds.eachRow((row, rn) => {
+        if (rn === 1) return;
+        const v = row.values.slice(1);
+        const get = (name) => { const i = col(name); return i < 0 ? undefined : v[i]; };
+        const no = String(get('编号') ?? '').trim();
+        const product = String(get('产品') ?? '').trim();
+        if (!no || !product) { skipped++; return; }
+        const ad = normalizeAd({
+          no, product,
+          market: get('市场'), status: get('状态'), budget: get('预算'),
+          createdAt: get('创建日期'), note: get('备注'), daily: []
+        });
+        byNo.set(no, incoming.length);
+        incoming.push(ad);
+      });
+    }
+    const wsDaily = wb.getWorksheet('每日记录');
+    if (wsDaily) {
+      const headers = wsDaily.getRow(1).values.slice(1).map(h => String(h ?? '').trim());
+      const col = (name) => headers.indexOf(name);
+      wsDaily.eachRow((row, rn) => {
+        if (rn === 1) return;
+        const v = row.values.slice(1);
+        const get = (name) => { const i = col(name); return i < 0 ? undefined : v[i]; };
+        const no = String(get('广告编号') ?? '').trim();
+        let dateVal = get('日期');
+        let dateStr;
+        if (dateVal instanceof Date) {
+          dateStr = `${dateVal.getFullYear()}-${String(dateVal.getMonth() + 1).padStart(2, '0')}-${String(dateVal.getDate()).padStart(2, '0')}`;
+        } else {
+          dateStr = String(dateVal ?? '').trim();
+        }
+        if (!no || !byNo.has(no) || !validDate(dateStr)) { skipped++; return; }
+        const d = normalizeDaily({ date: dateStr, spend: get('消耗'), orders: get('单量'), revenue: get('收入'), note: get('备注') });
+        incoming[byNo.get(no)].daily.push(d);
+        dailyCount++;
+      });
+    }
+    incoming.forEach(ad => { ad.daily = Array.from(new Map(ad.daily.map(d => [d.date, d])).values()); });
+    const errors = incoming.flatMap(ad => validateAd(ad, incoming).map(msg => `#${ad.no || ad.id}: ${msg}`));
+    if (errors.length) return reply.code(400).send({ ok: false, error: errors[0], errors });
+    const newRev = replaceAll(incoming, 'import-xlsx');
+    return { ok: true, count: incoming.length, dailyCount, skipped, rev: newRev };
+  } catch (err) {
+    return reply.code(400).send({ ok: false, error: String((err && err.message) || err) });
+  }
 });
 
 fastify.post('/api/backups', async () => {
@@ -289,7 +516,7 @@ fastify.post('/api/backups', async () => {
   return { ok: true, backupId: result.lastInsertRowid };
 });
 
-fastify.get('/api/backups', async () => db.prepare('SELECT id, scope, created_at FROM backups ORDER BY id DESC LIMIT 50').all());
+fastify.get('/api/backups', async () => db.prepare('SELECT id, scope, created_at, LENGTH(payload) AS size_bytes FROM backups ORDER BY id DESC LIMIT 50').all());
 
 // 从备份恢复（恢复前自动快照当前状态，走同一事务）
 fastify.post('/api/backups/:id/restore', async (request, reply) => {
@@ -298,7 +525,18 @@ fastify.post('/api/backups/:id/restore', async (request, reply) => {
   let data;
   try { data = JSON.parse(row.payload); } catch { return reply.code(400).send({ ok: false, error: '备份数据损坏' }); }
   if (!Array.isArray(data.ads)) return reply.code(400).send({ ok: false, error: '备份格式无效' });
+  // DH-14: 恢复同样走乐观锁
+  const body = request.body || {};
+  if (typeof body.rev !== 'number') return reply.code(400).send({ ok: false, error: '缺少版本号 rev，请刷新后重试' });
+  const curRev = getRev();
+  if (body.rev !== curRev) {
+    return reply.code(409).send({ ok: false, conflict: true, serverRev: curRev,
+      error: '数据已被其他窗口修改，请刷新后重试' });
+  }
   const incoming = data.ads.map(normalizeAd);
+  // DH-15: 恢复前同样校验
+  const errors = incoming.flatMap(ad => validateAd(ad, incoming).map(msg => `#${ad.no || ad.id}: ${msg}`));
+  if (errors.length) return reply.code(400).send({ ok: false, error: '备份数据校验失败', details: errors.slice(0, 20) });
   // 先快照恢复前状态（可撤销这次恢复）；失败也不阻塞恢复本身
   db.prepare('INSERT INTO backups (scope, payload, created_at) VALUES (?, ?, ?)')
     .run('pre-restore', JSON.stringify(pack('pre-restore')), now());
