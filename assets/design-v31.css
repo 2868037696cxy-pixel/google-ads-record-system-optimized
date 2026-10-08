@@ -12,7 +12,7 @@
   --line: #e3e8ee;
   --text: #161b22;
   --muted: #5d6b7a;
-  --faint: #9aa5b1;
+  --faint: #6b7480;
 
   --brand: #0b6e74;
   --brand-deep: #0a5f64;
@@ -49,7 +49,7 @@ html[data-theme="dark"] {
   --line: #2f3640;
   --text: #e8edf2;
   --muted: #8b96a3;
-  --faint: #5d6771;
+  --faint: #8a939e;
   --brand: #3aa5ac;
   --brand-deep: #2f8b91;
   --brand-soft: #1d3235;
@@ -280,10 +280,7 @@ html[data-theme="dark"] .nav-btn.active {
   from { opacity: 0; transform: translateX(24px); }
   to { opacity: 1; transform: translateX(0); }
 }
-.toast {
-  animation: toastIn 0.25s var(--ease);
-  border-radius: 12px;
-  box-shadow: var(--shadow-lg);
+.toast-item {
   border: 1px solid var(--line);
 }
 
@@ -350,7 +347,7 @@ html[data-theme="dark"] .nav-btn.active {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  #content > *, .toast { animation: none; }
+  #content > *, .toast-wrap, .toast-item { animation: none; }
   .stat:hover, .metric:hover, .btn:active { transform: none; }
 }
 
