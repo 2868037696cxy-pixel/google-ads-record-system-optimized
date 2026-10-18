@@ -706,3 +706,244 @@ body.auth-body {
 @media (max-width: 900px) {
   .auth-main-foot { display: none; }
 }
+
+/* ============================================================
+   Apple 式重做
+   ------------------------------------------------------------
+   上一版是「终端 / 赛博」那一套：荧光绿、等宽标签、01–05 编号、网格底。
+   Apple 的做法正好相反——近乎无彩、靠字重与字号建立层级、一个蓝色只留给
+   主操作、界面靠毛玻璃与大圆角分层。
+   实现上先整组替换设计令牌（下面 body.auth-body 里的变量），所有引用
+   var(--accent) / var(--line) / var(--muted) 的既有规则会一起换色，
+   再逐处调排版、形状与交互细节，避免逐条硬改颜色留下不一致。
+   ============================================================ */
+body.auth-body {
+  /* 色板：近黑底 + 中性白字 + 唯一强调色 Apple 蓝 */
+  --bg: #000;
+  --surface: rgba(255, 255, 255, 0.05);
+  --surface-2: rgba(255, 255, 255, 0.09);
+  --surface-3: rgba(255, 255, 255, 0.14);
+  --line: rgba(255, 255, 255, 0.09);
+  --line-strong: rgba(255, 255, 255, 0.16);
+
+  --text: #f5f5f7;
+  --muted: rgba(255, 255, 255, 0.6);
+  --faint: rgba(255, 255, 255, 0.45);
+  --ghost: rgba(255, 255, 255, 0.3);
+
+  --accent: #0a84ff;
+  --accent-strong: #409cff;
+  --accent-deep: #0066d6;
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(10, 132, 255, 0.18);
+  --accent-line: rgba(10, 132, 255, 0.55);
+
+  /* Apple 深色模式的系统语义色 */
+  --green: #30d158;
+  --blue: #0a84ff;
+  --amber: #ff9f0a;
+  --red: #ff453a;
+
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Helvetica Neue", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+
+  background: #000;
+}
+
+/* 去掉上一版的细网格，换成一片大范围柔光——Apple 的背景是氛围而不是纹理 */
+.auth-shell::before { display: none; }
+
+body.auth-body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(1000px 660px at 50% -12%, rgba(10, 132, 255, 0.2), transparent 62%),
+    radial-gradient(760px 560px at 88% 104%, rgba(120, 90, 255, 0.13), transparent 66%),
+    radial-gradient(700px 520px at 8% 96%, rgba(48, 209, 88, 0.08), transparent 66%);
+}
+
+/* ---- 左栏当英雄区：大字号、紧字距，去掉等宽标签与编号 ---- */
+@media (min-width: 901px) {
+  .auth-rail {
+    background: none;
+    border-right: 1px solid var(--line);
+  }
+
+  .auth-pitch h1 {
+    font-size: clamp(38px, 3.6vw, 58px);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1.09;
+  }
+
+  /* Apple 不做双色标题，整句一个白 */
+  .auth-pitch h1 em { color: var(--text); font-style: normal; }
+
+  .auth-pitch p {
+    font-size: 17px;
+    line-height: 1.62;
+    letter-spacing: -0.01em;
+    color: var(--muted);
+    max-width: 34ch;
+  }
+
+  .auth-specs { margin-top: 34px; }
+
+  .auth-specs li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 0;
+  }
+
+  .auth-specs .spec-key,
+  .auth-specs .spec-idx { display: none; }
+
+  .auth-specs li::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  .auth-specs .spec-label {
+    font-size: 17px;
+    letter-spacing: -0.012em;
+    color: var(--text);
+  }
+
+  /* 品牌标识做成单色，像 Apple 在深色底上的处理 */
+  .auth-brand .brand-mark { background: #f5f5f7; color: #000; box-shadow: none; }
+  .auth-brand .brand-text strong { font-size: 17px; letter-spacing: -0.01em; }
+  .auth-brand .brand-text span { color: var(--ghost); letter-spacing: 0.06em; }
+}
+
+/* ---- 卡片：毛玻璃 + 大圆角，去掉荧光发丝线 ---- */
+.auth-card {
+  max-width: 400px;
+  padding: 34px 32px 30px;
+  background: rgba(28, 28, 30, 0.72);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 24px;
+  box-shadow: 0 34px 80px -28px rgba(0, 0, 0, 0.85);
+}
+
+.auth-card::before { display: none; }
+
+/* ---- 登录 / 注册 → Apple 分段控件 ---- */
+.auth-tabs .tabs {
+  gap: 2px;
+  padding: 2px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(120, 120, 128, 0.24);
+}
+
+.auth-tabs .tab {
+  padding: 6px 16px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: rgba(255, 255, 255, 0.62);
+  background: none;
+  box-shadow: none;
+}
+
+.auth-tabs .tab.active {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+}
+
+/* ---- 标题与说明 ---- */
+.auth-title { font-size: 26px; font-weight: 600; letter-spacing: -0.022em; }
+.auth-sub { font-size: 15px; letter-spacing: -0.008em; }
+
+/* ---- 输入框：48px 高、12px 圆角、聚焦蓝色柔光 ---- */
+.auth-form .field > label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--muted);
+}
+
+.auth-form input.auth-input {
+  height: 48px;
+  padding: 0 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.auth-form input.auth-input::placeholder { color: rgba(255, 255, 255, 0.34); }
+.auth-form input.auth-input:hover { border-color: rgba(255, 255, 255, 0.18); }
+
+.auth-form input.auth-input:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 0 0 4px var(--accent-dim);
+}
+
+/* ---- 主按钮：Apple 用纯色不上渐变，按下轻微回弹 ---- */
+.auth-submit {
+  height: 48px;
+  border-radius: 12px;
+  background: var(--accent);
+  color: #fff;
+  box-shadow: none;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+}
+
+.auth-submit:hover:not(:disabled) { background: var(--accent-strong); box-shadow: none; }
+.auth-submit:active:not(:disabled) { background: var(--accent-deep); transform: scale(0.985); }
+.auth-submit:disabled { opacity: 0.72; filter: none; cursor: progress; }
+
+.auth-submit.btn-loading::before {
+  border-color: rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+}
+
+/* ---- 底部切换与脚注 ---- */
+.auth-switch { font-size: 14px; color: var(--muted); }
+.link-btn { color: var(--accent); }
+.link-btn:hover { color: var(--accent-strong); border-bottom-color: var(--accent-strong); }
+.auth-main-foot { font-size: 12px; color: var(--ghost); }
+
+/* ---- 窄屏：大内边距在小屏上会挤，收一收 ---- */
+@media (max-width: 480px) {
+  .auth-card { padding: 26px 20px 24px; border-radius: 20px; }
+  .auth-title { font-size: 22px; }
+  .auth-pitch h1 { letter-spacing: -0.028em; }
+}
+
+/* ---- 卡片背后的柔光 ----
+   卡片背后原本是纯黑，backdrop-filter 没有东西可折射，毛玻璃就看不出来。
+   这里垫一团蓝色柔光，卡片才会「浮」起来。放在卡片之下的层里。 */
+.auth-main::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(780px, 108%);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(10, 132, 255, 0.17), transparent 64%);
+  filter: blur(44px);
+  pointer-events: none;
+  z-index: -1;
+}
