@@ -376,7 +376,7 @@ function renderWorkbench() {
           </div>
         </form>
         <div class="create-preview">
-          <span>本次将创建 <b>${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
+          <span>本次将创建 <b class="cc-num">${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
             ${count > avail.emails ? `<span class="warn">⚠ 邮箱仅剩 ${avail.emails} 条</span>` : ''}
             ${count > avail.cards ? `<span class="warn">⚠ 信用卡仅剩 ${avail.cards} 张</span>` : ''}
           </span>
@@ -701,7 +701,8 @@ function renderPoolTableInto() {
       <code>${esc(POOL_FORMAT[kind])}</code>
     </div>`);
   } else {
-    panel.insertAdjacentHTML('beforeend', `<div class="table-wrap"><table>
+    panel.insertAdjacentHTML('beforeend', `<div class="table-wrap"><table class="pool-table">
+      <colgroup>${(tableConf.widths || []).map((w) => `<col${w ? ` style="width:${w}"` : ''}>`).join('')}</colgroup>
       <thead><tr>${tableConf.cols.map((c) => `<th>${c}</th>`).join('')}</tr></thead>
       <tbody>
         ${list
@@ -1287,6 +1288,8 @@ function updateCreatePreview() {
     : `${fp.prefix}${fp.seq}`;
   const avail = { emails: poolCount('emails'), cards: poolCount('cards') };
   preview.querySelector('.fp').textContent = fpPreview;
+  const numEl = preview.querySelector('.cc-num');
+  if (numEl) numEl.textContent = count;
   const btn = preview.querySelector('[data-action="create"]');
   btn.disabled = count === 0;
   btn.textContent = count > 0 ? `立即创建 ${count} 条` : '立即创建';

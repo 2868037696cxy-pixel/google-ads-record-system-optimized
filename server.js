@@ -206,7 +206,20 @@ function parseProxies(text) {
       continue;
     }
     if (ipRe.test(line)) {
-      ensure().ip = line;
+      // 裸 IPv4：当前条目尚无主机时视为主机（兼容「主机为纯 IP」的代理商文本块）；
+      // 已存在主机且带账号/国家等信息时视为出口 IP；仅有主机+端口时视为下一条记录的起点
+      const hasHost = !!(cur && cur.host);
+      const hasMeta = !!(cur && (cur.user || cur.pass || cur.country));
+      if (!hasHost) {
+        ensure();
+        setHost(line);
+      } else if (hasMeta) {
+        ensure().ip = line;
+      } else {
+        flush();
+        ensure();
+        setHost(line);
+      }
       continue;
     }
     if ((m = line.match(/^([A-Za-z]{2})\s*[-–—]\s*(.+)$/)) && /[\u4e00-\u9fa5]/.test(m[2])) {
