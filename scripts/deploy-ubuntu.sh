@@ -10,7 +10,7 @@ for candidate in /usr/local/bin/node "$(command -v node || true)" /usr/bin/node;
   if [[ -x "$candidate" ]] && "$candidate" -e 'const s=require("node:sqlite");if(!s.backup)process.exit(1)' >/dev/null 2>&1; then NODE="$candidate"; break; fi
 done
 [[ -n "$NODE" ]] || { echo 'Need a Node.js runtime with node:sqlite backup (Node 22.16+ or 24).'; exit 1; }
-export PATH="$(dirname "$NODE"):/usr/local/bin:/usr/bin:/bin"
+export PATH="$(dirname "$NODE"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 NPM=$(command -v npm)
 [[ -f "$SOURCE/server.js" && -f "$SOURCE/package-lock.json" ]] || { echo 'Incomplete source'; exit 1; }
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
