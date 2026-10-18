@@ -480,9 +480,59 @@ function licGrab(t, labels) {
   return m ? m[1].trim().replace(/^["'「」『』【】]+|["'「」『』【】]+$/g, '') : '';
 }
 
+/* 丹麦 CVR / Erhvervsstyrelsen 等「标签独占一行、值在下一行」的营业执照文档 */
+const CVR_HINT_RE = /cvr-?nummer|erhvervsstyrelsen|postnummer\s*og\s*by|virksomhedsform|centrale\s*virksomhedsregister/i;
+const CVR_NOISE_RE = /^(?:side\s*\d+|dato\s*:|erhvervsstyrelsen\b|oplysningerne\s+i\s+dette\s+dokument|eller\s+markedsf|brug\s+af\s+data|regnskaber|årsrapport|periode|offentliggørelsesdato|godkendelsesdato|startdato|reklamebeskyttelse|status\b)/i;
+
+function parseLicensesCvr(text) {
+  const lines = String(text || '').split(/\r?\n/).map((s) => s.trim());
+  const pos = [];
+  lines.forEach((l, i) => { if (l) pos.push(i); });
+  // 值 = 标签行的下一个非空行
+  const valueOf = (labelRe) => {
+    for (let k = 0; k < pos.length - 1; k++) {
+      if (labelRe.test(lines[pos[k]])) return lines[pos[k + 1]];
+    }
+    return '';
+  };
+  // 公司名称：CVR 标签上方最近的非噪声行
+  let name = '';
+  const cvrPos = pos.find((i) => /^cvr-?nummer$/i.test(lines[i]));
+  if (cvrPos != null) {
+    for (let k = pos.indexOf(cvrPos) - 1; k >= 0; k--) {
+      const cand = lines[pos[k]];
+      if (!CVR_NOISE_RE.test(cand)) { name = cand; break; }
+    }
+  }
+  if (!name) {
+    for (const i of pos) {
+      const l = lines[i];
+      if (!CVR_NOISE_RE.test(l) && l.length <= 60) { name = l; break; }
+    }
+  }
+  if (!name) return [];
+  const zipcity = valueOf(/^postnummer(\s*og\s*by)?$/i);
+  const zc = zipcity.match(/^(\d{3,6})\s*[- ]?\s*(.*)$/);
+  return [{
+    name,
+    legal_name: name,
+    address: valueOf(/^adresse$/i),
+    apt: '',
+    zip: zc ? zc[1] : '',
+    city: zc ? zc[2].trim() : zipcity,
+    type: valueOf(/^(?:virksomheds?-?form|selskabsform)$/i) || '组织',
+  }];
+}
+
 function parseLicenses(text) {
   const raw = String(text || '').trim();
   if (!raw) return [];
+
+  // 丹麦 CVR 等结构化登记文档：整体解析为一条营业执照记录
+  if (CVR_HINT_RE.test(raw)) {
+    const cvr = parseLicensesCvr(raw);
+    if (cvr.length) return cvr;
+  }
 
   // 检测是否为带标签的结构化文本
   const hasLabel = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(raw);
@@ -503,13 +553,14 @@ function parseLicenses(text) {
     }];
   }
 
-  // 旧格式：一行一个公司名
+  // 旧格式：一行一个公司名（过滤掉文档页眉/声明等噪声行）
   const out = [];
   for (const line of raw.split(/\r?\n/)) {
     let l = line.trim();
     if (!l) continue;
     l = l.replace(/^\s*(?:\d+[.、)]|[-*•])\s*/, '').trim();
     if (!l || l.includes('@')) continue;
+    if (CVR_NOISE_RE.test(l) || l.length > 80) continue;
     out.push({ name: l });
   }
   return out;

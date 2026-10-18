@@ -785,7 +785,7 @@ async function openImportModal(kind) {
           okBtn.disabled = false;
         }
       } catch (e) {
-        resultBox.textContent = '❌ ' + e.message;
+        resultBox.textContent = '❌ ' + (e.message || '解析失败，请重试');
         okBtn.disabled = true;
       }
     };
@@ -814,7 +814,7 @@ async function openImportModal(kind) {
         okBtn.disabled = false;
       }
     } catch (e) {
-      resultBox.textContent = e.message;
+      resultBox.textContent = e.message || '解析失败，请重试';
       okBtn.disabled = true;
     }
   };
@@ -906,7 +906,7 @@ function openAutoImport() {
       parsed = await api('/api/parse/auto', { method: 'POST', body: { text } });
       renderPreview();
     } catch (e) {
-      resultBox.textContent = e.message;
+      resultBox.textContent = e.message || '解析失败，请重试';
       okBtn.disabled = true;
     }
   };
