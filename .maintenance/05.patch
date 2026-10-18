@@ -1,0 +1,204 @@
+diff --git a/lib/store.js b/lib/store.js
+index ce90847..4d011ce 100644
+--- a/lib/store.js
++++ b/lib/store.js
+@@ -9,3 +9,4 @@
+ 
+-const { licenseKeys } = require('./dedup');
++const { licenseKeys, findLicenseConflict } = require('./dedup');
++const { encode, decodeRow, assertNoCardSecrets, SECRET_FIELDS, PROTECTED, getVault } = require('./vault');
+ 
+@@ -19,3 +20,3 @@ const POOL_FIELDS = {
+   proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
+-  cards: ['number', 'expiry', 'cvv'],
++  cards: ['number', 'expiry', 'last4'],
+   licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
+@@ -24,3 +25,3 @@ const POOL_FIELDS = {
+ // 供 client 使用前剥离的内部列
+-const INTERNAL_COLUMNS = new Set(['owner_id', 'dup_name', 'dup_legal', 'dup_cvr', 'dup_addr']);
++const INTERNAL_COLUMNS = new Set(['owner_id', 'dup_name', 'dup_legal', 'dup_cvr', 'dup_addr', 'cvv', 'card_cvv']);
+ 
+@@ -31,3 +32,3 @@ const RECORD_FIELDS = [
+   'proxy_user', 'proxy_pass', 'proxy_country', 'proxy_ip',
+-  'card_id', 'card_number', 'card_expiry', 'card_cvv',
++  'card_id', 'card_number', 'card_expiry', 'card_last4',
+   'license_id', 'license_name', 'ip_reg_time', 'id_card', 'status', 'created_at',
+@@ -50,3 +51,3 @@ function listPool(db, ownerId, kind) {
+   if (!POOL_TYPES.includes(kind)) throw new Error(`未知资源类型 ${kind}`);
+-  return toPublicList(db.prepare(`SELECT * FROM ${kind} WHERE owner_id = ? ORDER BY id`).all(ownerId));
++  return toPublicList(db.prepare(`SELECT * FROM ${kind} WHERE owner_id = ? ORDER BY id`).all(ownerId).map(row=>decodeRow(db,kind,row)));
+ }
+@@ -61,3 +62,3 @@ function findPoolItem(db, ownerId, kind, id) {
+   if (!POOL_TYPES.includes(kind)) return undefined;
+-  return db.prepare(`SELECT * FROM ${kind} WHERE owner_id = ? AND id = ?`).get(ownerId, id);
++  return decodeRow(db,kind,db.prepare(`SELECT * FROM ${kind} WHERE owner_id = ? AND id = ?`).get(ownerId, id));
+ }
+@@ -65,3 +66,3 @@ function findPoolItem(db, ownerId, kind, id) {
+ function getRecord(db, ownerId, id) {
+-  return db.prepare('SELECT * FROM records WHERE owner_id = ? AND id = ?').get(ownerId, id);
++  return decodeRow(db,'records',db.prepare('SELECT * FROM records WHERE owner_id = ? AND id = ?').get(ownerId, id));
+ }
+@@ -69,3 +70,3 @@ function getRecord(db, ownerId, id) {
+ function listRecords(db, ownerId) {
+-  return toPublicList(db.prepare('SELECT * FROM records WHERE owner_id = ? ORDER BY id DESC').all(ownerId));
++  return toPublicList(db.prepare('SELECT * FROM records WHERE owner_id = ? ORDER BY id DESC').all(ownerId).map(row=>decodeRow(db,'records',row)));
+ }
+@@ -80,2 +81,3 @@ function isUniqueViolation(error) {
+ function buildPoolRow(kind, item) {
++  assertNoCardSecrets(item);
+   const row = {};
+@@ -102,3 +104,3 @@ function insertPoolRow(db, ownerId, kind, item, { createdAt }) {
+   const columns = ['owner_id', 'status', 'created_at', ...POOL_FIELDS[kind]];
+-  const values = [ownerId, '未使用', createdAt, ...POOL_FIELDS[kind].map((f) => row[f])];
++  const values = [ownerId, '未使用', createdAt, ...POOL_FIELDS[kind].map((f) => encode(db,kind,ownerId,f,row[f]))];
+   if (kind === 'licenses') {
+@@ -116,3 +118,4 @@ function updatePoolRow(db, ownerId, kind, id, item) {
+   const sets = POOL_FIELDS[kind].map((f) => `${f} = ?`);
+-  const values = POOL_FIELDS[kind].map((f) => row[f]);
++  const values = POOL_FIELDS[kind].map((f) => encode(db,kind,ownerId,f,row[f]));
++  sets.push('version = version + 1');
+   if (kind === 'licenses') {
+@@ -128,3 +131,3 @@ function updatePoolRow(db, ownerId, kind, id, item) {
+ function setPoolStatus(db, ownerId, kind, id, status) {
+-  const info = db.prepare(`UPDATE ${kind} SET status = ? WHERE owner_id = ? AND id = ?`).run(status, ownerId, id);
++  const info = db.prepare(`UPDATE ${kind} SET status = ?, version = version + 1 WHERE owner_id = ? AND id = ?`).run(status, ownerId, id);
+   return info.changes ? findPoolItem(db, ownerId, kind, id) : undefined;
+@@ -161,2 +164,3 @@ function fingerprintExists(db, ownerId, fingerprint) {
+ function insertRecord(db, ownerId, record) {
++  assertNoCardSecrets(record);
+   const columns = ['owner_id', ...RECORD_FIELDS];
+@@ -165,3 +169,3 @@ function insertRecord(db, ownerId, record) {
+     if (value === null || value === undefined) return RECORD_FIELDS.includes(f) && (f.endsWith('_id')) ? null : '';
+-    return value;
++    return encode(db,'records',ownerId,f,value);
+   })];
+@@ -173,7 +177,9 @@ function insertRecord(db, ownerId, record) {
+ function updateRecordColumns(db, ownerId, id, patch) {
+-  const keys = Object.keys(patch).filter((k) => RECORD_FIELDS.includes(k));
++  assertNoCardSecrets(patch);
++  const keys = Object.keys(patch).filter((k) => RECORD_FIELDS.includes(k) && patch[k] !== PROTECTED);
+   if (!keys.length) return;
+   const sets = keys.map((k) => `${k} = ?`);
++  sets.push('version = version + 1');
+   db.prepare(`UPDATE records SET ${sets.join(', ')} WHERE owner_id = ? AND id = ?`)
+-    .run(...keys.map((k) => patch[k]), ownerId, id);
++    .run(...keys.map((k) => encode(db,'records',ownerId,k,patch[k])), ownerId, id);
+ }
+@@ -198,3 +204,3 @@ function recordsUsingResource(db, ownerId, prefix, resourceId, excludeRecordId =
+ function latestRecord(db, ownerId) {
+-  return db.prepare('SELECT * FROM records WHERE owner_id = ? ORDER BY id DESC LIMIT 1').get(ownerId);
++  return decodeRow(db,'records',db.prepare('SELECT * FROM records WHERE owner_id = ? ORDER BY id DESC LIMIT 1').get(ownerId));
+ }
+@@ -212,2 +218,5 @@ function listLicenses(db, ownerId) {
+ function putDocument(db, ownerId, { sha256, filename, bytes, createdAt }) {
++  const prior=db.prepare('SELECT owner_id FROM document_registry WHERE sha256=?').get(sha256);
++  if(prior && prior.owner_id!==ownerId) {const e=new Error('PDF already registered');e.statusCode=409;throw e;}
++  db.prepare('INSERT INTO document_registry(sha256,owner_id,created_at) VALUES(?,?,?) ON CONFLICT(sha256) DO NOTHING').run(sha256,ownerId,createdAt);
+   // 同一份 PDF 全库只存一份，但绝不去改写已存在的那一行：
+@@ -218,3 +227,3 @@ function putDocument(db, ownerId, { sha256, filename, bytes, createdAt }) {
+     ON CONFLICT(sha256) DO NOTHING
+-  `).run(sha256, ownerId, filename, bytes.length, bytes, createdAt);
++  `).run(sha256, ownerId, filename, bytes.length, getVault(db).sealBytes(bytes,`pdf:${ownerId}:${sha256}`), createdAt);
+ }
+@@ -222,3 +231,4 @@ function putDocument(db, ownerId, { sha256, filename, bytes, createdAt }) {
+ function getDocument(db, sha256) {
+-  return db.prepare('SELECT sha256, filename, size, bytes FROM documents WHERE sha256 = ?').get(sha256);
++  const row=db.prepare('SELECT sha256, owner_id, filename, size, bytes FROM documents WHERE sha256 = ?').get(sha256);
++  return row ? {...row,bytes:getVault(db).openBytes(row.bytes,`pdf:${row.owner_id}:${sha256}`)} : undefined;
+ }
+@@ -268,60 +278,44 @@ function touchLogin(db, userId, at) {
+ function adoptLegacySnapshot(db, ownerId, snapshot, { createdAt }) {
+-  const stats = { emails: 0, proxies: 0, cards: 0, licenses: 0, records: 0, documents: 0, skipped: 0 };
+-
+-  for (const kind of POOL_TYPES) {
+-    for (const item of snapshot[kind] || []) {
+-      const predicate = poolDuplicatePredicate(kind, item);
+-      let existing = null;
+-      if (kind === 'licenses') {
+-        existing = db.prepare('SELECT id FROM licenses WHERE dup_name IS NOT NULL AND dup_name = ? OR dup_cvr IS NOT NULL AND dup_cvr = ?')
+-          .get(licenseKeys(item).dup_name, licenseKeys(item).dup_cvr);
+-      } else if (predicate) {
+-        existing = db.prepare(`SELECT id FROM ${kind} WHERE owner_id = ? AND ${predicate.sql}`).get(ownerId, ...predicate.params);
++  const stats = { emails:0, proxies:0, cards:0, licenses:0, records:0, documents:0, skipped:0 };
++  const maps=Object.fromEntries(POOL_TYPES.map(k=>[k,new Map()]));
++  for(const kind of POOL_TYPES) {
++    for(const item of snapshot[kind] || []) {
++      assertNoCardSecrets(item);
++      let existing;
++      if(kind==='licenses') {
++        const conflict=findLicenseConflict(db,licenseKeys(item),{excludeOwnerId:ownerId});
++        if(conflict) { const e=new Error('\u5907\u4efd\u8d44\u6599\u4e0e\u5df2\u767b\u8bb0\u7684\u4f01\u4e1a\u51b2\u7a81\uff0c\u6062\u590d\u5df2\u53d6\u6d88');e.statusCode=409;throw e; }
++        const keys=licenseKeys(item);
++        existing=db.prepare('SELECT id FROM licenses WHERE owner_id=? AND ((dup_name IS NOT NULL AND dup_name=?) OR (dup_cvr IS NOT NULL AND dup_cvr=?))').get(ownerId,keys.dup_name,keys.dup_cvr);
++      } else {
++        const predicate=poolDuplicatePredicate(kind,item);
++        existing=db.prepare(`SELECT id FROM ${kind} WHERE owner_id=? AND ${predicate.sql}`).get(ownerId,...predicate.params);
+       }
+-      if (existing) { stats.skipped += 1; continue; }
+-      const row = insertPoolRow(db, ownerId, kind, item, { createdAt });
+-      if (item.status && STATUSES.includes(item.status)) setPoolStatus(db, ownerId, kind, row.id, item.status);
+-      // 旧版迁移/本人恢复时保留原 PDF 的关联，不能只恢复组织字段而丢失附件。
+-      if (kind === 'licenses' && item.document_id) {
+-        db.prepare('UPDATE licenses SET document_id = ?, document_name = ?, document_size = ? WHERE owner_id = ? AND id = ?')
+-          .run(item.document_id, item.document_name || '营业执照.pdf', Number(item.document_size) || 0, ownerId, row.id);
++      if(existing) { maps[kind].set(item.id,existing.id); stats.skipped++; continue; }
++      const row=insertPoolRow(db,ownerId,kind,item,{createdAt}); maps[kind].set(item.id,row.id);
++      if(STATUSES.includes(item.status)) setPoolStatus(db,ownerId,kind,row.id,item.status);
++      if(kind==='licenses' && item.document_id) {
++        db.prepare('UPDATE licenses SET document_id=?, document_name=?, document_size=? WHERE owner_id=? AND id=?').run(item.document_id,item.document_name||'certificate.pdf',Number(item.document_size)||0,ownerId,row.id);
+       }
+-      stats[kind] += 1;
++      stats[kind]++;
+     }
+   }
+-
+-  const idMap = {};
+-  for (const kind of POOL_TYPES) {
+-    const rows = db.prepare(`SELECT id FROM ${kind} WHERE owner_id = ? ORDER BY id`).all(ownerId);
+-    idMap[kind] = rows.map((r) => r.id);
+-  }
+-
+-  for (const item of snapshot.records || []) {
+-    if (fingerprintExists(db, ownerId, item.fingerprint || '')) { stats.skipped += 1; continue; }
+-    const record = { ...item };
+-    // 旧 id 通过同序号映射到新 id，保持资源关联关系
+-    for (const [kind, prefix] of Object.entries(POOL_PREFIX)) {
+-      const oldId = item[`${prefix}_id`];
+-      if (oldId == null) { record[`${prefix}_id`] = null; continue; }
+-      const position = (snapshot[kind] || []).findIndex((row) => row.id === oldId);
+-      record[`${prefix}_id`] = position >= 0 ? idMap[kind][position] ?? null : null;
++  for(const item of snapshot.records||[]) {
++    if(fingerprintExists(db,ownerId,item.fingerprint||'')) {stats.skipped++;continue;}
++    const record={...item};
++    for(const [kind,prefix] of Object.entries(POOL_PREFIX)) {
++      const id=item[`${prefix}_id`];
++      if(id==null) record[`${prefix}_id`]=null;
++      else {
++        const newId=maps[kind].get(id);
++        if(newId==null) throw new Error('Backup resource mapping failed');
++        record[`${prefix}_id`]=newId;
++      }
+     }
+-    record.created_at = item.created_at || createdAt;
+-    insertRecord(db, ownerId, record);
+-    stats.records += 1;
++    record.created_at=item.created_at||createdAt;
++    insertRecord(db,ownerId,record);stats.records++;
+   }
+-
+-  for (const [sha, document] of Object.entries(snapshot.documents || {})) {
+-    if (!document || typeof document.base64 !== 'string') continue;
+-    const bytes = Buffer.from(document.base64, 'base64');
+-    if (!bytes.length) continue;
+-    putDocument(db, ownerId, {
+-      sha256: sha,
+-      filename: document.filename || '营业执照.pdf',
+-      bytes,
+-      createdAt,
+-    });
+-    stats.documents += 1;
++  for(const [sha,doc] of Object.entries(snapshot.documents||{})) {
++    putDocument(db,ownerId,{sha256:sha,filename:doc.filename||'certificate.pdf',bytes:Buffer.from(doc.base64,'base64'),createdAt});stats.documents++;
+   }
+-
+   return stats;
