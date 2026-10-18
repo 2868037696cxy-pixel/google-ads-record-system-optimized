@@ -1478,3 +1478,20 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
 @media(max-width:1180px){.overview-columns{grid-template-columns:1fr}.overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:640px){.overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.overview-metric{padding:13px}.overview-metric>b{font-size:25px}.overview-columns{gap:10px}.overview-recent-row{gap:7px;margin:0 10px}.overview-recent-row .overview-status{display:none}.overview-recent-icon{display:none}.overview-recent-name small{max-width:155px}.overview-resource-list{padding:6px}}
 @media(prefers-reduced-motion:reduce){.overview-resource,.overview-todo-row{transition:none}}
+
+/* 导航条目增加后保持独立滚动区域，避免被桌面底部账号/备份操作覆盖。 */
+.sidebar { overflow: hidden; }
+.sidebar > .nav {
+  flex: 1 1 0%;
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-padding-block: 8px;
+}
+.sidebar > .sidebar-foot {
+  flex: 0 0 auto;
+  min-height: 0;
+  max-height: 53vh;
+  overflow-y: auto;
+}
