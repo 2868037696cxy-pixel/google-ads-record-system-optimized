@@ -631,24 +631,35 @@ function normalizeImport(type, item) {
   return row;
 }
 
-/** 冲突的结构化描述，供接口返回给前端展示「被谁、何时、依据什么字段」判重。 */
+/** 跨用户判重只返回冲突原因，绝不返回其他成员身份与资料。 */
+function privateConflictMessage(conflict) {
+  return `该资料已存在，不能重复保存（判重依据：${conflict.label}）。请检查文件和组织资料。`;
+}
 function conflictDetail(conflict, item) {
   return {
-    name: String(item?.name || conflict.license.name || ''),
+    name: String(item?.name || ''),
     field: conflict.field,
     label: conflict.label,
-    license_name: conflict.license.name,
-    cvr: conflict.license.cvr || '',
-    owner: { username: conflict.owner.username, display_name: conflict.owner.display_name },
-    created_at: conflict.license.created_at,
     weak: !!conflict.weak,
-    message: dedup.conflictMessage(conflict),
+    message: privateConflictMessage(conflict),
   };
+}
+
+/** 按 PDF 原始字节查重；更改文件名也无法绕过。 */
+function checkDuplicatePdf(bytes) {
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const row = db.prepare('SELECT 1 FROM licenses WHERE document_id = ? LIMIT 1').get(sha256);
+  return { sha256, exists: !!row };
+}
+function rejectDuplicatePdf() {
+  return replyConflict('该 PDF 文件已被记录，不能重复上传或保存。请核对文件内容。', [
+    { name: '当前上传的 PDF', field: 'file', label: 'PDF 文件内容', message: '文件内容与已保存文件完全相同，已拒绝保存。' },
+  ]);
 }
 
 /**
  * 批量导入到指定账号名下。
- * 营业执照会跨全体用户查重：命中的条目被跳过，并在 conflicts 里带上「已被谁导入」的说明。
+ * 营业执照会跨全体用户查重：重复时整批拒绝，只显示判重依据。
  */
 function importItems(ownerId, type, items) {
   if (!Array.isArray(items) || items.length > 5000) return reply400('单次导入最多 5000 条');
@@ -679,7 +690,7 @@ function importItems(ownerId, type, items) {
         } catch (error) {
           if (!store.isUniqueViolation(error)) throw error;
           skipped.push(it);
-          conflicts.push({ name: it.name, field: 'name', label: '组织名称', owner: null, message: '该营业执照与资料库中现有资料重复' });
+          conflicts.push({ name: it.name, field: 'name', label: '组织名称', owner: null, message: '该营业执照已存在，禁止重复保存' });
         }
         continue;
       }
@@ -1214,6 +1225,8 @@ fastify.post('/api/parse/:type', async (req) => {
 // 只解析不保存；只有确认导入后才会保存原件。
 fastify.post('/api/parse/licenses-pdf', async (req) => {
   const bytes = decodePdf(req.body?.pdf);
+  // 解析前先查全库原件，减少重复解析且不泄露来源账号。
+  if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
   try {
     const text = await extractPdfText(bytes);
     const items = parseCertificate(text);
@@ -1240,7 +1253,7 @@ function probeDuplicate(item, req) {
   return {
     duplicate: {
       ...conflictDetail(conflict, item),
-      message: dedup.conflictMessage(conflict, { includePdf: true }),
+      message: privateConflictMessage(conflict),
       self: false,
     },
   };
@@ -1258,9 +1271,11 @@ fastify.post('/api/import/:type', async (req, reply) => {
     if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
     const bytes = decodePdf(req.body.pdf);
     const item = normalizeImport('licenses', items[0]);
-    const documentId = crypto.createHash('sha256').update(bytes).digest('hex');
+    const documentId = checkDuplicatePdf(bytes).sha256;
     const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
     return mutate(() => {
+      // 再次校验并在单个 SQLite 写事务里拒绝重复，防止两人同时保存。
+      if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
       const mine = store.listLicenses(db, ownerId);
       const byDocument = mine.filter((license) => license.document_id === documentId);
       if (byDocument.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
@@ -1272,7 +1287,7 @@ fastify.post('/api/import/:type', async (req, reply) => {
 
       // 关键一步：跨全体用户判重（自己已有的那条属于「更新」，不算重复）
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
-      if (conflict) return replyConflict(dedup.conflictMessage(conflict, { includePdf: true }), [conflictDetail(conflict, item)]);
+      if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, item)]);
 
       let license = mineMatched;
       const added = license ? 0 : 1;
@@ -1283,7 +1298,7 @@ fastify.post('/api/import/:type', async (req, reply) => {
       } catch (error) {
         if (!store.isUniqueViolation(error)) throw error;
         const again = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
-        return replyConflict(again ? dedup.conflictMessage(again, { includePdf: true }) : '该营业执照与现有资料重复', again ? [conflictDetail(again, item)] : []);
+        return replyConflict(again ? privateConflictMessage(again) : '该营业执照与现有资料重复', again ? [conflictDetail(again, item)] : []);
       }
       db.prepare('UPDATE licenses SET document_id = ?, document_name = ?, document_size = ? WHERE owner_id = ? AND id = ?')
         .run(documentId, filename, bytes.length, ownerId, license.id);
@@ -1337,9 +1352,9 @@ fastify.get('/api/licenses/:id/pdf', async (req, reply) => {
 });
 
 /** 全体成员重复体检：跨用户扫描，找出任何形式的重复。 */
-fastify.get('/api/licenses/duplicates', async () => {
-  const report = dedup.auditLicenses(db);
-  return { ...report, scope: 'global', address_mode: dedup.ADDRESS_MODE };
+// 普通用户不能枚举全体成员的营业执照或归属关系。待管理员权限实现再开放。
+fastify.get('/api/licenses/duplicates', async (req, reply) => {
+  return reply.code(403).send({ error: '无权查看其他成员的查重报告' });
 });
 
 fastify.patch('/api/pool/:type/:id', async (req) => {
@@ -1363,7 +1378,7 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     const merged = normalizeImport(type, { ...store.toPublic(current), ...changed });
     if (type === 'licenses') {
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
-      if (conflict) return replyConflict(dedup.conflictMessage(conflict), [conflictDetail(conflict, merged)]);
+      if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, merged)]);
     } else {
       const predicate = store.poolDuplicatePredicate(type, merged);
       const dup = predicate && db.prepare(`SELECT id FROM ${type} WHERE owner_id = ? AND ${predicate.sql} AND id <> ?`)
