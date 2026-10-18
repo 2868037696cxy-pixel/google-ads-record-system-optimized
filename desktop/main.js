@@ -4,7 +4,6 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell, screen } = re
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { createStorage, validateSnapshot } = require('../lib/storage');
 
 app.setName('AdsWorkbench');
 const dataDirectory = process.env.ADS_DESKTOP_DATA_DIR || path.join(app.getPath('appData'), 'AdsWorkbench');
@@ -90,14 +89,21 @@ async function openWindow() {
   process.env.DATA_FILE = path.join(dataDirectory, 'data.json');
   try { service = require('../server'); }
   catch (error) {
+    // 服务器版的数据在 SQLite 里，data.json 只在首次启动时用于迁移。
+    // 所以恢复手段是把损坏的库改名保留、让服务器重建空库，再从侧栏「恢复」导入备份。
+    const database = path.join(dataDirectory, 'workbench.sqlite');
     const answer = await dialog.showMessageBox({
-      type: 'error', message: '无法读取工作台数据', detail: '原文件已保留。可以选择有效备份恢复，或退出检查数据文件。',
-      buttons: ['退出', '从备份恢复'], defaultId: 0, cancelId: 0,
+      type: 'error', message: '无法打开工作台数据库',
+      detail: `${database} 可能已损坏。原文件会被改名保留，重建后请在侧栏用「恢复」导入备份。`,
+      buttons: ['退出', '保留原文件并重建'], defaultId: 0, cancelId: 0,
     });
     if (answer.response !== 1) throw error;
-    const value = await chooseSnapshot();
-    if (!value) throw error;
-    createStorage(process.env.DATA_FILE).save(value);
+    const stamp = Date.now();
+    for (const suffix of ['', '-wal', '-shm']) {
+      const file = `${database}${suffix}`;
+      try { if (fs.existsSync(file)) fs.renameSync(file, `${file}.corrupt-${stamp}`); }
+      catch { /* 改名失败时继续尝试打开，让原始错误照常抛出 */ }
+    }
     service = require('../server');
   }
   origin = await service.start({ port: 0, host: '127.0.0.1', token });
