@@ -13,7 +13,8 @@ function esc(s) {
 
 async function api(path, opts = {}) {
   const hasBody = opts.body !== undefined;
-  const headers = { ...(opts.headers || {}) };
+  // 服务器版要求所有请求带来源标记头（写操作缺它会被拒绝），并靠会话 Cookie 识别账号
+  const headers = { 'x-workbench': '1', ...(opts.headers || {}) };
   if (hasBody) headers['Content-Type'] = 'application/json';
   let res;
   try {
@@ -25,10 +26,21 @@ async function api(path, opts = {}) {
   } catch (error) {
     if (error.name === 'TimeoutError') throw new Error('连接超时，请稍后重试');
     if (error.name === 'AbortError') throw error;
-    throw new Error('无法连接本地服务，请重新连接或重启工作台');
+    throw new Error('无法连接服务，请检查网络后重新连接');
+  }
+  if (res.status === 401) {
+    // 会话失效：直接回登录页，避免在页面上留下半截状态
+    location.replace('/login.html');
+    throw new Error('登录状态已失效，请重新登录');
   }
   const data = await res.json().catch(() => { throw new Error('服务响应异常，请重新连接'); });
-  if (!res.ok) throw new Error(data.message || data.error || `请求失败 (${res.status})`);
+  if (!res.ok) {
+    const error = new Error(data.message || data.error || `请求失败 (${res.status})`);
+    // 判重被拒绝时携带冲突明细（谁在什么时候导入的），供界面逐条展示
+    if (Array.isArray(data.conflicts)) error.conflicts = data.conflicts;
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -132,6 +144,7 @@ const state = {
   picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
   form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
   loaded: false,
+  user: null,
   creating: false,
   recordPage: 1,
   poolPage: 1,
@@ -227,8 +240,20 @@ function renderNav() {
   document.querySelector('.dot-eye').classList.toggle('on', state.reveal);
 }
 
+/** 侧栏底部的当前账号（服务器版：每个账号只看得到自己的数据）。 */
+function renderAccount() {
+  const name = document.getElementById('accountName');
+  if (!name) return;
+  const user = state.user;
+  const label = user ? (user.display_name || user.username) : '未登录';
+  name.textContent = label;
+  document.getElementById('accountAvatar').textContent = user ? label.slice(0, 1).toUpperCase() : '—';
+  document.getElementById('accountHint').textContent = user && user.display_name ? `@${user.username}` : '数据仅本人可见';
+}
+
 function render() {
   renderNav();
+  renderAccount();
   if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
 }
@@ -240,6 +265,7 @@ async function refresh() {
   }
   state.pools = data.pools;
   state.records = data.records;
+  state.user = data.user || null;
   const recordIds = new Set(data.records.map((record) => record.id));
   state.sel = new Set([...state.sel].filter((id) => recordIds.has(id)));
   for (const kind of Object.keys(state.picked)) {
@@ -253,7 +279,7 @@ async function refresh() {
   render();
   bindLabels();
   const connection = document.getElementById('connectionStatus');
-  if (connection) { connection.textContent = '本地服务已连接'; connection.className = 'connection-status connected'; }
+  if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
 }
 
 /* ============ 工作台 ============ */
@@ -1056,6 +1082,107 @@ function openEditRecord(id) {
   };
 }
 
+/* ============ 全体重复体检 ============ */
+
+function renderAuditReport(report) {
+  const groups = report.groups || [];
+  const shared = report.shared_documents || [];
+  const summary = `<div class="audit-summary">
+    <div><b>${report.scanned}</b><span>扫描营业执照</span></div>
+    <div><b>${report.users}</b><span>参与账号</span></div>
+    <div class="${groups.length ? 'warn' : 'ok'}"><b>${groups.length}</b><span>重复分组</span></div>
+  </div>`;
+  if (!groups.length && !shared.length) {
+    return `${summary}<p class="audit-empty">没有发现重复。全体成员的营业执照在组织名称、法定名称、CVR 注册号与街道地址上都互不冲突。</p>`;
+  }
+  const groupHtml = groups.map((group) => `
+    <section class="audit-group">
+      <header><span class="audit-tag">${esc(group.label)}</span><code>${esc(group.key)}</code></header>
+      <ul>${group.members.map((member) => `<li>
+        <span class="audit-owner" title="所属账号">${esc(member.owner.display_name || member.owner.username)}</span>
+        <span class="grow">${esc(member.name)}${member.cvr ? ` · CVR ${esc(member.cvr)}` : ''}</span>
+        ${member.has_pdf ? '<span class="audit-pdf">PDF</span>' : ''}
+        <span class="faint">${esc(String(member.created_at || '').slice(0, 10))}</span>
+      </li>`).join('')}</ul>
+    </section>`).join('');
+  const sharedHtml = shared.length ? `
+    <section class="audit-group">
+      <header><span class="audit-tag warn">同一份原件</span><span class="faint">多条资料引用了同一个 PDF 文件</span></header>
+      <ul>${shared.flatMap((doc) => doc.members.map((member) => `<li>
+        <span class="audit-owner">${esc(member.owner.display_name || member.owner.username)}</span>
+        <span class="grow">${esc(member.name)}</span>
+        <span class="faint mono">${esc(String(doc.document_id).slice(0, 10))}…</span>
+      </li>`)).join('')}</ul>
+    </section>` : '';
+  return `${summary}${groupHtml}${sharedHtml}`;
+}
+
+/** 扫描全体成员的营业执照，找出任何形式的重复（含「同一份原件被多人引用」）。 */
+async function openDuplicateAudit() {
+  openModal(`
+    <div class="modal-head"><div><span class="license-eyebrow">全体成员</span><h3>营业执照重复体检</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <div class="modal-body" id="audit-body"><p class="audit-empty">正在扫描全体成员的营业执照…</p></div>
+    <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">关闭</button></div>`, { large: true });
+  const body = document.getElementById('audit-body');
+  try {
+    const report = await api('/api/licenses/duplicates');
+    if (body.isConnected) body.innerHTML = renderAuditReport(report);
+  } catch (error) {
+    if (body.isConnected) body.innerHTML = `<p class="audit-empty">读取失败：${esc(error.message)}</p>`;
+  }
+}
+
+/** 从备份文件恢复（只影响当前账号）。 */
+function openRestoreDialog() {
+  openModal(`
+    <div class="modal-head"><div><span class="license-eyebrow">个人数据</span><h3>从备份恢复</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <div class="modal-body">
+      <div class="license-upload">
+        <strong>只恢复你自己的数据</strong>
+        <p>恢复会覆盖当前账号下的资源与记录，不会影响其他成员。请选择本工作台导出的备份文件；恢复前建议先「导出备份」留一份当前数据。</p>
+        <input type="file" id="restore-file" accept=".json,application/json">
+        <span id="restore-status" role="status">尚未选择文件</span>
+      </div>
+    </div>
+    <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-danger" id="restore-go" disabled>确认恢复</button></div>`);
+  const input = document.getElementById('restore-file');
+  const status = document.getElementById('restore-status');
+  const go = document.getElementById('restore-go');
+  let parsed = null;
+  input.onchange = async () => {
+    parsed = null;
+    go.disabled = true;
+    const file = input.files[0];
+    if (!file) { status.textContent = '尚未选择文件'; return; }
+    if (file.size > 64 * 1024 * 1024) { status.textContent = '文件超过 64 MB，无法恢复'; input.value = ''; return; }
+    try {
+      parsed = JSON.parse(await file.text());
+      const records = Array.isArray(parsed.records) ? parsed.records.length : 0;
+      const licenses = Array.isArray(parsed.licenses) ? parsed.licenses.length : 0;
+      status.textContent = `已读取：记录 ${records} 条 · 营业执照 ${licenses} 条，确认后将覆盖当前账号数据`;
+      go.disabled = false;
+    } catch {
+      status.textContent = '这个文件不是有效的备份（JSON 解析失败）';
+      input.value = '';
+    }
+  };
+  go.onclick = async () => {
+    if (!parsed || go.disabled) return;
+    go.disabled = true;
+    go.textContent = '正在恢复…';
+    try {
+      const result = await api('/api/backup/restore', { method: 'POST', body: parsed });
+      toast(`恢复完成：记录 ${result.records} 条、营业执照 ${result.licenses} 条`);
+      if (go.isConnected) closeModal();
+      await refresh();
+    } catch (error) {
+      toast(error.message, 'error');
+      go.disabled = false;
+      go.textContent = '确认恢复';
+    }
+  };
+}
+
 /* ============ 事件 ============ */
 
 document.addEventListener('click', async (e) => {
@@ -1114,6 +1241,24 @@ document.addEventListener('click', async (e) => {
         state.reveal = !state.reveal;
         render();
         break;
+      case 'duplicate-audit':
+        await openDuplicateAudit();
+        break;
+      case 'web-backup':
+        // 走一次同源导航触发下载：Cookie 会自动带上，浏览器停留在当前页面
+        location.href = '/api/backup';
+        toast('正在导出备份…');
+        break;
+      case 'web-restore':
+        openRestoreDialog();
+        break;
+      case 'logout': {
+        if (t.disabled) break;
+        t.disabled = true;
+        try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* 无论成败都回登录页 */ }
+        location.replace('/login.html');
+        break;
+      }
       case 'open-import':
         openImportModal(t.dataset.kind);
         break;
@@ -1414,6 +1559,9 @@ new MutationObserver(bindLabels).observe(document.getElementById('modal-root'), 
 
 if (window.desktop) {
   document.getElementById('desktopTools').hidden = false;
+  // 桌面版用自己的原生备份/恢复（可写文件、可打开数据目录），隐藏网页版入口
+  const webTools = document.getElementById('webTools');
+  if (webTools) webTools.hidden = true;
   window.desktop.info().then((info) => {
     document.getElementById('desktopVersion').textContent = `Windows 桌面版 · v${info.version}`;
   }).catch(() => {});

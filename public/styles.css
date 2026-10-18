@@ -520,11 +520,21 @@ input::placeholder, textarea::placeholder { color: var(--ghost); }
 
 input:hover, textarea:hover, select:hover { border-color: var(--line-strong); }
 
-input:focus, textarea:focus, select:focus {
+/* 注意：下面第一条选择器必须带上 :not(...) 前缀。
+   基础规则 input:not([type=checkbox]):not([type=radio]) 的特异性是 (0,2,1)，
+   高于裸的 input:focus (0,1,1)；若不补齐，输入框聚焦时边框色与底色会被基础规则盖掉，只剩一层光晕。 */
+input:not([type="checkbox"]):not([type="radio"]):focus,
+textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent-line);
   box-shadow: 0 0 0 3px rgba(200, 246, 93, 0.12);
   background: var(--surface-2);
+}
+
+/* 勾选框/单选框不再被 outline:none 波及，保留清晰可见的键盘焦点提示 */
+input[type="checkbox"]:focus-visible, input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 input[type="date"] { color-scheme: dark; }
@@ -1323,3 +1333,66 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
 .license-link { color: var(--accent); background: transparent; border: 0; padding: 0; cursor: pointer; font: inherit; }
 .table-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid var(--line-strong); color: var(--muted); font-size: 12px; }
 .table-pagination > div { display: flex; gap: 8px; }
+
+/* ============================================================
+   账号（服务器版）：当前登录账号与退出登录
+   ============================================================ */
+.account-box { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 10px; }
+.account-who { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.account-avatar {
+  flex: 0 0 auto; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center;
+  background: var(--accent-dim); color: var(--accent);
+  font: 700 13px var(--mono); text-transform: uppercase;
+}
+.account-meta { display: flex; flex-direction: column; min-width: 0; line-height: 1.3; }
+.account-meta strong { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-meta span { font-size: 11px; color: var(--ghost); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 860px) {
+  .account-who { justify-content: center; }
+  .account-meta { display: none; }
+}
+
+/* ============================================================
+   判重提示：营业执照导入被拒（error）或识别阶段预警（warn）
+   ============================================================ */
+.license-conflict {
+  border: 1px solid var(--line-strong); border-left-width: 3px;
+  border-radius: var(--r-sm); padding: 14px 16px; margin-bottom: 18px;
+  background: var(--surface-2); font-size: 12.5px; line-height: 1.7;
+}
+.license-conflict.error { border-left-color: var(--red); }
+.license-conflict.warn { border-left-color: var(--amber); }
+.license-conflict > strong { display: block; margin-bottom: 8px; font-size: 13px; }
+.license-conflict.error > strong { color: var(--red); }
+.license-conflict.warn > strong { color: var(--amber); }
+.license-conflict ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.license-conflict li b { color: var(--text); }
+.conflict-meta { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
+.conflict-meta b { color: var(--accent); }
+.license-conflict > p { margin: 10px 0 0; color: var(--muted); }
+
+/* ============================================================
+   全体成员重复体检
+   ============================================================ */
+.audit-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
+.audit-summary > div {
+  border: 1px solid var(--line-strong); border-radius: var(--r-sm);
+  padding: 14px; display: flex; flex-direction: column; gap: 3px; background: var(--surface-2);
+}
+.audit-summary b { font: 700 20px var(--mono); }
+.audit-summary span { font-size: 11px; color: var(--muted); }
+.audit-summary .ok b { color: var(--green); }
+.audit-summary .warn b { color: var(--amber); }
+.audit-group { border: 1px solid var(--line-strong); border-radius: var(--r-sm); margin-bottom: 14px; overflow: hidden; }
+.audit-group > header { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.audit-group code { font: 12px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.audit-tag { flex: 0 0 auto; font-size: 11px; padding: 3px 8px; border-radius: 999px; background: var(--accent-dim); color: var(--accent); }
+.audit-tag.warn { background: rgba(251, 191, 92, 0.14); color: var(--amber); }
+.audit-group ul { list-style: none; margin: 0; padding: 0; }
+.audit-group li { display: flex; align-items: center; gap: 12px; padding: 10px 14px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.audit-group li:last-child { border-bottom: 0; }
+.audit-owner { flex: 0 0 auto; font-size: 11px; color: var(--accent); background: var(--accent-dim); padding: 2px 8px; border-radius: 999px; }
+.audit-pdf { flex: 0 0 auto; font: 700 10px var(--mono); color: var(--muted); border: 1px solid var(--line-strong); padding: 1px 5px; border-radius: 4px; }
+.audit-empty { color: var(--muted); font-size: 12.5px; line-height: 1.8; margin: 0; }
+@media (max-width: 700px) { .audit-summary { grid-template-columns: 1fr; } }

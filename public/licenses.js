@@ -55,6 +55,7 @@ function openLicenseImport() {
     attachment = null;
     submit.disabled = false;
     parseText.disabled = false;
+    document.getElementById('license-conflict')?.remove();
     if (!file) { status.textContent = '也可以不上传文件，直接填写资料。'; return; }
     fill({}); text.value = '';
     if (file.size > 10 * 1024 * 1024) { status.textContent = '文件超过 10 MB，请选择较小的 PDF'; fileInput.value = ''; return; }
@@ -69,8 +70,10 @@ function openLicenseImport() {
       const result = await api('/api/parse/licenses-pdf', { method: 'POST', body: { pdf: base64 } });
       if (current !== revision || !form.isConnected) return;
       attachment = { pdf: base64, filename: file.name };
-      fill(result.items[0] || {});
+      const first = result.items[0] || {};
+      fill(first);
       text.value = result.text || '';
+      if (first.duplicate) renderLicenseConflictPanel({ title: '注意：这份资料与现有记录重复', conflicts: [first.duplicate], tone: 'warn' });
       status.textContent = result.items.length ? '已提取信息，请核对后保存。原 PDF 将一并保存。' : '未能自动识别，请手动填写资料。原 PDF 仍可保存。';
     } catch (error) {
       if (current === revision && form.isConnected) { status.textContent = error.message; fileInput.value = ''; }
@@ -103,8 +106,45 @@ function openLicenseImport() {
       toast(result.added ? '营业执照已保存' : result.attached ? '资料已更新，原 PDF 已关联' : result.updated ? '组织资料已更新' : '该组织已在资料库中');
       if (form.isConnected) closeModal();
       await refresh();
-    } catch (error) { toast(error.message, 'error'); }
+    } catch (error) {
+      if (Array.isArray(error.conflicts) && error.conflicts.length) showLicenseConflicts(error);
+      else toast(error.message, 'error');
+    }
     finally { saving = false; submit.disabled = false; fileInput.disabled = false; parseText.disabled = false; }
   };
   form.onsubmit = (event) => { event.preventDefault(); submit.click(); };
+}
+
+/**
+ * 判重提示面板。
+ * 识别阶段是「预警」，导入被拒时是「错误」——两种都直接放在表单上方，
+ * 而不是只弹一个会消失的 toast，因为「被谁在什么时候导入」需要留下来核对。
+ */
+function renderLicenseConflictPanel({ title, conflicts, tone }) {
+  document.getElementById('license-conflict')?.remove();
+  const items = conflicts.map((c) => `<li>
+      <div><b>${esc(c.license_name || c.name || '')}</b>${c.cvr ? ` · CVR ${esc(c.cvr)}` : ''}</div>
+      <div class="conflict-meta">判重依据：${esc(c.label || '资料重复')}${c.owner ? ` · 已由 <b>${esc(c.owner.display_name || c.owner.username)}</b> 于 ${esc(String(c.created_at || '').slice(0, 16))} 导入` : ''}</div>
+    </li>`).join('');
+  const panel = document.createElement('div');
+  panel.id = 'license-conflict';
+  panel.className = `license-conflict ${tone}`;
+  panel.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+  panel.innerHTML = `<strong>${esc(title)}</strong><ul>${items}</ul>
+    <p>${tone === 'error'
+      ? '为避免覆盖其他成员的数据，重复的营业执照不会被保存。若确认不是同一家，请核对组织名称、CVR 注册号与街道地址后重试。'
+      : '这份资料与现有记录重复，直接保存会被拒绝，请先核对上面的字段。'}</p>`;
+  const body = document.querySelector('#modal-root .modal-body');
+  if (body) body.prepend(panel);
+  return panel;
+}
+
+function showLicenseConflicts(error) {
+  const panel = renderLicenseConflictPanel({
+    title: `已拒绝导入：${error.conflicts.length} 条资料与现有记录重复`,
+    conflicts: error.conflicts,
+    tone: 'error',
+  });
+  panel.scrollIntoView({ block: 'nearest' });
+  toast('导入已被拒绝：资料与现有记录重复', 'error');
 }
