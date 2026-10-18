@@ -1,0 +1,48 @@
+diff --git a/scripts/remote-smoke.cjs b/scripts/remote-smoke.cjs
+--- a/scripts/remote-smoke.cjs
++++ b/scripts/remote-smoke.cjs
+@@ -6,3 +6,11 @@
+ const service=require('../server');let electron,front,origin;
+-const cert=fs.readFileSync(path.join(__dirname,'../tests/tls/localhost-cert.pem')),key=fs.readFileSync(path.join(__dirname,'../tests/tls/localhost-key.pem'));
++// Ephemeral test key is generated on the runner; never copied to the repository.
++const {spawnSync}=require('node:child_process');
++const opensslCandidates=['openssl', 'C:\\Program Files\\Git\\usr\\bin\\openssl.exe'];
++const openssl=opensslCandidates.find(candidate=>spawnSync(candidate,['version'],{stdio:'ignore'}).status===0);
++if(!openssl)throw new Error('OpenSSL required to generate an ephemeral localhost test certificate');
++const certFile=path.join(root,'localhost-cert.pem'),keyFile=path.join(root,'localhost-key.pem');
++const generated=spawnSync(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-keyout',keyFile,'-out',certFile,'-days','2','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1,DNS:localhost'],{stdio:'ignore'});
++if(generated.status!==0)throw new Error('Could not generate test certificate');
++const cert=fs.readFileSync(certFile),key=fs.readFileSync(keyFile);
+ function newProxy(port=0){return new Promise(resolve=>{front=https.createServer({cert,key},(req,res)=>{const proxy=http.request(origin+req.url,{method:req.method,headers:req.headers},response=>{res.writeHead(response.statusCode,response.headers);response.pipe(res);});proxy.on('error',()=>{res.writeHead(502);res.end();});req.pipe(proxy);});front.listen(port,'127.0.0.1',()=>resolve(front.address().port));});}
+diff --git a/scripts/deploy-ubuntu.sh b/scripts/deploy-ubuntu.sh
+--- a/scripts/deploy-ubuntu.sh
++++ b/scripts/deploy-ubuntu.sh
+@@ -32,2 +32,3 @@
+ install -d -m 700 -o adsworkbench -g adsworkbench "$DATA" "$BACKUPS"
++install -d -m 755 /opt/adsworkbench-releases
+ install -d -m 755 "$RELEASE"
+diff --git a/public/app.js b/public/app.js
+--- a/public/app.js
++++ b/public/app.js
+@@ -425,3 +425,3 @@
+               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
+-              { n: '03', t: '导入付款工具', d: '「卡号 有效期 CVV」一行一张，导入后自动按状态分组', k: 'cards' },
++              { n: '03', t: '导入付款工具', d: '工具别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
+               { n: '04', t: '创建记录', d: '回到本页填写国家/产品/域名，指纹名称按今天日期自动生成', k: '' },
+diff --git a/docs/RELEASE_1_2.md b/docs/RELEASE_1_2.md
+--- a/docs/RELEASE_1_2.md
++++ b/docs/RELEASE_1_2.md
+@@ -81,3 +81,3 @@
+ 
+-The local HTTPS certificate in `tests/tls` is a public synthetic test fixture. It is NEVER bundled in Windows packages. The test-only certificate pin is disabled for packaged builds.
++The local HTTPS certificate and private key are generated temporarily on the test runner and removed after testing. No test private key is committed or bundled. The test-only certificate pin is disabled for packaged builds.
+ 
+diff --git a/tests/tls/README.md b/tests/tls/README.md
+--- a/tests/tls/README.md
++++ b/tests/tls/README.md
+@@ -1,3 +1,3 @@
+-# Public local-only test fixture
++# Local-only TLS tests
+ 
+-These self-signed certificate/key files are generated synthetic test data for 127.0.0.1 HTTPS regression tests. They are intentionally public, are not trusted production certificates, and must never be used on a real server. The Windows package excludes tests. Packaged Electron builds do not honor the development certificate pin.
++Remote desktop smoke tests generate an ephemeral self-signed localhost certificate and key on the runner using OpenSSL. No test private key is committed or bundled. Packaged builds never honor the development-only certificate pin.
