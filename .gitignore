@@ -11,3 +11,4 @@ dist/
 backups/
 .desktop-test/
 .shots/
+.uploads/

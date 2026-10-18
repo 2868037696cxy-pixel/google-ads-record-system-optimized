@@ -1087,7 +1087,7 @@ fastify.get('/api/auth/me', async (req, reply) => {
 
 const loginLimiter = new auth.RateLimiter({ limit: 10, windowMs: 60_000 });
 
-fastify.post('/api/auth/login', async (req, reply) => {
+fastify.post('/api/auth/login', { bodyLimit: 4 * 1024 }, async (req, reply) => {
   const { username, password } = req.body || {};
   const key = `${req.ip}|${String(username || '').toLowerCase()}`;
   const gate = loginLimiter.check(key);
@@ -1107,7 +1107,8 @@ fastify.post('/api/auth/login', async (req, reply) => {
   return { user: auth.publicUser(user) };
 });
 
-fastify.post('/api/auth/register', async (req, reply) => {
+// 未登录即可访问的路由只接受很小的请求体，避免成为放大的攻击面（全局上限是 16 MB）。
+fastify.post('/api/auth/register', { bodyLimit: 4 * 1024 }, async (req, reply) => {
   if (REGISTRATION === 'closed') return reply400('已关闭注册，请联系管理员开通账号');
   const body = req.body || {};
   if (REGISTRATION === 'invite' && String(body.invite_code || '') !== INVITE_CODE) {
