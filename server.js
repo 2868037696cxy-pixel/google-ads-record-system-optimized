@@ -1,6 +1,24 @@
 const path = require('node:path');
+const fs = require('node:fs');
 const fastify = require('fastify')({ logger: true });
 const fastifyStatic = require('@fastify/static');
+
+// 加载 .env（若存在）：用于存放飞书凭证等敏感配置。
+// 已存在的真实环境变量优先，方便用 `FEISHU_APP_ID=xx node server.js` 临时覆盖。
+function loadEnvFile(file) {
+  if (!fs.existsSync(file)) return;
+  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const i = t.indexOf('=');
+    if (i <= 0) continue;
+    const k = t.slice(0, i).trim();
+    let v = t.slice(i + 1).trim();
+    if (/^".*"$/.test(v) || /^'.*'$/.test(v)) v = v.slice(1, -1);
+    if (k && !(k in process.env)) process.env[k] = v;
+  }
+}
+loadEnvFile(path.join(__dirname, '.env'));
 
 const store = require('./db');
 const auth = require('./auth');
