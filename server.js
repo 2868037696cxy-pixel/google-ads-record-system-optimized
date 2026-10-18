@@ -468,6 +468,7 @@ async function extractPdfText(buf) {
 const LIC_LABELS = {
   name: '组织名称|公司名称|企业名称|(?:company|organization|business|firm)\\s*name',
   legal: '法定名称|(?:legal|registered)\\s*name',
+  number: '执照编号|注册号|统一社会信用代码|(?:license|registration|company|cvr)\\s*(?:number|no)|cvr-?nummer|virksomhedsnummer|编号',
   address: '街道地址|地址|(?:street|postal)\\s*address|address',
   apt: '公寓|套房|门牌号|(?:apt|suite|unit)\\b',
   zip: '邮编|(?:postal\\s*code|zip\\s*code|zip)',
@@ -518,6 +519,7 @@ function parseLicensesCvr(text) {
   return [{
     name,
     legal_name: name,
+    number: valueOf(/^cvr-?nummer$/i),
     address: valueOf(/^adresse$/i),
     apt: '',
     zip: zc ? zc[1] : '',
@@ -572,19 +574,37 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 
 /* ---------------- 资源库导入 ---------------- */
 
-const DUP_KEYS = {
-  emails: (it) => (x) => x.user.toLowerCase() === it.user.toLowerCase(),
-  // 代理以「主机:端口」判重（默认账号/密码对所有代理相同，不应参与判重）
-  proxies: (it) => (x) => x.host === it.host && x.port === it.port,
-  cards: (it) => (x) => x.number === it.number,
-  licenses: (it) => (x) => x.name === it.name,
-};
+// 判重键：同一类型的条目只要任一唯一键重复，即视为重复（不入库）
+// 邮箱→账号；代理→主机:端口；信用卡→卡号；营业执照→名称 或 执照编号（名称相同或编号相同都算重复）
+function dupKeys(type, it) {
+  if (type === 'emails') {
+    const u = String(it.user || '').trim().toLowerCase();
+    return u ? ['user:' + u] : [];
+  }
+  if (type === 'proxies') {
+    // 代理以「主机:端口」判重（默认账号/密码对所有代理相同，不参与判重）
+    return [`proxy:${String(it.host || '').trim()}:${String(it.port || '').trim()}`];
+  }
+  if (type === 'cards') {
+    const n = String(it.number || '').trim();
+    return n ? ['card:' + n] : [];
+  }
+  if (type === 'licenses') {
+    const keys = [];
+    const name = String(it.name || '').trim().toLowerCase();
+    const number = String(it.number || '').trim().toLowerCase();
+    if (name) keys.push('lic:name:' + name);
+    if (number) keys.push('lic:num:' + number);
+    return keys;
+  }
+  return [];
+}
 
 // 重复项展示用的标识（提示用户具体哪些被跳过）
 function dupLabel(type) {
   return (it) => {
     if (type === 'emails') return it.user;
-    if (type === 'licenses') return it.name;
+    if (type === 'licenses') return it.number ? `${it.name}（编号 ${it.number}）` : it.name;
     if (type === 'cards') return it.number;
     if (type === 'proxies') return `${it.host}:${it.port}`;
     return '';
@@ -594,19 +614,19 @@ function dupLabel(type) {
 function importItems(type, items) {
   let added = 0;
   const skipped = [];
-  const seen = new Set();
   const label = dupLabel(type);
+  // 已入库资源的判重键集合：命中即重复，不入库
+  const keys = new Set();
+  for (const x of db[type]) for (const k of dupKeys(type, x)) keys.add(k);
   for (const raw of items) {
     // 代理：账号/密码缺省时套用「默认代理账号」
     const it = type === 'proxies'
       ? { ...raw, user: raw.user || db.settings.proxy_user, pass: raw.pass || db.settings.proxy_pass }
       : raw;
-    // 同批次内也去重：以 dupLabel 作为本次批次的键
-    const batchKey = label(it);
-    if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
-    const isDup = db[type].some(DUP_KEYS[type](it));
-    if (isDup) { skipped.push(it); continue; }
-    if (batchKey) seen.add(batchKey);
+    // 同批次内也去重：任意判重键已出现过即跳过
+    const own = dupKeys(type, it);
+    if (own.some((k) => keys.has(k))) { skipped.push(it); continue; }
+    for (const k of own) keys.add(k);
     const row = { id: nextId(type), status: '未使用', created_at: nowLocal(), ...it };
     db[type].push(row);
     added++;
