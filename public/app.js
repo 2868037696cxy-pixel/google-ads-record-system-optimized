@@ -21,7 +21,11 @@ async function api(path, opts = {}) {
     body: hasBody ? JSON.stringify(opts.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.message || data.error || `请求失败 (${res.status})`);
+  if (!res.ok) {
+    const err = new Error(data.message || data.error || `请求失败 (${res.status})`);
+    err.status = res.status;
+    throw err;
+  }
   return data;
 }
 
@@ -113,6 +117,7 @@ const KINDS = [
 
 const state = {
   page: 'workbench',
+  me: null,
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
   settings: { proxy_user: '', proxy_pass: '' },
   records: [],
@@ -194,6 +199,14 @@ function renderNav() {
   `;
   document.getElementById('revealLabel').textContent = state.reveal ? '敏感信息：显示中' : '敏感信息：已隐藏';
   document.querySelector('.dot-eye').classList.toggle('on', state.reveal);
+  const chip = document.getElementById('userChip');
+  if (chip) {
+    chip.innerHTML = state.me
+      ? `<span class="avatar" aria-hidden="true">${esc((state.me.name || '?').slice(0, 1).toUpperCase())}</span>
+         <span class="uname">${esc(state.me.name || '未命名')}</span>
+         <button class="ghost-btn btn-sm" data-action="logout">退出</button>`
+      : '';
+  }
 }
 
 function render() {
@@ -204,6 +217,7 @@ function render() {
 
 async function refresh() {
   const data = await api('/api/bootstrap');
+  state.me = data.me || null;
   state.pools = data.pools;
   state.settings = data.settings || state.settings;
   state.records = data.records;
@@ -1299,8 +1313,21 @@ document.addEventListener('click', async (e) => {
         });
         break;
       }
+      case 'dev-login': {
+        const name = document.getElementById('dev-name')?.value.trim();
+        if (!name) { toast('请输入名字', 'error'); break; }
+        await api('/api/auth/dev-login', { method: 'POST', body: { name } });
+        await boot();
+        break;
+      }
+      case 'logout': {
+        await api('/api/auth/logout', { method: 'POST' });
+        location.reload();
+        break;
+      }
     }
   } catch (err) {
+    if (err.status === 401) { await showLogin(); return; }
     toast(err.message, 'error');
   }
 });
@@ -1330,6 +1357,7 @@ document.addEventListener('change', async (e) => {
       refreshSelectionUI();
     }
   } catch (err) {
+    if (err.status === 401) { await showLogin(); return; }
     toast(err.message, 'error');
   }
 });
@@ -1451,11 +1479,60 @@ document.addEventListener('change', (e) => {
   }
 });
 
+/* ============ 登录 ============ */
+
+function renderLogin(meta) {
+  document.querySelector('.app').classList.add('login-mode');
+  document.getElementById('nav').innerHTML = '';
+  document.getElementById('userChip').innerHTML = '';
+  const feishu = meta?.feishu_enabled;
+  const dev = meta?.dev_login;
+  document.getElementById('main').innerHTML = `
+    <div class="login-wrap">
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+              <path d="M5 19V5h7a5 5 0 0 1 0 10H5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+              <circle cx="18.4" cy="18.4" r="2.1" fill="currentColor"/>
+            </svg>
+          </span>
+          <strong>账号工作台</strong>
+        </div>
+        <p class="login-sub">请登录后使用。资源库团队共享，记录按创建者归属。</p>
+        ${feishu ? `<a class="btn btn-primary btn-lg login-btn" href="/api/auth/login">使用飞书扫码登录</a>` : ''}
+        ${dev ? `
+          <div class="login-dev">
+            <span class="mini">开发登录（本地调试用，无需飞书）</span>
+            <div class="login-dev-row">
+              <input class="pd-input" id="dev-name" placeholder="输入你的名字，例如：张三">
+              <button class="btn btn-ghost" data-action="dev-login">进入</button>
+            </div>
+          </div>` : ''}
+        ${!feishu && !dev ? `<p class="login-hint">飞书登录尚未配置：请在服务端设置 FEISHU_APP_ID / FEISHU_APP_SECRET<br>（本地调试可设 AUTH_DEV_LOGIN=1 使用开发登录）。</p>` : ''}
+      </div>
+    </div>`;
+}
+
+async function showLogin() {
+  let meta = null;
+  try { meta = await fetch('/api/auth/login-meta').then((r) => r.json()); } catch { /* ignore */ }
+  renderLogin(meta);
+}
+
+async function boot() {
+  try {
+    await refresh();
+    document.querySelector('.app').classList.remove('login-mode');
+  } catch (err) {
+    if (err.status === 401) return showLogin();
+    document.getElementById('main').innerHTML = `<div class="empty"><div class="empty-ico">⚠</div><h3>加载失败</h3><p>${esc(err.message)}</p></div>`;
+  }
+}
+
 /* ============ 启动 ============ */
 
-refresh().catch((err) => {
-  document.getElementById('main').innerHTML = `<div class="empty"><div class="empty-ico">⚠</div><h3>加载失败</h3><p>${esc(err.message)}</p></div>`;
-});
+boot();
 
 // 首次入场动画播放一次；之后所有 render 不再重放（避免搜索/切换时整页跳动）
 setTimeout(() => document.body.classList.remove('boot'), 800);

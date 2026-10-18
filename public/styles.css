@@ -1288,9 +1288,75 @@ tbody td:hover:not(:has(button, select, input, a)) { color: var(--accent-strong)
   .nav-item { justify-content: center; padding: 9px; }
   .nav-item.active::before { left: -10px; }
   .ghost-btn { justify-content: center; padding: 9px; }
+  .user-chip { flex-direction: column; gap: 6px; }
+  .user-chip .uname { display: none; }
+  .user-chip .btn-sm { width: 100%; padding: 5px 4px; justify-content: center; }
   .main { padding: 20px 16px 60px; }
   .col-2, .col-3, .col-4 { grid-column: span 4; }
 }
+
+/* ============================================================
+   登录页 / 用户信息
+   ============================================================ */
+.app.login-mode .sidebar { display: none; }
+.app.login-mode .main {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+}
+
+.login-wrap { width: 100%; max-width: 420px; }
+.login-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.8);
+}
+.login-brand { display: flex; align-items: center; gap: 10px; font-size: 17px; color: var(--text); }
+.login-brand strong { letter-spacing: 0.02em; }
+.login-sub { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.login-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  padding: 12px 16px;
+  font-size: 14px;
+}
+.login-dev { display: flex; flex-direction: column; gap: 8px; padding-top: 14px; border-top: 1px solid var(--line); }
+.login-dev-row { display: flex; gap: 8px; }
+.login-dev-row .pd-input { flex: 1; }
+.login-hint { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
+
+.user-chip { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.user-chip .avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  flex: 0 0 auto;
+}
+.user-chip .uname {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 12.5px;
+}
+.user-chip .btn-sm { padding: 4px 10px; font-size: 12px; width: auto; flex: 0 0 auto; }
 
 /* ============================================================
    动效降级

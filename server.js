@@ -1,75 +1,16 @@
 const path = require('node:path');
-const fs = require('node:fs');
 const fastify = require('fastify')({ logger: true });
 const fastifyStatic = require('@fastify/static');
 
+const store = require('./db');
+const auth = require('./auth');
+
 const ROOT = __dirname;
-const DATA_FILE = path.join(ROOT, 'data.json');
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
-const POOL_TYPES = ['emails', 'proxies', 'cards', 'licenses'];
-const STATUSES = ['未使用', '已使用', '停用'];
-const RECORD_STATUSES = ['正常', '异常', '停用'];
-
-let db = {
-  counters: { emails: 0, proxies: 0, cards: 0, licenses: 0, records: 0 },
-  settings: { proxy_user: '437d8679', proxy_pass: '547be5d2' },
-  emails: [],
-  proxies: [],
-  cards: [],
-  licenses: [],
-  records: [],
-};
-
-function loadDb() {
-  try {
-    if (fs.existsSync(DATA_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-      db = { ...db, ...parsed };
-      for (const t of POOL_TYPES) if (!Array.isArray(db[t])) db[t] = [];
-      if (!Array.isArray(db.records)) db.records = [];
-      db.counters = db.counters || {};
-      db.settings = { proxy_user: '437d8679', proxy_pass: '547be5d2', ...(db.settings || {}) };
-    }
-  } catch (e) {
-    console.error('读取数据文件失败:', e);
-  }
-}
-
-function saveDb() {
-  const tmp = DATA_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
-  fs.renameSync(tmp, DATA_FILE);
-}
-
-function nowLocal() {
-  const d = new Date();
-  const p = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
-    hour12: false,
-  }).formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
-  return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
-}
-
-function nextId(coll) {
-  db.counters[coll] = (db.counters[coll] || 0) + 1;
-  return db.counters[coll];
-}
-
-function todayKey() {
-  const parts = new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric',
-  }).formatToParts(new Date());
-  const m = parts.find((p) => p.type === 'month').value;
-  const d = parts.find((p) => p.type === 'day').value;
-  return `${m}.${d}`;
-}
-
-function nextSeq() {
-  return db.records.reduce((m, r) => Math.max(m, r.seq || 0), 0) + 1;
-}
+const POOL_TYPES = store.POOL_TYPES;
+const todayKey = store.todayKey;
+const nextSeq = store.nextSeq;
 
 /* ---------------- 解析器 ---------------- */
 
@@ -572,256 +513,10 @@ function parseLicenses(text) {
 
 const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCards, licenses: parseLicenses };
 
-/* ---------------- 资源库导入 ---------------- */
+/* ---------------- 资源库导入 / 记录创建 / 编辑删除 ---------------- */
+/* 判重（邮箱账号 / 代理主机:端口 / 卡号 / 执照名称+编号）与记录增删改已收口到 db.js */
 
-// 判重键：同一类型的条目只要任一唯一键重复，即视为重复（不入库）
-// 邮箱→账号；代理→主机:端口；信用卡→卡号；营业执照→名称 或 执照编号（名称相同或编号相同都算重复）
-function dupKeys(type, it) {
-  if (type === 'emails') {
-    const u = String(it.user || '').trim().toLowerCase();
-    return u ? ['user:' + u] : [];
-  }
-  if (type === 'proxies') {
-    // 代理以「主机:端口」判重（默认账号/密码对所有代理相同，不参与判重）
-    return [`proxy:${String(it.host || '').trim()}:${String(it.port || '').trim()}`];
-  }
-  if (type === 'cards') {
-    const n = String(it.number || '').trim();
-    return n ? ['card:' + n] : [];
-  }
-  if (type === 'licenses') {
-    const keys = [];
-    const name = String(it.name || '').trim().toLowerCase();
-    const number = String(it.number || '').trim().toLowerCase();
-    if (name) keys.push('lic:name:' + name);
-    if (number) keys.push('lic:num:' + number);
-    return keys;
-  }
-  return [];
-}
-
-// 重复项展示用的标识（提示用户具体哪些被跳过）
-function dupLabel(type) {
-  return (it) => {
-    if (type === 'emails') return it.user;
-    if (type === 'licenses') return it.number ? `${it.name}（编号 ${it.number}）` : it.name;
-    if (type === 'cards') return it.number;
-    if (type === 'proxies') return `${it.host}:${it.port}`;
-    return '';
-  };
-}
-
-function importItems(type, items) {
-  let added = 0;
-  const skipped = [];
-  const label = dupLabel(type);
-  // 已入库资源的判重键集合：命中即重复，不入库
-  const keys = new Set();
-  for (const x of db[type]) for (const k of dupKeys(type, x)) keys.add(k);
-  for (const raw of items) {
-    // 代理：账号/密码缺省时套用「默认代理账号」
-    const it = type === 'proxies'
-      ? { ...raw, user: raw.user || db.settings.proxy_user, pass: raw.pass || db.settings.proxy_pass }
-      : raw;
-    // 同批次内也去重：任意判重键已出现过即跳过
-    const own = dupKeys(type, it);
-    if (own.some((k) => keys.has(k))) { skipped.push(it); continue; }
-    for (const k of own) keys.add(k);
-    const row = { id: nextId(type), status: '未使用', created_at: nowLocal(), ...it };
-    db[type].push(row);
-    added++;
-  }
-  saveDb();
-  return { added, skipped: skipped.length, duplicates: skipped.map(label) };
-}
-
-/* ---------------- 记录创建 ---------------- */
-
-function buildName(country, product, domain) {
-  const base = String(domain || '')
-    .replace(/^https?:\/\//, '')
-    .replace(/\/.*$/, '')
-    .split('.')[0];
-  return [country, product, base].filter(Boolean).join('-');
-}
-
-function pickPool(pool, ids, count, label) {
-  const chosen = [];
-  const used = new Set();
-  for (const id of ids || []) {
-    const it = pool.find((x) => x.id === id);
-    if (it && !used.has(it.id) && it.status !== '停用') {
-      chosen.push(it);
-      used.add(it.id);
-    }
-  }
-  for (const it of pool) {
-    if (chosen.length >= count) break;
-    if (it.status === '未使用' && !used.has(it.id)) {
-      chosen.push(it);
-      used.add(it.id);
-    }
-  }
-  if (chosen.length < count && (pool.length || (ids || []).length)) {
-    return { error: `${label}不足：需要 ${count} 个，可用仅 ${chosen.length} 个，请先导入或调整数量` };
-  }
-  return { items: chosen };
-}
-
-function createRecords(body) {
-  const country = String(body.country || '').trim();
-  const product = String(body.product || '').trim();
-  const rawDomains = Array.isArray(body.domains)
-    ? body.domains
-    : String(body.domains || '').split(/\r?\n|[,\s]+/);
-  const domains = rawDomains
-    .map((s) => String(s).trim().replace(/^https?:\/\//, '').replace(/\/.*$/, ''))
-    .filter(Boolean);
-  const count = domains.length || Math.max(1, Math.min(500, parseInt(body.count, 10) || 1));
-  const dateKey = String(body.date_key || '').trim() || todayKey();
-  const fpPrefix = String(body.fp_prefix || '').trim() || `${dateKey}ads`;
-  let seq = parseInt(body.start_seq, 10);
-  if (!Number.isFinite(seq) || seq < 1) seq = nextSeq();
-
-  const pickedEmails = pickPool(db.emails, body.email_ids, count, '可用邮箱');
-  if (pickedEmails.error) return { error: pickedEmails.error };
-  const pickedCards = pickPool(db.cards, body.card_ids, count, '可用信用卡');
-  if (pickedCards.error) return { error: pickedCards.error };
-  const pickedLic = pickPool(db.licenses, body.license_ids, count, '可用营业执照');
-  if (pickedLic.error) return { error: pickedLic.error };
-
-  const proxyMode = ['shared', 'auto', 'none'].includes(body.proxy_mode) ? body.proxy_mode : 'shared';
-  let sharedProxy = null;
-  if (proxyMode === 'shared') {
-    if (body.proxy_id) sharedProxy = db.proxies.find((p) => p.id === body.proxy_id) || null;
-    if (!sharedProxy) {
-      const last = db.records[db.records.length - 1];
-      if (last && last.proxy_id != null) sharedProxy = db.proxies.find((p) => p.id === last.proxy_id) || null;
-    }
-  }
-  let autoProxies = [];
-  if (proxyMode === 'auto') {
-    const pickedProxies = pickPool(db.proxies, body.proxy_ids, count, '可用代理');
-    if (pickedProxies.error) return { error: pickedProxies.error };
-    autoProxies = pickedProxies.items;
-  }
-
-  const created = [];
-  for (let i = 0; i < count; i++) {
-    const email = pickedEmails.items[i] || null;
-    const card = pickedCards.items[i] || null;
-    const lic = pickedLic.items[i] || null;
-    const proxy = proxyMode === 'auto' ? autoProxies[i] || null : sharedProxy;
-    const domain = domains[i] || '';
-    const rec = {
-      id: nextId('records'),
-      seq,
-      fingerprint: `${fpPrefix}${seq}`,
-      country, product, domain,
-      name: buildName(country, product, domain),
-      email_id: email ? email.id : null,
-      email_user: email ? email.user : '',
-      email_pass: email ? email.pass : '',
-      email_fakey: email ? email.fakey : '',
-      proxy_id: proxy ? proxy.id : null,
-      proxy_sn: proxy ? proxy.sn : '',
-      proxy_type: proxy ? proxy.type : '',
-      proxy_host: proxy ? proxy.host : '',
-      proxy_port: proxy ? proxy.port : '',
-      proxy_user: proxy ? proxy.user : '',
-      proxy_pass: proxy ? proxy.pass : '',
-      proxy_country: proxy ? proxy.country : '',
-      proxy_ip: proxy ? proxy.ip : '',
-      card_id: card ? card.id : null,
-      card_number: card ? card.number : '',
-      card_expiry: card ? card.expiry : '',
-      card_cvv: card ? card.cvv : '',
-      license_id: lic ? lic.id : null,
-      license_name: lic ? lic.name : '',
-      ip_reg_time: String(body.ip_reg_time || ''),
-      id_card: String(body.id_card || '').trim(),
-      status: '正常',
-      created_at: nowLocal(),
-    };
-    db.records.push(rec);
-    if (email) email.status = '已使用';
-    if (proxy) proxy.status = '已使用';
-    if (card) card.status = '已使用';
-    if (lic) lic.status = '已使用';
-    created.push(rec);
-    seq++;
-  }
-  saveDb();
-  return { created };
-}
-
-/* ---------------- 记录编辑 / 删除 ---------------- */
-
-const SNAP = {
-  email: (e) => ({ email_user: e.user, email_pass: e.pass, email_fakey: e.fakey }),
-  proxy: (p) => ({
-    proxy_sn: p.sn, proxy_type: p.type, proxy_host: p.host, proxy_port: p.port,
-    proxy_user: p.user, proxy_pass: p.pass, proxy_country: p.country, proxy_ip: p.ip,
-  }),
-  card: (c) => ({ card_number: c.number, card_expiry: c.expiry, card_cvv: c.cvv }),
-  license: (l) => ({ license_name: l.name }),
-};
-
-function releaseIfUnused(prefix, oldId, excludeRecId) {
-  if (oldId == null) return;
-  const stillUsed = db.records.some((r) => r.id !== excludeRecId && r[`${prefix}_id`] === oldId);
-  if (stillUsed) return;
-  const coll = { email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' }[prefix];
-  const it = db[coll].find((x) => x.id === oldId);
-  if (it && it.status === '已使用') it.status = '未使用';
-}
-
-function updateRecord(id, body) {
-  const rec = db.records.find((r) => r.id === id);
-  if (!rec) return { error: '记录不存在' };
-
-  for (const k of ['country', 'product', 'domain', 'ip_reg_time', 'id_card', 'status']) {
-    if (k in body) rec[k] = String(body[k] ?? '').trim();
-  }
-  if ('status' in body && !RECORD_STATUSES.includes(rec.status)) rec.status = '正常';
-
-  const reassign = (prefix, coll, newId) => {
-    if (newId === undefined) return;
-    const targetId = newId === null ? null : Number(newId);
-    if (rec[`${prefix}_id`] === targetId) return;
-    releaseIfUnused(prefix, rec[`${prefix}_id`], rec.id);
-    const nu = targetId == null ? null : db[coll].find((x) => x.id === targetId);
-    if (targetId != null && !nu) return;
-    rec[`${prefix}_id`] = nu ? nu.id : null;
-    // 清空旧快照字段，再填入新关联资源的快照
-    for (const key of Object.keys(SNAP[prefix]({}))) rec[key] = '';
-    if (nu) {
-      const snaps = SNAP[prefix](nu);
-      for (const key of Object.keys(snaps)) rec[key] = snaps[key] ?? '';
-      nu.status = '已使用';
-    }
-  };
-
-  reassign('email', 'emails', body.email_id);
-  reassign('proxy', 'proxies', body.proxy_id);
-  reassign('card', 'cards', body.card_id);
-  reassign('license', 'licenses', body.license_id);
-
-  rec.name = buildName(rec.country, rec.product, rec.domain);
-  saveDb();
-  return { record: rec };
-}
-
-function deleteRecords(ids) {
-  const idSet = new Set(ids.map(Number));
-  const removed = db.records.filter((r) => idSet.has(r.id));
-  db.records = db.records.filter((r) => !idSet.has(r.id));
-  for (const prefix of ['email', 'proxy', 'card', 'license']) {
-    for (const r of removed) releaseIfUnused(prefix, r[`${prefix}_id`], r.id);
-  }
-  saveDb();
-  return { deleted: removed.length };
-}
+/* 记录创建 / 编辑 / 删除逻辑已收口到 db.js（store.createRecords / updateRecord / deleteRecords） */
 
 /* ---------------- 导出 ---------------- */
 
@@ -873,15 +568,88 @@ function buildCsv(records) {
   return '\uFEFF' + lines.join('\r\n');
 }
 
+/* ---------------- 鉴权 ---------------- */
+
+// 免登录接口白名单（登录相关）
+const API_PUBLIC = new Set([
+  '/api/auth/login',
+  '/api/auth/login-meta',
+  '/api/auth/feishu/callback',
+  '/api/auth/dev-login',
+  '/api/auth/me',
+  '/api/auth/logout',
+]);
+
+fastify.addHook('onRequest', async (req, reply) => {
+  if (!req.raw.url.startsWith('/api/')) return;
+  const path = req.raw.url.split('?')[0];
+  if (API_PUBLIC.has(path)) return;
+  const user = store.getUserByToken(auth.readSessionToken(req.raw));
+  if (!user) return reply.code(401).send({ error: 'unauthorized', message: '请先登录' });
+  req.user = user;
+});
+
+/* ---------------- 登录路由 ---------------- */
+
+fastify.get('/api/auth/login-meta', async (req) => auth.loginMeta(req.raw));
+
+fastify.get('/api/auth/me', async (req, reply) => {
+  const user = store.getUserByToken(auth.readSessionToken(req.raw));
+  if (!user) return reply.code(401).send({ error: 'unauthorized', message: '未登录' });
+  return { user, meta: auth.loginMeta(req.raw) };
+});
+
+fastify.get('/api/auth/login', async (req, reply) => {
+  if (!auth.config().configured) {
+    return reply.code(503).send({ error: 'feishu_not_configured', message: '飞书登录未配置，请设置 FEISHU_APP_ID / FEISHU_APP_SECRET' });
+  }
+  const redirectUri = auth.resolveRedirectUri(req.raw);
+  const state = auth.oauthState();
+  reply.header('set-cookie', auth.stateCookie(state));
+  return reply.redirect(auth.authorizeUrl(redirectUri, state));
+});
+
+fastify.get('/api/auth/feishu/callback', async (req, reply) => {
+  const { code, state } = req.query || {};
+  const expected = auth.readState(req.raw);
+  if (!code) return reply.code(400).send({ error: 'missing_code', message: '缺少授权码' });
+  if (expected && state && expected !== state) return reply.code(400).send({ error: 'bad_state', message: '登录校验失败，请重试' });
+  try {
+    const profile = await auth.exchangeCode(code);
+    const user = store.upsertFeishuUser(profile);
+    store.claimLegacyRecords(user.id);
+    const { token } = store.createSession(user.id, auth.SESSION_TTL_MS);
+    reply.header('set-cookie', auth.sessionCookie(token));
+    return reply.redirect('/');
+  } catch (e) {
+    return reply.code(400).send({ error: 'feishu_login_failed', message: e.message });
+  }
+});
+
+// 本地开发登录：仅当 AUTH_DEV_LOGIN=1 时启用
+fastify.post('/api/auth/dev-login', async (req, reply) => {
+  if (!auth.config().devLogin) return reply.code(403).send({ error: 'dev_login_disabled', message: '未启用开发登录' });
+  const user = store.devUser(req.body?.name);
+  store.claimLegacyRecords(user.id);
+  const { token } = store.createSession(user.id, auth.SESSION_TTL_MS);
+  reply.header('set-cookie', auth.sessionCookie(token));
+  return { user, meta: auth.loginMeta(req.raw) };
+});
+
+fastify.post('/api/auth/logout', async (req, reply) => {
+  store.deleteSession(auth.readSessionToken(req.raw));
+  reply.header('set-cookie', auth.clearSessionCookie());
+  return { ok: true };
+});
+
 /* ---------------- 路由 ---------------- */
 
-fastify.get('/api/bootstrap', async () => {
-  const pools = {};
-  for (const t of POOL_TYPES) pools[t] = db[t];
+fastify.get('/api/bootstrap', async (req) => {
   return {
-    pools,
-    settings: db.settings,
-    records: [...db.records].sort((a, b) => b.id - a.id),
+    pools: store.listPools(),
+    settings: store.getSettings(),
+    records: store.listRecords(req.user.id),
+    me: req.user,
     next: { fingerprint: `${todayKey()}ads${nextSeq()}`, seq: nextSeq(), date_key: todayKey() },
   };
 });
@@ -905,8 +673,8 @@ fastify.post('/api/import/auto', async (req) => {
     emails = r.emails;
     proxies = r.proxies;
   }
-  const emailRes = importItems('emails', emails);
-  const proxyRes = importItems('proxies', proxies);
+  const emailRes = store.importItems('emails', emails, req.user.id);
+  const proxyRes = store.importItems('proxies', proxies, req.user.id);
   return { emails: emailRes, proxies: proxyRes };
 });
 
@@ -935,65 +703,27 @@ fastify.post('/api/import/:type', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
-  return importItems(type, items);
+  return store.importItems(type, items, req.user.id);
 });
 
 fastify.post('/api/settings', async (req) => {
-  const b = req.body || {};
-  const old = { ...db.settings };
-  if ('proxy_user' in b) db.settings.proxy_user = String(b.proxy_user ?? '');
-  if ('proxy_pass' in b) db.settings.proxy_pass = String(b.proxy_pass ?? '');
-  let updated = 0;
-  let recordsUpdated = 0;
-  if (b.apply_to_existing) {
-    // 同步到已有代理：空值、或仍沿用旧默认值的，统一改为新默认值（保留单独改过的）
-    for (const p of db.proxies) {
-      let changed = false;
-      if ((!p.user || p.user === old.proxy_user) && p.user !== db.settings.proxy_user) { p.user = db.settings.proxy_user; changed = true; }
-      if ((!p.pass || p.pass === old.proxy_pass) && p.pass !== db.settings.proxy_pass) { p.pass = db.settings.proxy_pass; changed = true; }
-      if (changed) updated++;
-    }
-    // 记录中的代理快照同步（避免导出的账号/密码为空）
-    for (const r of db.records) {
-      if (!r.proxy_host) continue;
-      let changed = false;
-      if ((!r.proxy_user || r.proxy_user === old.proxy_user) && r.proxy_user !== db.settings.proxy_user) { r.proxy_user = db.settings.proxy_user; changed = true; }
-      if ((!r.proxy_pass || r.proxy_pass === old.proxy_pass) && r.proxy_pass !== db.settings.proxy_pass) { r.proxy_pass = db.settings.proxy_pass; changed = true; }
-      if (changed) recordsUpdated++;
-    }
-  }
-  saveDb();
-  return { settings: db.settings, updated, records_updated: recordsUpdated };
+  return store.updateSettings(req.body || {});
 });
 
 fastify.patch('/api/pool/:type/:id', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
-  const it = db[type].find((x) => x.id === Number(req.params.id));
-  if (!it) return { error: '不存在' };
-  if ('status' in req.body) {
-    if (!STATUSES.includes(req.body.status)) return { error: '无效状态' };
-    it.status = req.body.status;
-  }
-  for (const k of ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip', 'name', 'number', 'expiry', 'cvv']) {
-    if (k in req.body) it[k] = String(req.body[k] ?? '');
-  }
-  saveDb();
-  return { item: it };
+  return store.patchPoolItem(type, req.params.id, req.body || {});
 });
 
 fastify.delete('/api/pool/:type/:id', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
-  const id = Number(req.params.id);
-  const before = db[type].length;
-  db[type] = db[type].filter((x) => x.id !== id);
-  saveDb();
-  return { deleted: before - db[type].length };
+  return store.deletePoolItem(type, req.params.id);
 });
 
-fastify.post('/api/records', async (req) => {
-  const res = createRecords(req.body || {});
+fastify.post('/api/records', async (req, reply) => {
+  const res = store.createRecords(req.body || {}, req.user.id);
   if (res.error) return reply400(res.error);
   return res;
 });
@@ -1004,8 +734,8 @@ function reply400(msg) {
   throw err;
 }
 
-fastify.patch('/api/records/:id', async (req) => {
-  const res = updateRecord(Number(req.params.id), req.body || {});
+fastify.patch('/api/records/:id', async (req, reply) => {
+  const res = store.updateRecord(Number(req.params.id), req.body || {}, req.user.id);
   if (res.error) return reply400(res.error);
   return res;
 });
@@ -1013,23 +743,21 @@ fastify.patch('/api/records/:id', async (req) => {
 fastify.post('/api/records/batch-delete', async (req) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return { deleted: 0 };
-  return deleteRecords(ids);
+  return store.deleteRecords(ids, req.user.id);
 });
 
 fastify.delete('/api/records/:id', async (req) => {
-  return deleteRecords([Number(req.params.id)]);
+  return store.deleteRecords([Number(req.params.id)], req.user.id);
 });
 
 fastify.post('/api/export/adspower', async (req) => {
-  const ids = new Set((req.body?.ids || []).map(Number));
-  const list = db.records.filter((r) => !ids.size || ids.has(r.id));
+  const list = store.getRecordsByIds(req.body?.ids || [], req.user.id);
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildAdspower(list), count: list.length };
 });
 
 fastify.post('/api/export/csv', async (req) => {
-  const ids = new Set((req.body?.ids || []).map(Number));
-  const list = db.records.filter((r) => !ids.size || ids.has(r.id));
+  const list = store.getRecordsByIds(req.body?.ids || [], req.user.id);
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildCsv(list), count: list.length };
 });
@@ -1043,7 +771,7 @@ fastify.setNotFoundHandler((req, reply) => {
   return reply.sendFile('index.html');
 });
 
-loadDb();
+store.initStorage();
 
 const start = async () => {
   try {
