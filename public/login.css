@@ -492,3 +492,67 @@ body.auth-body {
     transition: none;
   }
 }
+
+/* ============================================================
+   氛围与分层修正
+   ------------------------------------------------------------
+   原实现整页只有 styles.css 里那层很淡的顶部辉光，左右两栏各自都是大面积
+   纯黑：内容像浮在虚空里，中间只靠一条 1px 竖线分割，两半读不出边界。
+   这里补三层——斜向底色、两团主色微光、中心清晰边缘渐隐的细网格——
+   并给左栏一个很淡的「面」，左右才成为两块有层次的区域。
+   ============================================================ */
+body.auth-body {
+  background:
+    radial-gradient(1150px 640px at 80% 6%, rgba(200, 246, 93, 0.06), transparent 62%),
+    radial-gradient(900px 580px at 10% 94%, rgba(109, 179, 250, 0.055), transparent 60%),
+    linear-gradient(165deg, #0f141e 0%, #0a0e16 48%, #070a10 100%);
+}
+
+/* 细网格：中心清晰、边缘渐隐，整屏不再是一块死黑 */
+.auth-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(163, 190, 228, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(163, 190, 228, 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(125% 95% at 50% 42%, #000 0%, transparent 76%);
+  mask-image: radial-gradient(125% 95% at 50% 42%, #000 0%, transparent 76%);
+}
+
+/* 网格是定位元素，会盖在静态流内的文字之上；两栏各自抬到它上面 */
+.auth-rail,
+.auth-main {
+  position: relative;
+  z-index: 1;
+}
+
+/* 左栏做成一块很淡的面：只在桌面端生效，窄屏的堆叠布局不受影响 */
+@media (min-width: 901px) {
+  .auth-rail {
+    /* 不再拉伸到满高：否则面板比右侧卡片高出一大截，中间空一大段，左右不对称 */
+    align-self: center;
+    padding: clamp(26px, 3vw, 38px);
+    background: linear-gradient(
+      180deg,
+      rgba(163, 190, 228, 0.055),
+      rgba(163, 190, 228, 0.018) 58%,
+      rgba(163, 190, 228, 0)
+    );
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    box-shadow: 0 44px 90px -62px rgba(0, 0, 0, 0.95);
+  }
+}
+
+/* 卡片再抬一层，与背景拉开层次 */
+.auth-card {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface) 72%);
+  border-color: var(--line-strong);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.045) inset,
+    0 44px 90px -44px rgba(0, 0, 0, 0.92);
+}

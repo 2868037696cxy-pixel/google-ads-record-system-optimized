@@ -344,27 +344,12 @@ function renderWorkbench() {
       </div>
     </div>
 
-    <div class="hstats">
-      <div class="hstat hi">
-        <span class="v">${state.records.length}</span>
-        <span class="k"><span class="dot lime"></span>记录总数</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${avail.emails}<em>/ ${state.pools.emails.length}</em></span>
-        <span class="k"><span class="dot green"></span>可用邮箱</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${avail.cards}<em>/ ${state.pools.cards.length}</em></span>
-        <span class="k"><span class="dot blue"></span>可用信用卡</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${avail.licenses}<em>/ ${state.pools.licenses.length}</em></span>
-        <span class="k"><span class="dot amber"></span>可用营业执照</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${poolCount('proxies')}<em>/ ${state.pools.proxies.length}</em></span>
-        <span class="k"><span class="dot"></span>可用代理</span>
-      </div>
+    <div class="stat-strip">
+      <div class="strip-item hi"><span class="v">${state.records.length}</span><span class="k">记录总数</span></div>
+      <div class="strip-item"><span class="v">${avail.emails}<em>/${state.pools.emails.length}</em></span><span class="k"><span class="dot green"></span>可用邮箱</span></div>
+      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用信用卡</span></div>
+      <div class="strip-item"><span class="v">${avail.licenses}<em>/${state.pools.licenses.length}</em></span><span class="k"><span class="dot amber"></span>可用营业执照</span></div>
+      <div class="strip-item"><span class="v">${poolCount('proxies')}<em>/${state.pools.proxies.length}</em></span><span class="k"><span class="dot"></span>可用代理</span></div>
     </div>
 
     ${
@@ -378,7 +363,7 @@ function renderWorkbench() {
             ]
               .map(
                 (s) => `<div class="step-card" ${s.k ? `data-action="nav" data-page="${s.k}"` : ''}>
-                  <span class="n">STEP ${s.n}</span><h4>${s.t}</h4><p>${s.d}</p>
+                  <span class="n">STEP ${s.n}</span><h4>${s.t}${s.k ? '<span class="go">→</span>' : ''}</h4><p>${s.d}</p>
                 </div>`
               )
               .join('')}
@@ -413,11 +398,11 @@ function renderWorkbench() {
             <label>身份证 <span class="mini">选填</span></label>
             <input id="f-idcard" value="${esc(f.id_card)}" placeholder="选填">
           </div>
-          <div class="field col-6">
+          <div class="field col-3">
             <label>域名 <span class="mini">一行一个，如 nfjh.shop；名称将自动拼成「国家-产品-域名前缀」</span></label>
             <textarea id="f-domains" class="mono" rows="4" placeholder="nfjh.shop&#10;mkxd.shop&#10;wnfh.shop">${esc(f.domains)}</textarea>
           </div>
-          <div class="field col-6">
+          <div class="field col-3">
             <label>资源分配 <span class="mini">点击「选择」可手动指定，否则自动从未使用中按顺序取用</span></label>
             <div style="display:flex;flex-direction:column;gap:8px">
               <div class="assign-row">
@@ -652,36 +637,31 @@ const POOL_TABLE = {
   },
 };
 
+// 规则与示例分开：原来两者挤在同一个等宽块里，示例又都是像真实凭据的长串
+// （2FA 密钥、代理商主机、真实格式卡号），既难扫读也容易被误认成已有数据。
 const POOL_FORMAT = {
-  emails: `一行一条，分隔符支持 ——、—、–、|、Tab、:、;、,、空格；也支持「标签：值」形式（顺序任意）
-NewkirkCorre.l103@gmail.com——psj5qrajyv——ucyar7gltohvnnxbpxt4vmsdrcaxa5j6
-vanmaih.uynh75@gmail.com|Y2IvBdZRN2|54viszzfxqzxuowp57ma2sw7euael6x5
-demo@gmail.com:pass123:2fakey
-邮箱：demo2@gmail.com 密码：abc12345 2FA：JBSWY3DPEHPK3PXP`,
-  proxies: `代理商文本块（账号/密码/主机/端口/国家等标签行，中英文均可、顺序任意）：
-5750389
-socks5
-55.kookeey.info
-26004
-账号：437d8679
-密码：547be5d2
-修改
-US-美国
-217.20.243.226
-
-也支持一行一条：
-socks5://user:pass@host:port
+  emails: {
+    rule: '一行一条。分隔符支持 ——、—、–、|、Tab、:、;、,、空格；也支持「标签：值」形式，顺序任意。',
+    sample: `example@gmail.com——password——JBSWY3DPEHPK3PXP
+example2@gmail.com|password|JBSWY3DPEHPK3PXP
+邮箱：example3@gmail.com 密码：password 2FA：JBSWY3DPEHPK3PXP`,
+  },
+  proxies: {
+    rule: '粘贴代理商文本块（账号 / 密码 / 主机 / 端口 / 国家等标签行，中英文均可、顺序任意），也可以一行一条。',
+    sample: `socks5://user:pass@host:port
 user:pass@host:port
 host:port:user:pass
-user:pass:host:port
-host,port,user,pass
-host port user pass`,
-  cards: `4367970152619097 06/29 596
-4367970159932238 06/29 364
-4367970169748392 06/29 786`,
-  licenses: `一个 PDF 对应一条营业执照记录。
-选择 PDF 后校对公司名称、法定名称、地址、邮编和城市，再确认保存。
-未识别的字段可手动填写，原 PDF 会与该条资料一起保存。`,
+host,port,user,pass`,
+  },
+  cards: {
+    rule: '一行一张，格式为「卡号 有效期 CVV」。',
+    sample: `4367970152619097 06/29 596
+4367970159932238 06/29 364`,
+  },
+  licenses: {
+    rule: '一个 PDF 对应一条营业执照记录。选择 PDF 后校对公司名称、法定名称、地址、邮编和城市，再确认保存；未识别的字段可手动填写，原 PDF 会与该条资料一起保存。',
+    sample: '',
+  },
 };
 
 function getFilteredPool(kind) {
@@ -698,7 +678,7 @@ function renderPoolTable(kind, list) {
   if (!state.pools[kind].length) return `<div class="empty">
     <div class="empty-ico">⇩</div><h3>还没有${conf.label}数据</h3>
     <p>${kind === 'licenses' ? '点击右上角「导入营业执照」，上传一份 PDF 并校对资料。' : '点击右上角「批量导入」，支持粘贴以下格式（一行一条）：'}</p>
-    <code>${esc(POOL_FORMAT[kind])}</code></div>`;
+    <code>${esc(POOL_FORMAT[kind].sample || POOL_FORMAT[kind].rule)}</code></div>`;
   if (!list.length) return '<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的资源</h3><p>换个关键词或筛选条件试试</p></div>';
   const page = paginate(list, 'pools');
   const reference = { emails: 'email_id', proxies: 'proxy_id', cards: 'card_id', licenses: 'license_id' }[kind];
@@ -720,15 +700,15 @@ function renderPoolTable(kind, list) {
 function renderPool(kind) {
   const conf = KINDS.find((item) => item.key === kind);
   const list = getFilteredPool(kind);
-  const stat = (label, count, dot) => `<div class="stat"><div class="k"><span class="dot ${dot}"></span>${label}</div><div class="v">${count}</div></div>`;
+  // 状态数量直接标在筛选标签上：原来上方另有一排大数字卡片，与这里说的是同一件事，白占一块空间。
+  const counts = { 全部: state.pools[kind].length, 未使用: poolCount(kind), 已使用: poolCount(kind, '已使用'), 停用: poolCount(kind, '停用') };
   document.getElementById('main').innerHTML = `
     <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p></div>
       <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>' : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
-    <div class="stats">${stat('全部', state.pools[kind].length, 'bg')}${stat('未使用', poolCount(kind), 'dot-green-ic')}${stat('已使用', poolCount(kind, '已使用'), 'dot-blue-ic')}${stat('停用', poolCount(kind, '停用'), 'dot-red-ic')}</div>
     <div class="panel"><div class="toolbar">
       <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
-      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}</button>`).join('')}</div>
+      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
       <span class="sel-count">${list.length} 条</span></div>${renderPoolTable(kind, list)}</div>`;
 }
 
@@ -785,7 +765,10 @@ async function openImportModal(kind) {
   openModal(`
     <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
-      <pre class="format-hint">${esc(POOL_FORMAT[kind])}</pre>
+      <div class="format-hint">
+        <p class="format-rule">${esc(POOL_FORMAT[kind].rule)}</p>
+        ${POOL_FORMAT[kind].sample ? `<pre class="format-sample">${esc(POOL_FORMAT[kind].sample)}</pre>` : ''}
+      </div>
       <textarea id="import-text" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
       <div class="parse-result" id="parse-result">等待粘贴内容…</div>
     </div>
