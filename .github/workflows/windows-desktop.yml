@@ -1,31 +1,20 @@
 name: Windows desktop
-
 on:
   workflow_dispatch:
-  push:
-    branches: ["trae/agent-ctCMlg", "codex/workbench-quality"]
   pull_request:
-
+  push:
+    branches: ["feat/team-console-ui-data-architecture"]
 permissions:
   contents: read
-
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  source:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@v4
-      - name: Archive exact tested source
-        run: git archive --format=tar.gz --output=adsworkbench-source.tar.gz HEAD
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AdsWorkbench-Source
-          path: adsworkbench-source.tar.gz
-          retention-days: 7
-          if-no-files-found: error
   desktop:
     runs-on: windows-latest
     timeout-minutes: 30
+    env:
+      UI_SCREENSHOT_DIR: ${{ github.workspace }}/test-artifacts/ui
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -33,15 +22,34 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: npm audit --omit=dev --audit-level=high
       - run: npm test
       - run: npm run test:desktop
-      - run: npm run build:win
+      - run: npm run test:desktop:remote
+      - name: Build preconfigured Windows application
+        run: npm run build:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Hash installable artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe','.zip' } | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
+            "$hash  $($_.Name)"
+          } | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: AdsWorkbench-UI-Verification
+          path: test-artifacts/
+          if-no-files-found: ignore
+          retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
           name: AdsWorkbench-Windows-x64
           path: |
             dist/AdsWorkbench-*-x64.exe
             dist/AdsWorkbench-*-x64.zip
+            dist/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 30
