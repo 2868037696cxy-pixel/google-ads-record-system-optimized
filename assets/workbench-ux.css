@@ -1,0 +1,30 @@
+/* UI/UX Workbench refresh - navigation, list workflow and accessibility */
+.dash-actions {display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dash-new {min-height:38px;padding:8px 16px;white-space:nowrap}
+.list-helper {font-size:12px;line-height:1.6;color:var(--muted);margin:0}
+.list-count {font-size:12px;font-weight:600;color:var(--muted);margin-left:5px}
+.filter-summary {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;border-top:1px solid var(--line);padding-top:9px;color:var(--muted);font-size:12px}
+.filter-reset {border:0;background:transparent;color:var(--brand);font:inherit;font-weight:700;cursor:pointer;padding:6px 8px;border-radius:7px}
+.filter-reset:hover:not(:disabled) {background:var(--brand-soft)}
+.filter-reset:disabled {opacity:.38;cursor:default}
+.bulk-toolbar {gap:6px}
+.bulk-toolbar .btn {font-size:11px}
+.list-empty {display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:30px 12px;color:var(--text)}
+.list-empty .empty-symbol {display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:var(--soft);color:var(--brand);font-size:28px}
+.list-empty b {font-size:14px}
+.list-empty p {font-size:12px;line-height:1.5;color:var(--muted)}
+.save-indicator {white-space:nowrap;font-size:12px;font-weight:650;color:var(--green)}
+.save-indicator.is-dirty {color:var(--orange)}
+.nav-disclosure-title {display:flex;align-items:center;justify-content:space-between;cursor:pointer;border-radius:8px;padding:12px;color:var(--muted);font-size:12px;font-weight:700;list-style:none}
+.nav-disclosure-title::-webkit-details-marker {display:none}
+.nav-disclosure-title:hover,.nav-tools[open] .nav-disclosure-title {background:var(--soft);color:var(--text)}
+.nav-tools[open] .nav-disclosure-title span {transform:rotate(180deg)}
+.nav-tools-body {padding:2px 0 8px}
+.nav-danger {color:var(--red)}
+.alert {width:100%;text-align:left;font:inherit}
+.palette-item {width:100%;border:0;background:transparent;color:var(--text);font-family:inherit;text-align:left}
+.palette-item:focus-visible {outline:2px solid var(--brand);outline-offset:-2px}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible {outline:2px solid var(--brand);outline-offset:2px}
+.card-main:focus-visible {outline:2px solid var(--brand);outline-offset:-2px;border-radius:10px}
+@media(max-width:700px) {.dash-actions{width:100%;justify-content:space-between}.dash-new{flex:1}.dash-head{align-items:flex-start}.filter-summary{flex-wrap:wrap}.bulk-toolbar{flex-wrap:wrap}}
+@media(prefers-reduced-motion:reduce) {.kpi,.stat,.card,.alert,.btn {animation:none!important;transition:none!important;transform:none!important}}
