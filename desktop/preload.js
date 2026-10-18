@@ -1,11 +1,7 @@
 'use strict';
-const { contextBridge, ipcRenderer } = require('electron');
-
-contextBridge.exposeInMainWorld('desktop', Object.freeze({
-  info: () => ipcRenderer.invoke('desktop:info'),
-  backup: () => ipcRenderer.invoke('desktop:backup'),
-  restore: () => ipcRenderer.invoke('desktop:restore'),
-  openDataFolder: () => ipcRenderer.invoke('desktop:open-data-folder'),
-  openLicensePdf: (id) => ipcRenderer.invoke('desktop:open-license-pdf', id),
-  revealLicensePdf: (id) => ipcRenderer.invoke('desktop:reveal-license-pdf', id),
+const {contextBridge,ipcRenderer}=require('electron');
+contextBridge.exposeInMainWorld('workbenchShell',Object.freeze({info:()=>ipcRenderer.invoke('shell:info'),retry:()=>ipcRenderer.invoke('shell:retry')}));
+if(!process.argv.includes('--ads-workbench-remote'))contextBridge.exposeInMainWorld('desktop',Object.freeze({
+  info:()=>ipcRenderer.invoke('desktop:info'),backup:()=>ipcRenderer.invoke('desktop:backup'),restore:()=>ipcRenderer.invoke('desktop:restore'),
+  openDataFolder:()=>ipcRenderer.invoke('desktop:open-data-folder'),openLicensePdf:id=>ipcRenderer.invoke('desktop:open-license-pdf',id),revealLicensePdf:id=>ipcRenderer.invoke('desktop:reveal-license-pdf',id),
 }));

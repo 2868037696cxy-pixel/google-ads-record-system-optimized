@@ -146,7 +146,7 @@ test('资源与记录完全按账号隔离', async () => {
 });
 
 test('导出只包含自己的记录', async () => {
-  await api('a', 'POST', '/api/import/cards', { body: { items: [{ number: '4111111111111111', expiry: '12/28', cvv: '123' }] } });
+  await api('a', 'POST', '/api/import/cards', { body: { items: [{ number: 'alice-payment', expiry: '12/28', last4: '1111' }] } });
   await api('a', 'POST', '/api/import/proxies', { body: { items: [{ host: '10.0.0.1', port: '8080', user: 'u1', pass: 'p1' }] } });
   await api('a', 'POST', '/api/import/licenses', { body: { items: [{ name: 'Alice Holding ApS', cvr: '11111111' }] } });
 
@@ -164,15 +164,18 @@ test('导出只包含自己的记录', async () => {
 
 /* ---------------- 跨用户判重（本次改造的核心） ---------------- */
 
-test('其他用户已导入的公司会被拒绝，并说明是谁在什么时候导入的', async () => {
+test('其他用户已记录的公司会被拒绝，但不泄露对方身份与资料', async () => {
   const res = await api('b', 'POST', '/api/import/licenses', {
     body: { items: [{ name: 'Alice Holding ApS', cvr: '11111111' }] },
   });
   assert.equal(res.status, 409, JSON.stringify(res.body));
-  assert.match(res.body.error, /alice/, '提示里应包含导入者的用户名');
   assert.match(res.body.error, /判重依据/);
   assert.equal(res.body.conflicts.length, 1);
-  assert.equal(res.body.conflicts[0].owner.display_name || res.body.conflicts[0].owner.username, 'alice');
+  assert.ok(!('owner' in res.body.conflicts[0]), '不得暴露另一个成员的用户名');
+  assert.ok(!('created_at' in res.body.conflicts[0]), '不得暴露创建时间');
+  assert.ok(!('license_name' in res.body.conflicts[0]), '不得暴露其他成员的组织资料');
+  assert.ok(!('cvr' in res.body.conflicts[0]), '不得暴露其他成员的注册号');
+  assert.doesNotMatch(res.body.error, /已由.*导入/);
 
   const bBoot = await api('b', 'GET', '/api/bootstrap');
   assert.equal(bBoot.body.pools.licenses.length, 0, '重复的营业执照不能落库');
@@ -275,15 +278,76 @@ test('PDF 原件跨用户不受影响，附件清理是全局判断', async () =
   assert.equal(bobAccess.status, 404, 'bob 不能下载 alice 的附件');
 });
 
-test('全体成员重复体检能发现存量重复', async () => {
-  const empty = await api('a', 'GET', '/api/licenses/duplicates');
-  assert.equal(empty.status, 200);
-  assert.equal(empty.body.scope, 'global');
-  assert.equal(empty.body.groups.length, 0, '正常情况下不应有重复');
+test('三人账号互相隔离，同一 PDF 即使改名或改公司字段也被全库拒绝', async () => {
+  await register('c', 'carol');
+  const pdf = certificate().toString('base64');
+  const beforeB = await api('b', 'GET', '/api/bootstrap');
+  const beforeC = await api('c', 'GET', '/api/bootstrap');
+  const sample = { name: '另一个名称 ApS', legal_name: 'Different Legal ApS', cvr: '87654321' };
 
-  // 直接写入一条只靠地址重复的历史数据，模拟旧数据迁移后的情形
+  const preview = await api('b', 'POST', '/api/parse/licenses-pdf', { body: { pdf } });
+  assert.equal(preview.status, 409, 'PDF 解析预览阶段就应提示重复');
+  assert.match(preview.body.error, /PDF.*不能重复/);
+  assert.deepEqual(Object.keys(preview.body.conflicts[0]).sort(), ['field','label','message','name'].sort());
+
+  for (const [user, filename] of [['b','completely-new-file-name.pdf'], ['c','copied.pdf'], ['a','alice-again.pdf']]) {
+    const uploaded = await api(user, 'POST', '/api/import/licenses', {
+      body: { pdf, filename, items: [sample] },
+    });
+    assert.equal(uploaded.status, 409, `${user} 上传相同字节必须失败`);
+    assert.match(uploaded.body.error, /PDF.*不能重复/);
+    assert.ok(!uploaded.body.conflicts[0].owner);
+  }
+
+  const afterB = await api('b', 'GET', '/api/bootstrap');
+  const afterC = await api('c', 'GET', '/api/bootstrap');
+  assert.equal(afterB.body.pools.licenses.length, beforeB.body.pools.licenses.length);
+  assert.equal(afterC.body.pools.licenses.length, beforeC.body.pools.licenses.length);
+  assert.equal(afterC.body.records.length, 0, 'carol 不能查看 alice 和 bob 的账号记录');
+  assert.equal(afterC.body.pools.emails.length, 0, 'carol 看不到其他成员的邮箱资源');
+  assert.equal(afterB.body.records.length, 0, 'bob 无法查看 alice 的记录');
+});
+
+test('含别人原 PDF 的个人备份不能恢复，并且失败不清空自己的数据', async () => {
+  const before = await api('b', 'GET', '/api/bootstrap');
+  const snapshot = {
+    counters: {},
+    emails: before.body.pools.emails,
+    proxies: before.body.pools.proxies,
+    cards: before.body.pools.cards,
+    licenses: [{
+      id: 900, status: '未使用', name: 'Fake New Org ApS',
+      legal_name: 'Fake New Org ApS', cvr: '90807060',
+      document_id: require('node:crypto').createHash('sha256').update(certificate()).digest('hex'),
+    }],
+    records: [],
+    documents: {},
+  };
+  snapshot.documents[snapshot.licenses[0].document_id] = {
+    filename: 'another-filename.pdf', base64: certificate().toString('base64'),
+  };
+  await api('b','POST','/api/security/unlock',{body:{password:'secret-pass-1'}});
+  const owner=service.db.prepare('SELECT id FROM users WHERE username=?').get('bob').id;
+  const envelope=service.encryptedSnapshot(owner);
+  envelope.payload=require('../lib/vault').getVault(service.db).seal(JSON.stringify(snapshot),`backup:${owner}`);
+  const attempt = await api('b', 'POST', '/api/backup/restore', { body: envelope });
+  assert.equal(attempt.status, 409, JSON.stringify(attempt.body));
+  const after = await api('b', 'GET', '/api/bootstrap');
+  assert.deepEqual(after.body.pools.emails, before.body.pools.emails);
+  assert.deepEqual(after.body.pools.licenses, before.body.pools.licenses);
+  assert.deepEqual(after.body.records, before.body.records);
+});
+
+test('全员查重报告对普通成员关闭，内部审计仍可以识别历史重复', async () => {
+  const deniedA = await api('a', 'GET', '/api/licenses/duplicates');
+  const deniedC = await api('c', 'GET', '/api/licenses/duplicates');
+  assert.equal(deniedA.status, 403);
+  assert.equal(deniedC.status, 403);
+  assert.ok(!('groups' in deniedA.body), '不能把别人的记录列表返回给普通用户');
+
+  // 只允许服务端内部维护代码审计历史重复（不给普通成员的 API）
   const db = service.db;
-  const ownerId = empty.body.users ? db.prepare('SELECT id FROM users WHERE username = ?').get('alice').id : null;
+  const ownerId = db.prepare('SELECT id FROM users WHERE username = ?').get('alice').id;
   db.prepare(`INSERT INTO licenses (owner_id, status, created_at, name, legal_name, address, dup_addr)
               VALUES (?, '未使用', '2026-01-01 00:00:00', 'Legacy One', 'Legacy One', 'Legacy Road 1', 'legacy road 1')`)
     .run(ownerId);
@@ -291,10 +355,9 @@ test('全体成员重复体检能发现存量重复', async () => {
               VALUES (?, '未使用', '2026-01-01 00:00:00', 'Legacy Two', 'Legacy Two', 'Legacy Road 1', 'legacy road 1')`)
     .run(ownerId);
 
-  const report = await api('a', 'GET', '/api/licenses/duplicates');
-  assert.equal(report.status, 200);
-  const addressGroup = report.body.groups.find((g) => g.field === 'address');
+  const report = require('../lib/dedup').auditLicenses(db);
+  const addressGroup = report.groups.find((g) => g.field === 'address');
   assert.ok(addressGroup, '应报告地址重复组');
   assert.equal(addressGroup.members.length, 2);
-  assert.ok(report.body.duplicate_licenses >= 2);
+  assert.ok(report.duplicate_licenses >= 2);
 });

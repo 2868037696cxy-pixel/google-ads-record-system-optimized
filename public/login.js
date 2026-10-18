@@ -18,7 +18,7 @@ const AUTH_API = {
    登录始终可用；注册入口按「开放」处理（首个账号需要注册），
    只有服务端明确返回 closed 时才隐藏。 */
 const DEFAULT_CONFIG = {
-  registration: 'open',
+  registration: 'closed',
   minPasswordLength: 8,
   minUsernameLength: 3,
   maxUsernameLength: 32,
@@ -59,7 +59,7 @@ async function request(path, options = {}) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
   }
-  return fetch(path, init);
+  return fetch(path, {...init,signal:AbortSignal.timeout(20000)});
 }
 
 async function readJson(res) {

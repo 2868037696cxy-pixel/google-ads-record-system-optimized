@@ -15,14 +15,17 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
+const { isIP } = require('node:net');
+const { redact, assertNoCardSecrets, getVault, PROTECTED } = require('./lib/vault');
+const { audit } = require('./lib/hardening');
 
 const fastify = require('fastify')({
   logger: process.env.LOG_LEVEL === 'silent' ? false : { level: process.env.LOG_LEVEL || 'info' },
   bodyLimit: 16 * 1024 * 1024,
   // 反向代理后必须信任转发头，否则所有请求会被当成同一个来源 IP（限速会误伤全员）。
-  trustProxy: true,
+  trustProxy: false,
 });
-const fastifyStatic = require('@fastify/static');
+const installStatic = require('./lib/static');
 
 const { openDatabase, transaction } = require('./lib/db');
 const store = require('./lib/store');
@@ -41,9 +44,12 @@ const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, 'workbench.sqlite');
 // 注册策略：open（任何人可注册）/ invite（需要邀请码）/ closed（关闭注册）
 const REGISTRATION = ['open', 'invite', 'closed'].includes(process.env.REGISTRATION)
   ? process.env.REGISTRATION
-  : 'open';
+  : (process.env.NODE_ENV === 'production' ? 'closed' : 'open');
 const INVITE_CODE = String(process.env.INVITE_CODE || '');
 const SESSION_SECURE = process.env.SESSION_SECURE === '1';
+if (REGISTRATION === 'invite' && (!INVITE_CODE || INVITE_CODE.startsWith('REPLACE_'))) throw new Error('A private random INVITE_CODE is required in invite mode');
+const PUBLIC_ORIGIN = process.env.PUBLIC_ORIGIN || '';
+if (PUBLIC_ORIGIN && new URL(PUBLIC_ORIGIN).protocol !== 'https:') throw new Error('PUBLIC_ORIGIN must use HTTPS');
 
 const POOL_TYPES = store.POOL_TYPES;
 const POOL_PREFIX = store.POOL_PREFIX;
@@ -438,50 +444,32 @@ function parseAuto(text) {
   return { emails: outE, proxies: outP };
 }
 
-// 信用卡：卡号 有效期 CVV（分隔符支持空格/Tab/逗号/|，日期支持 MM/YY、MM-YY、MMYY 四位无分隔，可只填卡号）
+// Payment metadata only: alias | last4 | expiry（分隔符支持空格/Tab/逗号/|，日期支持 MM/YY、MM-YY、MMYY 四位无分隔，可只填卡号）
 function parseCards(text) {
-  const out = [];
-  for (const raw of String(text || '').split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line) continue;
-    // 完整：卡号 日期MM/YY CVV
-    let m = line.match(/(\d{13,19})\s*[,;\s|]\s*(\d{1,2})\s*[\/\-]\s*(\d{2,4})\s*[,;\s|]\s*(\d{3,4})/);
-    if (m) {
-      out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: m[4] });
-      continue;
-    }
-    // 完整：卡号 日期MMYY(无分隔符) CVV
-    m = line.match(/(\d{13,19})\s*[,;\s|]\s*(\d{2})(\d{2})\s*[,;\s|]\s*(\d{3,4})/);
-    if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) {
-      out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: m[4] });
-      continue;
-    }
-    // 卡号 日期MM/YY（无 CVV）
-    m = line.match(/^(\d{13,19})\s*[,;\s|]\s*(\d{1,2})\s*[\/\-]\s*(\d{2,4})/);
-    if (m) {
-      out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: '' });
-      continue;
-    }
-    // 卡号 日期MMYY（无 CVV）
-    m = line.match(/^(\d{13,19})\s*[,;\s|]\s*(\d{2})(\d{2})$/);
-    if (m && Number(m[2]) >= 1 && Number(m[2]) <= 12) {
-      out.push({ number: m[1], expiry: `${m[2]}/${m[3]}`, cvv: '' });
-      continue;
-    }
-    m = line.match(/^(\d{13,19})$/);
-    if (m) out.push({ number: m[1], expiry: '', cvv: '' });
-  }
-  return out;
+  const lines=String(text||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  return lines.map(line=>{
+    if(/\d{12,19}/.test(line.replace(/[ -]/g,''))) return reply400('\u4e0d\u63a5\u6536\u5b8c\u6574\u5361\u53f7\u6216 CVV\u3002\u683c\u5f0f\uff1a\u5de5\u5177\u522b\u540d|\u672b\u56db\u4f4d|\u6709\u6548\u671f');
+    const parts=line.split('|').map(x=>x.trim());
+    if(parts.length>3) return reply400('\u4ed8\u6b3e\u5de5\u5177\u683c\u5f0f\u4e0d\u6b63\u786e');
+    return normalizeImport('cards',{number:parts[0],last4:parts[1]||'',expiry:parts[2]||''});
+  });
 }
 
-/* ---------------- PDF 文本提取 ---------------- */
+// Bound PDF parser work. Parsing never executes PDF JavaScript.
+let parsingPdfs=0;
 async function extractPdfText(buf) {
+  if(parsingPdfs>=2) {const e=new Error('\u8bc6\u522b\u4efb\u52a1\u8f83\u591a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');e.statusCode=429;throw e;}
+  parsingPdfs++;
+  try{return await extractPdfTextInternal(buf);}finally{parsingPdfs--;}
+}
+
+async function extractPdfTextInternal(buf) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
   // pdfjs 用 workerSrc 做动态 import()，ESM 加载器只接受 URL。
   // Windows 绝对路径（C:\...）会以协议 'c:' 被拒绝，必须先转成 file:// URL。
   pdfjsLib.GlobalWorkerOptions.workerSrc = require('node:url')
     .pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs')).href;
-  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), useSystemFonts: true });
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), useSystemFonts: true, isEvalSupported: false });
   try {
     const pdf = await loadingTask.promise;
     if (pdf.numPages > 50) return reply400('PDF 最多支持 50 页');
@@ -582,7 +570,7 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 const IMPORT_FIELDS = {
   emails: ['user', 'pass', 'fakey'],
   proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
-  cards: ['number', 'expiry', 'cvv'],
+  cards: ['number', 'expiry', 'last4'],
   licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
 };
 
@@ -616,12 +604,14 @@ function batchKeyOf(type, it) {
 
 function normalizeImport(type, item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return reply400('导入内容格式不正确');
+  assertNoCardSecrets(item);
   const row = Object.fromEntries(IMPORT_FIELDS[type].map((key) => [key, String(item[key] ?? '').trim()]));
   if (type === 'emails' && !EMAIL_RE.test(row.user)) return reply400('存在无效邮箱，请检查导入内容');
   if (type === 'proxies' && (!row.host || (row.port && (!/^\d+$/.test(row.port) || Number(row.port) < 1 || Number(row.port) > 65535)))) return reply400('代理主机或端口无效');
   if (type === 'cards') {
-    row.number = row.number.replace(/[ -]/g, '');
-    if (!/^\d{12,19}$/.test(row.number)) return reply400('信用卡号格式不正确');
+    if (!row.number || row.number.length>120 || /[\r\n]/.test(row.number)) return reply400('\u8bf7\u586b\u5199\u4ed8\u6b3e\u5de5\u5177\u522b\u540d');
+    if (row.last4 && !/^\d{4}$/.test(row.last4)) return reply400('\u5361\u53f7\u672b\u56db\u4f4d\u5fc5\u987b\u4e3a4\u4f4d\u6570\u5b57');
+    if (row.expiry && !/^(0[1-9]|1[0-2])\/\d{2}$/.test(row.expiry)) return reply400('\u6709\u6548\u671f\u683c\u5f0f\u4e3a MM/YY');
   }
   if (type === 'licenses') {
     if (!row.name) return reply400('营业执照名称不能为空');
@@ -631,24 +621,35 @@ function normalizeImport(type, item) {
   return row;
 }
 
-/** 冲突的结构化描述，供接口返回给前端展示「被谁、何时、依据什么字段」判重。 */
+/** 跨用户判重只返回冲突原因，绝不返回其他成员身份与资料。 */
+function privateConflictMessage(conflict) {
+  return `该资料已存在，不能重复保存（判重依据：${conflict.label}）。请检查文件和组织资料。`;
+}
 function conflictDetail(conflict, item) {
   return {
-    name: String(item?.name || conflict.license.name || ''),
+    name: String(item?.name || ''),
     field: conflict.field,
     label: conflict.label,
-    license_name: conflict.license.name,
-    cvr: conflict.license.cvr || '',
-    owner: { username: conflict.owner.username, display_name: conflict.owner.display_name },
-    created_at: conflict.license.created_at,
     weak: !!conflict.weak,
-    message: dedup.conflictMessage(conflict),
+    message: privateConflictMessage(conflict),
   };
+}
+
+/** 按 PDF 原始字节查重；更改文件名也无法绕过。 */
+function checkDuplicatePdf(bytes) {
+  const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
+  const row = db.prepare('SELECT 1 FROM document_registry WHERE sha256 = ? LIMIT 1').get(sha256);
+  return { sha256, exists: !!row };
+}
+function rejectDuplicatePdf() {
+  return replyConflict('该 PDF 文件已被记录，不能重复上传或保存。请核对文件内容。', [
+    { name: '当前上传的 PDF', field: 'file', label: 'PDF 文件内容', message: '文件内容与已保存文件完全相同，已拒绝保存。' },
+  ]);
 }
 
 /**
  * 批量导入到指定账号名下。
- * 营业执照会跨全体用户查重：命中的条目被跳过，并在 conflicts 里带上「已被谁导入」的说明。
+ * 营业执照会跨全体用户查重：重复时整批拒绝，只显示判重依据。
  */
 function importItems(ownerId, type, items) {
   if (!Array.isArray(items) || items.length > 5000) return reply400('单次导入最多 5000 条');
@@ -674,12 +675,14 @@ function importItems(ownerId, type, items) {
       }
       if (mine) {
         try {
-          store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          // 本人只更新组织字段时，已有账号记录中的营业执照快照也要同步。
+          syncResource(ownerId, 'licenses', updatedLicense);
           updated++;
         } catch (error) {
           if (!store.isUniqueViolation(error)) throw error;
           skipped.push(it);
-          conflicts.push({ name: it.name, field: 'name', label: '组织名称', owner: null, message: '该营业执照与资料库中现有资料重复' });
+          conflicts.push({ name: it.name, field: 'name', label: '组织名称', owner: null, message: '该营业执照已存在，禁止重复保存' });
         }
         continue;
       }
@@ -829,7 +832,7 @@ function createRecords(ownerId, body) {
       card_id: card ? card.id : null,
       card_number: card ? card.number : '',
       card_expiry: card ? card.expiry : '',
-      card_cvv: card ? card.cvv : '',
+      card_last4: card ? card.last4 : '',
       license_id: lic ? lic.id : null,
       license_name: lic ? lic.name : '',
       ip_reg_time: String(body.ip_reg_time || ''),
@@ -857,7 +860,7 @@ const SNAP = {
     proxy_sn: p.sn, proxy_type: p.type, proxy_host: p.host, proxy_port: p.port,
     proxy_user: p.user, proxy_pass: p.pass, proxy_country: p.country, proxy_ip: p.ip,
   }),
-  card: (c) => ({ card_number: c.number, card_expiry: c.expiry, card_cvv: c.cvv }),
+  card: (c) => ({ card_number: c.number, card_expiry: c.expiry, card_last4: c.last4 }),
   license: (l) => ({ license_name: l.name }),
 };
 
@@ -968,10 +971,11 @@ function buildAdspower(records) {
 }
 
 function buildCsv(records) {
+  records = records.map(r=>Object.fromEntries(Object.entries(r).map(([k,v])=>[k, ['email_pass','email_fakey','proxy_pass','id_card'].includes(k)?'':v])));
   const head = [
     '创建日期(指纹)', '名称', '域名', '谷歌邮箱(完整)', '谷歌邮箱', '邮箱密码', '2FA',
     '代理类型', '代理主机', '端口', '代理编号', '代理账号', '代理密码', '出口IP', '国家',
-    '信用卡', '有效期', 'CVV', 'IP注册时间', '营业执照', '身份证', '状态', '创建时间',
+    '信用卡', '有效期', '卡号末四位', 'IP注册时间', '营业执照', '身份证', '状态', '创建时间',
   ];
   const esc = (v) => {
     v = String(v ?? '');
@@ -985,7 +989,7 @@ function buildCsv(records) {
     lines.push([
       r.fingerprint, r.name, r.domain, fullEmail, r.email_user, r.email_pass, r.email_fakey,
       r.proxy_type, r.proxy_host, r.proxy_port, r.proxy_sn, r.proxy_user, r.proxy_pass, r.proxy_ip, r.proxy_country,
-      r.card_number, r.card_expiry, r.card_cvv, r.ip_reg_time, r.license_name, r.id_card, r.status, r.created_at,
+      r.card_number, r.card_expiry, r.card_last4, r.ip_reg_time, r.license_name, r.id_card, r.status, r.created_at,
     ].map(esc).join(','));
   }
   return '\uFEFF' + lines.join('\r\n');
@@ -1016,8 +1020,29 @@ function rejectEarly(reply, code, payload) {
   return reply.code(code).send(payload);
 }
 
+function clientAddress(req) {
+  const peer=req.raw.socket.remoteAddress||'';
+  const candidate=req.headers['cf-connecting-ip'];
+  return process.env.TRUST_CLOUDFLARE==='1' && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(peer) && typeof candidate==='string' && isIP(candidate) ? candidate : peer;
+}
+const networkLimiter=new auth.RateLimiter({limit:80,windowMs:60000});
+let localUnlockUntil=0;
+function isUnlocked(req) {
+  if(isDesktopRequest(req)) return localUnlockUntil>Date.now();
+  const hash=crypto.createHash('sha256').update(req.sessionToken||'').digest('hex');
+  return Number(db.prepare('SELECT secrets_until FROM sessions WHERE token_hash=?').get(hash)?.secrets_until||0)>Date.now();
+}
+function requireUnlocked(req) {
+  if(!isUnlocked(req)) { const e=new Error('\u8bf7\u5148\u9a8c\u8bc1\u767b\u5f55\u5bc6\u7801\uff0c\u89e3\u9501\u654f\u611f\u64cd\u4f5c');e.statusCode=403;throw e; }
+}
 fastify.addHook('onRequest', async (req, reply) => {
+  const rawPath=req.url.split('?')[0];
+  if(/%2f|%5c|%2e|\\|\/\//i.test(rawPath)) return rejectEarly(reply,400,{error:'Invalid path'});
   if (!req.url.startsWith('/api/')) return;
+  if(!SAFE_METHODS.has(req.method.toUpperCase()) && req.headers.origin && PUBLIC_ORIGIN && req.headers.origin!==PUBLIC_ORIGIN) return rejectEarly(reply,403,{error:'Invalid origin'});
+  if(['/api/auth/login','/api/auth/register','/api/security/unlock'].includes(rawPath)) {
+    if(!networkLimiter.check(clientAddress(req)).allowed) return rejectEarly(reply,429,{error:'Too many attempts. Try later.'});
+  }
 
   // 桌面版仍要求携带本机令牌；网页版没有令牌，这一层自动跳过
   if (desktopToken && !isDesktopRequest(req)) {
@@ -1036,7 +1061,7 @@ fastify.addHook('onRequest', async (req, reply) => {
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
   const userId = auth.resolveSession(db, token);
   const user = userId ? store.findUserById(db, userId) : null;
-  if (!user) return rejectEarly(reply, 401, { error: '未登录', authRequired: true });
+  if (!user || user.disabled) return rejectEarly(reply, 401, { error: '未登录', authRequired: true });
   req.userId = userId;
   req.sessionToken = token;
 });
@@ -1045,13 +1070,21 @@ fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('Referrer-Policy', 'same-origin');
   reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
-  if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+  reply.header('Permissions-Policy','camera=(), microphone=(), geolocation=()');
+  if(SESSION_SECURE) reply.header('Strict-Transport-Security','max-age=31536000');
+  if (req.url.startsWith('/api/')) {
+    reply.header('Cache-Control', 'no-store');
+    const path=req.url.split('?')[0];
+    if(typeof payload==='string' && String(reply.getHeader('content-type')).includes('application/json') && !path.startsWith('/api/parse/') && !req.allowSecrets) {
+      try { payload=JSON.stringify(redact(JSON.parse(payload))); } catch { /* non-JSON handled by framework */ }
+    }
+  }
   return payload;
 });
 
 fastify.setErrorHandler((error, req, reply) => {
   const status = Number(error.statusCode) >= 400 && Number(error.statusCode) < 600 ? Number(error.statusCode) : 500;
-  if (status >= 500) req.log.error({ err: error }, '请求处理失败');
+  if (status >= 500) req.log.error({ code: error.code || 'internal' }, '请求处理失败');
   const body = { error: status >= 500 ? '服务器内部错误，请稍后重试' : error.message };
   if (Array.isArray(error.conflicts)) body.conflicts = error.conflicts;
   reply.code(status).send(body);
@@ -1066,7 +1099,7 @@ function replyConflict(message, conflicts) {
 
 /* ---------------- 认证路由 ---------------- */
 
-fastify.get('/api/healthz', async () => ({ ok: true }));
+fastify.get('/api/healthz', async () => ({ ok: true, version: require('./package.json').version }));
 
 fastify.get('/api/auth/config', async () => ({
   registration: REGISTRATION,
@@ -1089,7 +1122,8 @@ const loginLimiter = new auth.RateLimiter({ limit: 10, windowMs: 60_000 });
 
 fastify.post('/api/auth/login', { bodyLimit: 4 * 1024 }, async (req, reply) => {
   const { username, password } = req.body || {};
-  const key = `${req.ip}|${String(username || '').toLowerCase()}`;
+  if(typeof username!=='string' || typeof password!=='string' || password.length>200) return reply.code(401).send({error:'Invalid credentials'});
+  const key = `${clientAddress(req)}|${String(username || '').toLowerCase()}`;
   const gate = loginLimiter.check(key);
   if (!gate.allowed) {
     return reply.code(429).header('Retry-After', String(gate.retryAfter))
@@ -1097,7 +1131,7 @@ fastify.post('/api/auth/login', { bodyLimit: 4 * 1024 }, async (req, reply) => {
   }
   const user = store.findUserByUsername(db, username);
   // 用户不存在与密码错误返回同一句话，避免暴露账号是否存在
-  if (!user || !auth.verifyPassword(password, user.password_hash)) {
+  if (!user || user.disabled || !auth.verifyPassword(password, user.password_hash)) {
     return reply.code(401).send({ error: '用户名或密码不正确' });
   }
   loginLimiter.reset(key);
@@ -1141,6 +1175,32 @@ fastify.post('/api/auth/logout', async (req, reply) => {
   return { ok: true };
 });
 
+
+fastify.post('/api/security/unlock', {bodyLimit:4096}, async (req,reply)=>{
+  const owner=currentUserId(req),user=store.findUserById(db,owner);
+  const password=req.body?.password;
+  if(!isDesktopRequest(req) && (typeof password!=='string' || password.length>200 || !auth.verifyPassword(password,user.password_hash))) return reply.code(403).send({error:'\u767b\u5f55\u5bc6\u7801\u4e0d\u6b63\u786e'});
+  const until=Date.now()+60000;
+  if(isDesktopRequest(req)) localUnlockUntil=until;
+  else db.prepare('UPDATE sessions SET secrets_until=? WHERE token_hash=?').run(until,crypto.createHash('sha256').update(req.sessionToken).digest('hex'));
+  audit(db,owner,'secrets.unlock');
+  return {unlocked_until:until};
+});
+fastify.post('/api/security/lock', async req=>{
+  if(isDesktopRequest(req)) localUnlockUntil=0;
+  else db.prepare('UPDATE sessions SET secrets_until=0 WHERE token_hash=?').run(crypto.createHash('sha256').update(req.sessionToken).digest('hex'));
+  return {locked:true};
+});
+fastify.post('/api/account/password', {bodyLimit:4096}, async(req,reply)=>{
+  const owner=currentUserId(req),user=store.findUserById(db,owner);
+  if(!auth.verifyPassword(String(req.body?.current_password||'').slice(0,201),user.password_hash)) return reply.code(403).send({error:'\u539f\u5bc6\u7801\u4e0d\u6b63\u786e'});
+  const checked=auth.validateCredentials({username:user.username,password:req.body?.new_password});
+  if(checked.error) return reply400(checked.error);
+  mutate(()=>{db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(auth.hashPassword(checked.password),owner);db.prepare('DELETE FROM sessions WHERE user_id=?').run(owner);audit(db,owner,'password.change');});
+  reply.header('Set-Cookie',auth.clearCookie());return {changed:true,loginRequired:true};
+});
+fastify.get('/api/audit',async req=>({events:db.prepare('SELECT action,subject,created_at FROM audit_events WHERE owner_id=? ORDER BY id DESC LIMIT 100').all(currentUserId(req))}));
+
 /* ---------------- 旧版数据迁移 ---------------- */
 
 let pendingLegacy = null;
@@ -1173,6 +1233,7 @@ function adoptPendingLegacy(ownerId) {
 /* ---------------- 业务路由 ---------------- */
 
 fastify.get('/api/bootstrap', async (req) => {
+  if(req.query?.reveal === '1') {requireUnlocked(req);req.allowSecrets=true;}
   const ownerId = currentUserId(req);
   const seq = store.nextSeq(db, ownerId);
   return {
@@ -1214,6 +1275,8 @@ fastify.post('/api/parse/:type', async (req) => {
 // 只解析不保存；只有确认导入后才会保存原件。
 fastify.post('/api/parse/licenses-pdf', async (req) => {
   const bytes = decodePdf(req.body?.pdf);
+  // 解析前先查全库原件，减少重复解析且不泄露来源账号。
+  if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
   try {
     const text = await extractPdfText(bytes);
     const items = parseCertificate(text);
@@ -1240,7 +1303,7 @@ function probeDuplicate(item, req) {
   return {
     duplicate: {
       ...conflictDetail(conflict, item),
-      message: dedup.conflictMessage(conflict, { includePdf: true }),
+      message: privateConflictMessage(conflict),
       self: false,
     },
   };
@@ -1258,9 +1321,11 @@ fastify.post('/api/import/:type', async (req, reply) => {
     if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
     const bytes = decodePdf(req.body.pdf);
     const item = normalizeImport('licenses', items[0]);
-    const documentId = crypto.createHash('sha256').update(bytes).digest('hex');
+    const documentId = checkDuplicatePdf(bytes).sha256;
     const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
     return mutate(() => {
+      // 再次校验并在单个 SQLite 写事务里拒绝重复，防止两人同时保存。
+      if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
       const mine = store.listLicenses(db, ownerId);
       const byDocument = mine.filter((license) => license.document_id === documentId);
       if (byDocument.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
@@ -1272,7 +1337,7 @@ fastify.post('/api/import/:type', async (req, reply) => {
 
       // 关键一步：跨全体用户判重（自己已有的那条属于「更新」，不算重复）
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
-      if (conflict) return replyConflict(dedup.conflictMessage(conflict, { includePdf: true }), [conflictDetail(conflict, item)]);
+      if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, item)]);
 
       let license = mineMatched;
       const added = license ? 0 : 1;
@@ -1283,7 +1348,7 @@ fastify.post('/api/import/:type', async (req, reply) => {
       } catch (error) {
         if (!store.isUniqueViolation(error)) throw error;
         const again = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
-        return replyConflict(again ? dedup.conflictMessage(again, { includePdf: true }) : '该营业执照与现有资料重复', again ? [conflictDetail(again, item)] : []);
+        return replyConflict(again ? privateConflictMessage(again) : '该营业执照与现有资料重复', again ? [conflictDetail(again, item)] : []);
       }
       db.prepare('UPDATE licenses SET document_id = ?, document_name = ?, document_size = ? WHERE owner_id = ? AND id = ?')
         .run(documentId, filename, bytes.length, ownerId, license.id);
@@ -1337,9 +1402,9 @@ fastify.get('/api/licenses/:id/pdf', async (req, reply) => {
 });
 
 /** 全体成员重复体检：跨用户扫描，找出任何形式的重复。 */
-fastify.get('/api/licenses/duplicates', async () => {
-  const report = dedup.auditLicenses(db);
-  return { ...report, scope: 'global', address_mode: dedup.ADDRESS_MODE };
+// 普通用户不能枚举全体成员的营业执照或归属关系。待管理员权限实现再开放。
+fastify.get('/api/licenses/duplicates', async (req, reply) => {
+  return reply.code(403).send({ error: '无权查看其他成员的查重报告' });
 });
 
 fastify.patch('/api/pool/:type/:id', async (req) => {
@@ -1351,6 +1416,8 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     const current = store.findPoolItem(db, ownerId, type, id);
     if (!current) return reply400('资源不存在');
     const body = req.body || {};
+    if(body.version !== undefined && body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+    assertNoCardSecrets(body);
     if ('status' in body) {
       if (!STATUSES.includes(body.status)) return reply400('无效状态');
       const prefix = POOL_PREFIX[type];
@@ -1363,7 +1430,7 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     const merged = normalizeImport(type, { ...store.toPublic(current), ...changed });
     if (type === 'licenses') {
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
-      if (conflict) return replyConflict(dedup.conflictMessage(conflict), [conflictDetail(conflict, merged)]);
+      if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, merged)]);
     } else {
       const predicate = store.poolDuplicatePredicate(type, merged);
       const dup = predicate && db.prepare(`SELECT id FROM ${type} WHERE owner_id = ? AND ${predicate.sql} AND id <> ?`)
@@ -1399,13 +1466,36 @@ fastify.delete('/api/pool/:type/:id', async (req) => {
 
 fastify.post('/api/records', async (req) => {
   const ownerId = currentUserId(req);
-  const res = mutate(() => createRecords(ownerId, req.body || {}));
+  assertNoCardSecrets(req.body||{});
+  const requestKey=req.headers['idempotency-key'];
+  if(requestKey && (typeof requestKey!=='string'||! /^[A-Za-z0-9_-]{16,128}$/.test(requestKey))) return reply400('Invalid idempotency key');
+  const hash=crypto.createHash('sha256').update(JSON.stringify(req.body||{})).digest('hex');
+  const res = mutate(() => {
+    if(requestKey) {
+      const old=db.prepare('SELECT request_hash,result_ids FROM idempotency_requests WHERE owner_id=? AND request_key=?').get(ownerId,requestKey);
+      if(old) {
+        if(old.request_hash!==hash) return replyConflict('Submission changed; start a new request.',[]);
+        const created=JSON.parse(old.result_ids).map(id=>store.toPublic(store.getRecord(db,ownerId,id))).filter(Boolean);
+        if(!created.length) return replyConflict('This request was already processed and records were removed.',[]);
+        return {created,replayed:true};
+      }
+    }
+    const result=createRecords(ownerId,req.body||{});
+    if(!result.error) {
+      if(requestKey) db.prepare('INSERT INTO idempotency_requests VALUES(?,?,?,?,?)').run(ownerId,requestKey,hash,JSON.stringify(result.created.map(r=>r.id)),new Date().toISOString());
+      audit(db,ownerId,'records.create',String(result.created.length));
+    }
+    return result;
+  });
   if (res.error) return reply400(res.error);
   return res;
 });
 
 fastify.patch('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
+  const current=store.getRecord(db,ownerId,Number(req.params.id));
+  if(!current) return reply400('Record not found');
+  if(req.body?.version!==undefined && req.body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
   const res = mutate(() => updateRecord(ownerId, Number(req.params.id), req.body || {}));
   if (res.error) return reply400(res.error);
   return res;
@@ -1425,14 +1515,19 @@ fastify.delete('/api/records/:id', async (req) => {
 
 fastify.post('/api/export/adspower', async (req) => {
   const ownerId = currentUserId(req);
+  if(req.url.split('?')[0]==='/api/export/adspower') requireUnlocked(req);
+  if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
   const ids = new Set((req.body?.ids || []).map(Number));
   const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
   if (!list.length) return reply400('没有可导出的记录');
+  audit(db,ownerId,'export.credentials',String(list.length));
   return { text: buildAdspower(list), count: list.length };
 });
 
 fastify.post('/api/export/csv', async (req) => {
   const ownerId = currentUserId(req);
+  if(req.url.split('?')[0]==='/api/export/adspower') requireUnlocked(req);
+  if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
   const ids = new Set((req.body?.ids || []).map(Number));
   const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
   if (!list.length) return reply400('没有可导出的记录');
@@ -1448,7 +1543,9 @@ fastify.get('/api/backup', async (req, reply) => {
   const filename = `账号工作台-${user.username}-${new Date().toISOString().slice(0, 10)}.json`;
   reply.header('Content-Type', 'application/json; charset=utf-8');
   reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
-  return reply.send(JSON.stringify({ ...snapshot(ownerId), account: user.username, exported_at: nowLocal() }, null, 2));
+  requireUnlocked(req);
+  audit(db,ownerId,'backup.export');
+  return reply.send(JSON.stringify(encryptedSnapshot(ownerId)));
 });
 
 /**
@@ -1458,8 +1555,10 @@ fastify.get('/api/backup', async (req, reply) => {
 fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
   const ownerId = currentUserId(req);
   const payload = req.body?.snapshot ?? req.body;
+  requireUnlocked(req);
   try {
-    restore(payload, ownerId);
+    restoreEncrypted(payload, ownerId);
+    audit(db,ownerId,'backup.restore');
   } catch (error) {
     // 备份内容不对是「你给的文件有问题」，属于 400，不该报成服务器内部错误。
     // 校验在写库之前完成，因此被拒绝时现有数据不会被改动。
@@ -1491,7 +1590,7 @@ function snapshot(ownerId = null) {
   `).all(owner);
   return {
     counters: {},
-    documents: Object.fromEntries(docs.map((d) => [d.sha256, { filename: d.filename, base64: Buffer.from(d.bytes).toString('base64') }])),
+    documents: Object.fromEntries(docs.map((d) => [d.sha256, { filename: d.filename, base64: Buffer.from(store.getDocument(db,d.sha256).bytes).toString('base64') }])),
     emails: store.listPool(db, owner, 'emails'),
     proxies: store.listPool(db, owner, 'proxies'),
     cards: store.listPool(db, owner, 'cards'),
@@ -1500,11 +1599,42 @@ function snapshot(ownerId = null) {
   };
 }
 
+function encryptedSnapshot(ownerId=null) {
+  const owner=ownerId??resolveDefaultOwner();
+  if(!owner) throw new Error('Login required for backup');
+  const value=snapshot(owner),vault=getVault(db);
+  return {format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),
+    counts:{records:value.records.length,licenses:value.licenses.length},
+    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)};
+}
+function decryptSnapshot(envelope,ownerId=null) {
+  const owner=ownerId??resolveDefaultOwner(),vault=getVault(db);
+  if(envelope?.format!=='adsworkbench-backup'||envelope.version!==2||envelope.owner_id!==owner||envelope.key_id!==vault.keyId) throw new Error('\u5907\u4efd\u4e0d\u5c5e\u4e8e\u5f53\u524d\u8d26\u53f7\u6216\u670d\u52a1\u5668\uff1b\u65e7\u683c\u5f0f\u9700\u7ba1\u7406\u5458\u79bb\u7ebf\u8fc1\u79fb');
+  return validateSnapshot(JSON.parse(vault.open(envelope.payload,`backup:${owner}`)));
+}
+function restoreEncrypted(envelope,ownerId=null) {return restore(decryptSnapshot(envelope,ownerId),ownerId);}
+
 function restore(data, ownerId = null) {
   const owner = ownerId ?? resolveDefaultOwner();
   if (!owner) throw new Error('恢复备份需要先创建账号');
   const value = validateSnapshot(data);
   return mutate(() => {
+    // 备份恢复仍是一次“写入”，必须防止覆盖其他成员或绕过全员文件查重。
+    // 本人的旧备份属于替换本人数据，不视为新建重复。
+    for (const license of value.licenses) {
+      if (license.document_id) {
+        const foreign = db.prepare('SELECT 1 FROM document_registry WHERE owner_id <> ? AND sha256 = ? LIMIT 1')
+          .get(owner, license.document_id);
+        if (foreign) replyConflict('备份中包含已被其他账号保存的 PDF 文件，恢复已取消；您的现有数据未改变', [
+          { name: '备份中的 PDF', field: 'file', label: 'PDF 文件内容', message: '文件与全员数据库中已保存的文件重复' },
+        ]);
+      }
+      const keys = dedup.licenseKeys(license);
+      const conflict = dedup.findLicenseConflict(db, keys, {excludeOwnerId:owner});
+      if (conflict) {
+        replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, license)]);
+      }
+    }
     db.prepare('DELETE FROM records WHERE owner_id = ?').run(owner);
     for (const kind of POOL_TYPES) db.prepare(`DELETE FROM ${kind} WHERE owner_id = ?`).run(owner);
     store.adoptLegacySnapshot(db, owner, value, { createdAt: nowLocal() });
@@ -1517,11 +1647,11 @@ function restore(data, ownerId = null) {
 
 fastify.get('/login', (req, reply) => reply.sendFile('login.html'));
 
-fastify.register(fastifyStatic, { root: PUBLIC_DIR });
+installStatic(fastify, PUBLIC_DIR);
 
 fastify.setNotFoundHandler((req, reply) => {
   if (req.raw.url.startsWith('/api')) return reply.code(404).send({ error: 'not found' });
-  return reply.sendFile('index.html');
+  return reply.code(404).send({error:'not found'});
 });
 
 const start = async ({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '127.0.0.1', token = '' } = {}) => {
@@ -1530,7 +1660,7 @@ const start = async ({ port = Number(process.env.PORT) || 3000, host = process.e
   if (store.countUsers(db) === 0) loadLegacySnapshot();
   try {
     const address = await fastify.listen({ port, host });
-    console.log('工作台已启动: ' + address);
+    if (process.env.LOG_LEVEL !== 'silent') console.log('Ads Workbench started: ' + address);
     return address;
   } catch (e) {
     fastify.log.error(e);
@@ -1547,11 +1677,15 @@ const close = async () => {
 module.exports = {
   start,
   close,
-  snapshot,
+  snapshot, encryptedSnapshot, decryptSnapshot, restoreEncrypted,
   restore,
   licenseDocument,
   fastify,
   db,
   store,
 };
-if (require.main === module) start().catch(() => { process.exitCode = 1; });
+if (require.main === module) {
+  start().catch(() => { process.exitCode = 1; });
+  let stopping=false;
+  for(const signal of ['SIGTERM','SIGINT']) process.on(signal,()=>{if(stopping)return;stopping=true;close().finally(()=>process.exit(0));});
+}

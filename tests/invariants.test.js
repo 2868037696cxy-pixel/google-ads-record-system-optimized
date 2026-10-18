@@ -86,7 +86,7 @@ async function seed(n = 1, tag = 'seed') {
   for (let i = 0; i < n; i++) {
     const k = ++uniq;
     items.emails.push({ user: `${tag}-${k}@example.com`, pass: `pw-${k}`, fakey: '' });
-    items.cards.push({ number: String(4000000000000 + k), expiry: '12/28', cvv: String(100 + (k % 800)) });
+    items.cards.push({ number: `payment-${k}`, expiry: '12/28', last4: String(k).padStart(4,'0') });
     items.licenses.push({ name: `${tag} Company ${k} ApS`, cvr: String(71000000 + k) });
   }
   for (const kind of ['emails', 'cards', 'licenses']) {
@@ -339,14 +339,15 @@ test('编辑资源时重复值被拒绝，正常改名会同步到记录的导�
   });
   assert.equal(renamedLicense.status, 200, encode(renamedLicense.body));
 
-  const record = (await api('a', 'GET', '/api/bootstrap')).body.records.find((r) => r.id === recordId);
+  await api('a','POST','/api/security/unlock',{body:{password:'secret-pass-1'}});
+  const record = (await api('a', 'GET', '/api/bootstrap?reveal=1')).body.records.find((r) => r.id === recordId);
   assert.equal(record.email_pass, 'new-email-pass', '改名应同步到记录快照');
   assert.equal(record.license_name, newName, '改名应同步到记录快照');
 
   // 导出用的就是快照字段
   const csv = await api('a', 'POST', '/api/export/csv', { body: { ids: [recordId] } });
   assert.equal(csv.status, 200, encode(csv.body));
-  assert.ok(csv.body.text.includes('new-email-pass'));
+  assert.ok(!csv.body.text.includes('new-email-pass'), 'Ordinary CSV must not include secrets');
   assert.ok(csv.body.text.includes(newName));
   const adspower = await api('a', 'POST', '/api/export/adspower', { body: { ids: [recordId] } });
   assert.equal(adspower.status, 200, encode(adspower.body));
@@ -355,13 +356,13 @@ test('编辑资源时重复值被拒绝，正常改名会同步到记录的导�
 
 /* ---------------- 导出 ---------------- */
 
-test('CSV 导出会给公式型取值加前缀，并保留长卡号与零开头的 CVV', async () => {
+test('CSV 防公式注入且不包含完整卡号或 CVV', async () => {
   const special = await api('a', 'POST', '/api/import/cards', {
-    body: { items: [{ number: '4367970152619097', expiry: '06/29', cvv: '007' }] },
+    body: { items: [{ number: 'finance-special', expiry: '06/29', last4: '0007' }] },
   });
   assert.equal(special.status, 200, encode(special.body));
   const specialCard = (await api('a', 'GET', '/api/bootstrap')).body.pools.cards
-    .find((c) => c.number === '4367970152619097');
+    .find((c) => c.number === 'finance-special');
   assert.ok(specialCard, '特殊卡号应已落库');
 
   const res = await seed(4, 'csv');
@@ -369,7 +370,7 @@ test('CSV 导出会给公式型取值加前缀，并保留长卡号与零开头�
   const ids = [];
   for (let i = 0; i < formulas.length; i++) {
     const created = await api('a', 'POST', '/api/records', {
-      body: recordBody({ domains: [`csv-${++uniq}.example`], id_card: formulas[i] }, {
+      body: recordBody({ domains: [`csv-${++uniq}.example`], ip_reg_time: formulas[i] }, {
         emailIds: [res.emailIds[i]],
         cardIds: [i === 0 ? specialCard.id : res.cardIds[i]],
         licenseIds: [res.licenseIds[i]],
@@ -385,8 +386,9 @@ test('CSV 导出会给公式型取值加前缀，并保留长卡号与零开头�
   for (const formula of formulas) {
     assert.ok(text.includes(`'${formula}`), `以 ${formula[0]} 开头的值应加上 ' 前缀`);
   }
-  assert.ok(text.includes("'4367970152619097"), '长卡号应加前缀，避免被当成数字');
-  assert.ok(text.includes("'007"), '零开头的 CVV 应加前缀');
+  assert.ok(!text.includes('4367970152619097'));
+  assert.ok(!text.includes('CVV'));
+  assert.ok(text.includes("'0007"));
   assert.ok(!text.includes('E+'), '导出文本里不应出现科学计数法');
 });
 
@@ -403,6 +405,7 @@ test('AdsPower 导出会转义字段里的换行，不会多出注入行', async
   });
   assert.equal(created.status, 200, encode(created.body));
 
+  await api('a','POST','/api/security/unlock',{body:{password:'secret-pass-1'}});
   const exported = await api('a', 'POST', '/api/export/adspower', { body: { ids: [created.body.created[0].id] } });
   assert.equal(exported.status, 200, encode(exported.body));
   const lines = exported.body.text.split('\n');

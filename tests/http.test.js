@@ -45,14 +45,14 @@ after(async () => {
 });
 
 describe('静态资源与会话', () => {
-  it('主页面可访问、带 CSP 安全头，并含账号与重复体检入口', async () => {
+  it('主页面可访问、带 CSP 安全头，且普通成员不能查看全员资料', async () => {
     const response = await call('GET', '/', { auth: false });
     const html = await response.text();
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-security-policy') || '', /script-src 'self'/);
     assert.ok(html.includes('id="accountName"'));
     assert.ok(html.includes('data-action="logout"'));
-    assert.ok(html.includes('data-action="duplicate-audit"'));
+    assert.ok(!html.includes('data-action="duplicate-audit"'), '普通用户页面不得有全员资料审计入口');
     assert.ok(html.includes('data-action="web-backup"'));
   });
 
@@ -142,13 +142,16 @@ describe('个人备份与恢复', () => {
     });
     assert.equal(imported.status, 200);
 
+    assert.equal((await call('POST','/api/security/unlock',{body:{password:'smoke-pass-1'}})).status,200);
     const response = await call('GET', '/api/backup');
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-disposition') || '', /attachment/);
     backup = await response.text();
     const parsed = JSON.parse(backup);
-    assert.equal(parsed.emails.length, 1);
-    assert.equal(parsed.account, 'smoke');
+    assert.equal(parsed.format, 'adsworkbench-backup');
+    assert.ok(!backup.includes('backup@example.com'));
+    const original=service.decryptSnapshot(parsed,parsed.owner_id);
+    assert.equal(original.emails.length,1);
   });
 
   it('删除后可以完整恢复回来', async () => {
@@ -170,10 +173,11 @@ describe('个人备份与恢复', () => {
     assert.equal((await emails()).length, 1);
   });
 
-  it('重复体检可扫描全体成员并返回分组', async () => {
-    const report = await (await call('GET', '/api/licenses/duplicates')).json();
-    assert.equal(report.scope, 'global');
-    assert.equal(typeof report.scanned, 'number');
-    assert.ok(Array.isArray(report.groups));
+  it('普通成员不能查询全体营业执照或其他成员的明细', async () => {
+    const response = await call('GET', '/api/licenses/duplicates');
+    assert.equal(response.status, 403);
+    const result = await response.json();
+    assert.ok(!('groups' in result));
+    assert.ok(!('users' in result));
   });
 });

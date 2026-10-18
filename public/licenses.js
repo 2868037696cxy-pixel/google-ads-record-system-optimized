@@ -16,7 +16,7 @@ function openLicenseDetails(id) {
       <table class="detail-table"><tbody>${rows}</tbody></table>
       <div class="license-document">
         <span class="license-document-icon" aria-hidden="true">PDF</span>
-        <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存在本机 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
+        <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存到工作台 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
       </div>
     </div>
     <div class="modal-foot">
@@ -34,7 +34,7 @@ function openLicenseImport() {
         ${LICENSE_FIELDS.map(([key, label, required]) => `<div class="field ${key === 'address' ? 'license-wide' : ''}"><label for="license-${key}">${label}${required ? ' *' : '（选填）'}</label><input id="license-${key}" name="${key}" ${required ? 'required' : ''} ${key === 'zip' ? 'placeholder="9310 或 DK-9310"' : ''}></div>`).join('')}
       </form>
       <details class="license-source"><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" class="mono" rows="6" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n街道地址：Følfodvej 1\n邮编：9310\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
-      <p class="license-help">本次保存 1 条资料。同一 PDF 再次导入会更新原记录；同名组织可补充或更换 PDF。校对后确认才会保存。</p>
+      <p class="license-help">全员统一查重：相同 PDF 文件禁止重复上传（即使改名），公司名称或注册号重复也会提示。只会显示重复原因，不会展示其他成员资料。校对后才能确认保存。</p>
     </div>
     <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="license-import">确认保存</button></div>
   `, { large: true });
@@ -76,7 +76,12 @@ function openLicenseImport() {
       if (first.duplicate) renderLicenseConflictPanel({ title: '注意：这份资料与现有记录重复', conflicts: [first.duplicate], tone: 'warn' });
       status.textContent = result.items.length ? '已提取信息，请核对后保存。原 PDF 将一并保存。' : '未能自动识别，请手动填写资料。原 PDF 仍可保存。';
     } catch (error) {
-      if (current === revision && form.isConnected) { status.textContent = error.message; fileInput.value = ''; }
+      if (current === revision && form.isConnected) {
+        status.textContent = error.message;
+        fileInput.value = '';
+        attachment = null;
+        if (Array.isArray(error.conflicts) && error.conflicts.length) showLicenseConflicts(error);
+      }
     } finally {
       if (current === revision && form.isConnected) { submit.disabled = false; parseText.disabled = false; }
     }
@@ -117,14 +122,13 @@ function openLicenseImport() {
 
 /**
  * 判重提示面板。
- * 识别阶段是「预警」，导入被拒时是「错误」——两种都直接放在表单上方，
- * 而不是只弹一个会消失的 toast，因为「被谁在什么时候导入」需要留下来核对。
+ * 识别阶段为预警，导入拒绝为错误；不显示其他成员的资料或身份。
  */
 function renderLicenseConflictPanel({ title, conflicts, tone }) {
   document.getElementById('license-conflict')?.remove();
   const items = conflicts.map((c) => `<li>
-      <div><b>${esc(c.license_name || c.name || '')}</b>${c.cvr ? ` · CVR ${esc(c.cvr)}` : ''}</div>
-      <div class="conflict-meta">判重依据：${esc(c.label || '资料重复')}${c.owner ? ` · 已由 <b>${esc(c.owner.display_name || c.owner.username)}</b> 于 ${esc(String(c.created_at || '').slice(0, 16))} 导入` : ''}</div>
+      <div><b>${esc(c.name || '当前文件')}</b></div>
+      <div class="conflict-meta">判重依据：${esc(c.label || '资料重复')} · 已存在相同记录</div>
     </li>`).join('');
   const panel = document.createElement('div');
   panel.id = 'license-conflict';
@@ -132,8 +136,8 @@ function renderLicenseConflictPanel({ title, conflicts, tone }) {
   panel.setAttribute('role', tone === 'error' ? 'alert' : 'status');
   panel.innerHTML = `<strong>${esc(title)}</strong><ul>${items}</ul>
     <p>${tone === 'error'
-      ? '为避免覆盖其他成员的数据，重复的营业执照不会被保存。若确认不是同一家，请核对组织名称、CVR 注册号与街道地址后重试。'
-      : '这份资料与现有记录重复，直接保存会被拒绝，请先核对上面的字段。'}</p>`;
+      ? '没有写入任何重复文件。如确实是不同公司，请核对证书及注册信息；系统不会显示其他成员的内容。'
+      : '全员查重发现相同资料，保存时将被拒绝。请核对本次输入。'}</p>`;
   const body = document.querySelector('#modal-root .modal-body');
   if (body) body.prepend(panel);
   return panel;

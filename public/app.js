@@ -20,11 +20,11 @@ async function api(path, opts = {}) {
   try {
     res = await fetch(path, {
       ...opts, headers,
-      signal: opts.signal || AbortSignal.timeout(20000),
+      signal: opts.signal || AbortSignal.timeout(60000),
       body: hasBody ? JSON.stringify(opts.body) : undefined,
     });
   } catch (error) {
-    if (error.name === 'TimeoutError') throw new Error('连接超时，请稍后重试');
+    if (error.name === 'TimeoutError') throw new Error('连接超时，提交结果尚未确认。请重新连接查询，不要重复新建。');
     if (error.name === 'AbortError') throw error;
     throw new Error('无法连接服务，请检查网络后重新连接');
   }
@@ -126,7 +126,7 @@ function parseFpStart(input) {
 const KINDS = [
   { key: 'emails', label: '邮箱库', ico: '✉' },
   { key: 'proxies', label: '代理库', ico: '⇅' },
-  { key: 'cards', label: '信用卡库', ico: '▤' },
+  { key: 'cards', label: '付款工具库', ico: '▤' },
   { key: 'licenses', label: '营业执照', ico: '§' },
 ];
 
@@ -136,11 +136,14 @@ const state = {
   records: [],
   next: null,
   reveal: false,
+  unlockedUntil: 0,
+  submission: null,
   sel: new Set(),
   q: '',
   rstatus: '全部',
   poolQ: '',
   poolStatus: '全部',
+  poolFilters: Object.fromEntries(['emails','proxies','cards','licenses'].map(kind => [kind, {q:'',status:'全部',page:1}])),
   picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
   form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
   loaded: false,
@@ -153,7 +156,7 @@ const state = {
 const MASK = '••••••';
 
 function sens(value) {
-  if (state.reveal) return esc(value);
+  if (state.reveal && value !== '[protected]') return esc(value);
   if (!value) return '<span class="faint">—</span>';
   return `<span class="masked">${MASK}</span>`;
 }
@@ -224,11 +227,14 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 /* ============ 骨架渲染 ============ */
 
 function renderNav() {
-  const main = [{ key: 'workbench', label: '工作台', ico: '◧', count: state.records.length }];
+  const main = [
+    { key: 'overview', label: '运营总览', ico: '◈', count: '' },
+    { key: 'workbench', label: '创建与记录', ico: '◧', count: state.records.length },
+  ];
   const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
-  const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}">
+  const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}" ${state.page === it.key ? 'aria-current="page"' : ''}>
         <span class="ico">${it.ico}</span>${it.label}
-        <span class="count">${it.count}</span>
+        ${it.count !== '' ? `<span class="count">${it.count}</span>` : ''}
       </button>`;
   document.getElementById('nav').innerHTML = `
     <div class="nav-label">总览</div>
@@ -254,12 +260,14 @@ function renderAccount() {
 function render() {
   renderNav();
   renderAccount();
-  if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
+  if (state.page === 'overview') renderOverview();
+  else if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
 }
 
 async function refresh() {
-  const data = await api('/api/bootstrap');
+  if(state.reveal && state.unlockedUntil<=Date.now()) state.reveal=false;
+  const data = await api('/api/bootstrap' + (state.reveal ? '?reveal=1' : ''));
   if (!data?.pools || !Array.isArray(data.records) || !data.next || !KINDS.every((k) => Array.isArray(data.pools[k.key]))) {
     throw new Error('数据格式不正确，请检查备份或重启工作台');
   }
@@ -280,6 +288,63 @@ async function refresh() {
   bindLabels();
   const connection = document.getElementById('connectionStatus');
   if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
+}
+
+
+/* ============ 运营总览：当前账号授权数据，不代表团队共享已上线 ============ */
+function renderOverview() {
+  const records = state.records;
+  const normal = records.filter(r => r.status === '正常').length;
+  const abnormal = records.filter(r => r.status === '异常').length;
+  const paused = records.filter(r => r.status === '停用').length;
+  const recent = [...records].sort((a,b) => b.id - a.id).slice(0,6);
+  const resources = [
+    {kind:'emails', label:'邮箱资源', ico:'✉'},
+    {kind:'proxies', label:'代理资源', ico:'⇅'},
+    {kind:'cards', label:'支付资源', ico:'▤'},
+    {kind:'licenses', label:'营业执照', ico:'§'},
+  ];
+  const resourceRows = resources.map(({kind,label,ico}) => `
+    <button type="button" class="overview-resource" data-action="nav" data-page="${kind}">
+      <span class="overview-resource-icon" aria-hidden="true">${ico}</span>
+      <span class="overview-resource-name">${label}<small>管理和导入资源</small></span>
+      <b class="overview-resource-count ${poolCount(kind) === 0 ? 'overview-danger' : ''}">${poolCount(kind)}<small>可用</small></b>
+      <span class="overview-arrow" aria-hidden="true">↗</span>
+    </button>`).join('');
+  document.getElementById('main').innerHTML = `
+    <div class="page-head">
+      <div><h1>运营总览</h1><p class="sub">账号状态、资源库存、待办事项 · 当前账号可见范围</p></div>
+      <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
+      <button class="btn btn-primary" data-action="nav" data-page="workbench">＋ 创建账号记录</button></div>
+    </div>
+    <div class="overview-metrics">
+      <div class="overview-metric"><span>账号记录</span><b>${records.length}</b><small>已建档总数</small></div>
+      <div class="overview-metric"><span>正常</span><b class="overview-good">${normal}</b><small>当前状态正常</small></div>
+      <div class="overview-metric"><span>异常</span><b class="${abnormal?'overview-danger':''}">${abnormal}</b><small>建议优先核对</small></div>
+      <div class="overview-metric"><span>停用</span><b>${paused}</b><small>检查关联资源</small></div>
+    </div>
+    <div class="overview-columns">
+      <section class="panel"><div class="panel-head"><div class="panel-title">资源准备度</div><span class="dim">点击管理</span></div>
+        <div class="overview-resource-list">${resourceRows}</div>
+        <p class="overview-footnote">此处仅展示当前用户库存。实际批量创建还需服务端分配校验。</p>
+      </section>
+      <section class="panel"><div class="panel-head"><div class="panel-title">优先处理</div><span class="dim">账号状态</span></div>
+        <div class="overview-todo">
+          ${abnormal ? `<button class="overview-todo-row" data-action="jump-status" data-status="异常"><span class="overview-dot red"></span><span><b>${abnormal} 条异常账号</b><small>检查账号资料和异常原因</small></span><span class="overview-arrow">→</span></button>`:''}
+          ${paused ? `<button class="overview-todo-row" data-action="jump-status" data-status="停用"><span class="overview-dot"></span><span><b>${paused} 条停用账号</b><small>检查是否仍占用独占资源</small></span><span class="overview-arrow">→</span></button>`:''}
+          ${!abnormal && !paused ? '<div class="overview-ok"><b>✓ 暂无异常或停用记录</b><p>可以继续补充资源或创建账号记录。</p></div>' : ''}
+        </div>
+      </section>
+    </div>
+    <section class="panel overview-recent">
+      <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="workbench">查看全部 →</button></div>
+      ${recent.length ? recent.map(r => `<div class="overview-recent-row">
+        <span class="overview-recent-icon" aria-hidden="true">◧</span>
+        <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
+        <span class="overview-status">${esc(r.status)}</span>
+        <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>
+      </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="workbench">开始创建</button></div>'}
+    </section>`;
 }
 
 /* ============ 工作台 ============ */
@@ -347,7 +412,7 @@ function renderWorkbench() {
     <div class="stat-strip">
       <div class="strip-item hi"><span class="v">${state.records.length}</span><span class="k">记录总数</span></div>
       <div class="strip-item"><span class="v">${avail.emails}<em>/${state.pools.emails.length}</em></span><span class="k"><span class="dot green"></span>可用邮箱</span></div>
-      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用信用卡</span></div>
+      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用付款工具</span></div>
       <div class="strip-item"><span class="v">${avail.licenses}<em>/${state.pools.licenses.length}</em></span><span class="k"><span class="dot amber"></span>可用营业执照</span></div>
       <div class="strip-item"><span class="v">${poolCount('proxies')}<em>/${state.pools.proxies.length}</em></span><span class="k"><span class="dot"></span>可用代理</span></div>
     </div>
@@ -358,7 +423,7 @@ function renderWorkbench() {
             ${[
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
-              { n: '03', t: '导入信用卡', d: '「卡号 有效期 CVV」一行一张，导入后自动按状态分组', k: 'cards' },
+              { n: '03', t: '导入付款工具', d: '工具别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
               { n: '04', t: '创建记录', d: '回到本页填写国家/产品/域名，指纹名称按今天日期自动生成', k: '' },
             ]
               .map(
@@ -374,7 +439,7 @@ function renderWorkbench() {
     <div class="panel">
       <div class="panel-head">
         <div class="panel-title">快速创建 <span class="tag">指纹名称自动生成</span></div>
-        <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 信用卡 / 营业执照自动按顺序分配并标记已使用</span>
+        <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 付款工具 / 营业执照自动按顺序分配并标记已使用</span>
       </div>
       <div class="panel-body">
         <form id="createForm" class="form-grid" autocomplete="off">
@@ -410,7 +475,7 @@ function renderWorkbench() {
                 <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="emails">选择</button>
               </div>
               <div class="assign-row">
-                <span class="assign-info">▤ 信用卡：<span id="info-cards">${assignInfo('cards')}</span></span>
+                <span class="assign-info">▤ 付款工具：<span id="info-cards">${assignInfo('cards')}</span></span>
                 <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="cards">选择</button>
               </div>
               <div class="assign-row">
@@ -433,7 +498,7 @@ function renderWorkbench() {
         <div class="create-preview">
           <span>本次将创建 <b>${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
             ${count > avail.emails ? `<span class="warn">⚠ 邮箱仅剩 ${avail.emails} 条</span>` : ''}
-            ${count > avail.cards ? `<span class="warn">⚠ 信用卡仅剩 ${avail.cards} 张</span>` : ''}
+            ${count > avail.cards ? `<span class="warn">⚠ 付款工具仅剩 ${avail.cards} 张</span>` : ''}
           </span>
           <button class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `立即创建 ${count > 0 ? count + ' 条' : ''}`}</button>
         </div>
@@ -442,7 +507,7 @@ function renderWorkbench() {
 
     <div class="panel">
       <div class="panel-head">
-        <div class="panel-title">创建记录</div>
+        <div class="panel-title">账号记录 <span class="overview-title-count">${filtered.length} / ${state.records.length} 条</span></div>
       </div>
       <div class="toolbar">
         <input class="search" id="rec-q" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
@@ -450,6 +515,7 @@ function renderWorkbench() {
           ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" data-action="rstatus" data-v="${s}">${s}</button>`).join('')}
         </div>
         <span class="sel-count">已选 <b>${state.sel.size}</b> 条</span>
+        <button class="btn btn-ghost btn-sm" data-action="clear-record-filter" ${!state.q && state.rstatus === '全部' ? 'disabled' : ''}>清除筛选</button>
         <span class="toolbar-spacer"></span>
         <button class="btn btn-ghost btn-sm" data-action="export-adspower">导出 AdsPower TXT</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">导出 CSV</button>
@@ -503,7 +569,7 @@ function renderRecordsTable(list) {
     <thead><tr>
       <th style="width:34px"><input type="checkbox" data-action="sel-all" aria-label="全选当前页" ${allChecked ? 'checked' : ''}></th>
       <th>指纹名称</th><th>名称</th><th>域名</th><th>谷歌邮箱</th><th>邮箱密码</th><th>2FA</th>
-      <th>代理</th><th>信用卡</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
+      <th>代理</th><th>付款工具</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
       <th>状态</th><th style="width:110px">操作</th>
     </tr></thead>
     <tbody>
@@ -513,7 +579,7 @@ function renderRecordsTable(list) {
             ? `${esc(r.proxy_host)}:${esc(r.proxy_port)}<br><span class="faint mono">${esc(r.proxy_sn || '')}${r.proxy_country ? ' · ' + esc(r.proxy_country) : ''}${r.proxy_ip ? ' · ' + esc(r.proxy_ip) : ''}</span>`
             : '<span class="faint">—</span>';
           const card = r.card_number
-            ? `${sens(r.card_number)}<br><span class="faint mono">${esc(r.card_expiry || '')}${r.card_cvv ? ' · ' + sens(r.card_cvv) : ''}</span>`
+            ? `${esc(r.card_number)}<br><span class="faint mono">${esc(r.card_expiry || '')}${r.card_last4 ? ' · ' + esc(r.card_last4) : ''}</span>`
             : '<span class="faint">—</span>';
           return `<tr class="${state.sel.has(r.id) ? 'selected' : ''}" data-id="${r.id}" style="--i:${i}">
             <td><input type="checkbox" data-action="sel-row" data-id="${r.id}" ${state.sel.has(r.id) ? 'checked' : ''}></td>
@@ -524,10 +590,10 @@ function renderRecordsTable(list) {
             <td class="mono copyable" data-copy="${esc(r.email_pass)}" title="点击复制">${sens(r.email_pass)}</td>
             <td class="mono copyable" data-copy="${esc(r.email_fakey)}" title="点击复制">${sens(r.email_fakey)}</td>
             <td class="mono copyable" data-sensitive="${Boolean(r.proxy_user || r.proxy_pass)}" data-copy="${esc(r.proxy_host ? `${r.proxy_host}:${r.proxy_port}:${r.proxy_user}:${r.proxy_pass}` : '')}" title="点击复制完整代理">${proxy}</td>
-            <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_cvv}` : '')}" title="点击复制完整卡号">${card}</td>
+            <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_last4}` : '')}" title="复制付款工具信息">${card}</td>
             <td class="dim">${esc(r.ip_reg_time) || '<span class="faint">—</span>'}</td>
             <td>${r.license_id ? `<button class="license-link" data-action="view-license" data-id="${r.license_id}">${esc(r.license_name)}</button>` : '<span class="faint">—</span>'}</td>
-            <td class="dim">${esc(r.id_card) || '<span class="faint">—</span>'}</td>
+            <td class="dim">${sens(r.id_card)}</td>
             <td>
               <select class="status-select ${r.status === '正常' ? 's-green' : r.status === '异常' ? 's-red' : 's-blue'}" data-action="rec-status" data-id="${r.id}">
                 ${['正常', '异常', '停用'].map((s) => `<option ${r.status === s ? 'selected' : ''}>${s}</option>`).join('')}
@@ -570,13 +636,16 @@ async function doCreate() {
     license_ids: [...state.picked.licenses].map(Number),
   };
   try {
-    const res = await api('/api/records', { method: 'POST', body });
+    const encoded=JSON.stringify(body);
+    if(state.submission?.body !== encoded) state.submission={body:encoded,key:crypto.randomUUID()};
+    const res = await api('/api/records', { method: 'POST', headers:{'idempotency-key':state.submission.key}, body });
+    state.submission=null;
     const list = res.created;
     toast(`✅ 已创建 ${list.length} 条记录：${list[0].fingerprint}${list.length > 1 ? ' ~ ' + list[list.length - 1].fingerprint : ''}`);
     state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
     state.form.domains = '';
     state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
-    await refresh();
+    await refresh().catch(error=>toast('已保存，但列表刷新失败；请重新连接','warn'));
   } catch (e) {
     toast(e.message, 'error');
     if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
@@ -615,13 +684,13 @@ const POOL_TABLE = {
     ],
   },
   cards: {
-    cols: ['ID', '卡号', '有效期', 'CVV', '状态', '导入时间', '操作'],
+    cols: ['ID', '工具别名', '有效期', '末四位', '状态', '导入时间', '操作'],
     widths: ['60px', '220px', '90px', '80px', '100px', '170px', '70px'],
     row: (c) => [
       `<span class="faint mono">${c.id}</span>`,
-      `<span class="mono copyable" data-copy="${esc(c.number)}" title="点击复制">${sens(c.number)}</span>`,
+      `<span class="mono copyable" data-copy="${esc(c.number)}" title="点击复制">${esc(c.number)}</span>`,
       `<span class="mono copyable" data-copy="${esc(c.expiry)}" title="点击复制">${esc(c.expiry) || '<span class="faint">—</span>'}</span>`,
-      `<span class="mono copyable" data-copy="${esc(c.cvv)}" title="点击复制">${sens(c.cvv)}</span>`,
+      `<span class="mono copyable" data-copy="${esc(c.last4)}" title="点击复制">${esc(c.last4)}</span>`,
     ],
   },
   licenses: {
@@ -654,9 +723,8 @@ host:port:user:pass
 host,port,user,pass`,
   },
   cards: {
-    rule: '一行一张，格式为「卡号 有效期 CVV」。',
-    sample: `4367970152619097 06/29 596
-4367970159932238 06/29 364`,
+    rule: '一行一条：付款工具别名|末四位|有效期。不接收完整卡号和 CVV。',
+    sample: 'Finance-card-A|1234|06/29\nFinance-card-B|5678|12/29',
   },
   licenses: {
     rule: '一个 PDF 对应一条营业执照记录。选择 PDF 后校对公司名称、法定名称、地址、邮编和城市，再确认保存；未识别的字段可手动填写，原 PDF 会与该条资料一起保存。',
@@ -709,12 +777,15 @@ function renderPool(kind) {
     <div class="panel"><div class="toolbar">
       <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
       <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
-      <span class="sel-count">${list.length} 条</span></div>${renderPoolTable(kind, list)}</div>`;
+      <span class="sel-count">${list.length} 条</span>
+      <button class="btn btn-ghost btn-sm" data-action="clear-pool-filter" ${!state.poolQ && state.poolStatus === '全部' ? 'disabled' : ''}>清除筛选</button></div>${renderPoolTable(kind, list)}</div>`;
 }
 
 function renderPoolTableInto() {
   const panel = document.querySelector('#main .panel');
   if (!panel) return;
+  const reset=document.querySelector('[data-action="clear-pool-filter"]');
+  if(reset) reset.disabled=!state.poolQ&&state.poolStatus==='全部';
   const list = getFilteredPool(state.page);
   panel.querySelectorAll('.table-wrap, .empty, .table-pagination').forEach((element) => element.remove());
   panel.insertAdjacentHTML('beforeend', renderPoolTable(state.page, list));
@@ -791,7 +862,7 @@ async function openImportModal(kind) {
     } else {
       const preview = parsed
         .slice(0, 5)
-        .map((it) => `<li>${esc(Object.values(it).filter(Boolean).join(' · '))}</li>`)
+        .map((it) => `<li>${esc(Object.entries(it).filter(([k,v])=>v&&!['pass','fakey'].includes(k)).map(([,v])=>v).join(' · '))}</li>`)
         .join('');
       resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
       okBtn.disabled = false;
@@ -805,7 +876,7 @@ async function openImportModal(kind) {
       const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
       toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
       if (ta.isConnected) closeModal();
-      await refresh();
+      await refresh().catch(error=>toast('已保存，但列表刷新失败；请点击重新连接','warn'));
     } catch (e) {
       toast(e.message, 'error');
       okBtn.disabled = false;
@@ -865,7 +936,7 @@ function openAutoImport() {
         <ul class="parse-preview-list">${items.slice(0, 5).map((it) => `<li>${esc(fmt(it))}</li>`).join('')}</ul>
       </div>`);
     resultBox.innerHTML =
-      sec('邮箱', '✉', emails, (e) => [e.user, e.pass, e.fakey].filter(Boolean).join(' · ')) +
+      sec('邮箱', '✉', emails, (e) => [e.user,e.pass?'密码已识别':'',e.fakey?'2FA已识别':''].filter(Boolean).join(' · ')) +
       sec('代理', '⇅', proxies, (p) => [p.host ? `${p.host}:${p.port}` : '', p.user, p.sn, p.ip].filter(Boolean).join(' · '));
     okBtn.disabled = false;
     okBtn.textContent = `确认导入（邮箱 ${emails.length} · 代理 ${proxies.length}）`;
@@ -907,7 +978,7 @@ function openAutoImport() {
       if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${dupNote(res.proxies)}`);
       toast(`✅ 导入成功：${parts.join('，')}`);
       if (ta.isConnected) closeModal();
-      await refresh();
+      await refresh().catch(error=>toast('已保存，但列表刷新失败；请点击重新连接','warn'));
     } catch (e) {
       okBtn.disabled = false;
       toast(e.message, 'error');
@@ -1024,7 +1095,7 @@ function openEditRecord(id) {
         </div>
         <div class="field col-6"><label>谷歌邮箱（更换后自动释放原邮箱）</label>${poolSelect('emails', r.email_id, 'email_id')}</div>
         <div class="field col-6"><label>代理</label>${poolSelect('proxies', r.proxy_id, 'proxy_id')}</div>
-        <div class="field col-6"><label>信用卡</label>${poolSelect('cards', r.card_id, 'card_id')}</div>
+        <div class="field col-6"><label>付款工具</label>${poolSelect('cards', r.card_id, 'card_id')}</div>
         <div class="field col-6"><label>营业执照</label>${poolSelect('licenses', r.license_id, 'license_id')}</div>
       </div>
     </div>
@@ -1041,6 +1112,7 @@ function openEditRecord(id) {
     const form = document.getElementById('edit-form');
     const val = (n) => form.querySelector(`[name="${n}"]`).value;
     const body = {
+      version:r.version,
       country: val('country'),
       product: val('product'),
       domain: val('domain'),
@@ -1140,8 +1212,9 @@ function openRestoreDialog() {
     if (file.size > 64 * 1024 * 1024) { status.textContent = '文件超过 64 MB，无法恢复'; input.value = ''; return; }
     try {
       parsed = JSON.parse(await file.text());
-      const records = Array.isArray(parsed.records) ? parsed.records.length : 0;
-      const licenses = Array.isArray(parsed.licenses) ? parsed.licenses.length : 0;
+      if(parsed.format!=='adsworkbench-backup'||parsed.version!==2) throw new Error('Invalid backup format');
+      const records = Number(parsed.counts?.records)||0;
+      const licenses = Number(parsed.counts?.licenses)||0;
       status.textContent = `已读取：记录 ${records} 条 · 营业执照 ${licenses} 条，确认后将覆盖当前账号数据`;
       go.disabled = false;
     } catch {
@@ -1208,11 +1281,36 @@ document.addEventListener('click', async (e) => {
         await window.desktop.openDataFolder();
         break;
       case 'nav': {
-        if (state.page !== t.dataset.page) { state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1; }
-        state.page = t.dataset.page;
+        const prev = state.page;
+        const next = t.dataset.page;
+        if (KINDS.some(k => k.key === prev)) state.poolFilters[prev] = {q:state.poolQ,status:state.poolStatus,page:state.poolPage};
+        state.page = next;
+        if (KINDS.some(k => k.key === next)) {
+          const f = state.poolFilters[next];
+          state.poolQ = f.q; state.poolStatus = f.status; state.poolPage = f.page;
+        }
         render();
         break;
       }
+      case 'jump-status':
+        state.page = 'workbench'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
+        render();
+        document.querySelector('#rec-q')?.focus({preventScroll:true});
+        break;
+      case 'recent-record':
+        state.q = state.records.find(r => r.id === Number(t.dataset.id))?.fingerprint || '';
+        state.rstatus = '全部'; state.recordPage = 1; state.page = 'workbench';
+        render();
+        document.querySelector('#rec-q')?.focus({preventScroll:true});
+        break;
+      case 'clear-record-filter':
+        state.q = ''; state.rstatus = '全部'; state.recordPage = 1; render();
+        break;
+      case 'clear-pool-filter':
+        state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1;
+        state.poolFilters[state.page] = {q:'',status:'全部',page:1};
+        render();
+        break;
       case 'modal-overlay': {
         if (e.target === t) closeModal();
         break;
@@ -1221,18 +1319,26 @@ document.addEventListener('click', async (e) => {
         closeModal();
         break;
       case 'toggle-reveal':
-        state.reveal = !state.reveal;
-        render();
+        if(state.reveal) await lockSensitive();
+        else if(await ensureSensitive()) {state.reveal=true;await refresh();}
         break;
+      case 'my-audit':
+        await showMyAudit();break;
+      case 'change-password':
+        showChangePassword();break;
       case 'duplicate-audit':
         await openDuplicateAudit();
         break;
       case 'web-backup':
         // 走一次同源导航触发下载：Cookie 会自动带上，浏览器停留在当前页面
-        location.href = '/api/backup';
+        if(!await ensureSensitive()) break;
+        const backupResponse=await fetch('/api/backup',{headers:{'x-workbench':'1'},signal:AbortSignal.timeout(60000)});
+        if(!backupResponse.ok) throw new Error('备份导出失败，请重新解锁后重试');
+        download('AdsWorkbench-'+todayKey()+'.json',await backupResponse.text(),'application/json');
         toast('正在导出备份…');
         break;
       case 'web-restore':
+        if(!await ensureSensitive()) break;
         openRestoreDialog();
         break;
       case 'logout': {
@@ -1262,13 +1368,15 @@ document.addEventListener('click', async (e) => {
       case 'pool-status':
         state.poolStatus = t.dataset.v;
         state.poolPage = 1;
+        state.poolFilters[state.page] = {q:state.poolQ,status:state.poolStatus,page:1};
         render();
         break;
       case 'table-page':
         if (t.dataset.kind === 'records') { state.recordPage = Number(t.dataset.page); renderRecordsTableInto(); }
-        else { state.poolPage = Number(t.dataset.page); renderPoolTableInto(); }
+        else { state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto(); }
         break;
       case 'export-adspower': {
+        if(!await ensureSensitive('此导出包含邮箱和代理凭据，请安全保存文件。')) break;
         const ids = [...state.sel];
         const res = await api('/api/export/adspower', { method: 'POST', body: { ids } });
         download(`adspower_${todayKey().replace('.', '_')}.txt`, res.text);
@@ -1295,7 +1403,7 @@ document.addEventListener('click', async (e) => {
       }
       case 'del-record': {
         const id = Number(t.dataset.id);
-        confirmModal('删除记录', '删除后关联的邮箱 / 信用卡 / 营业执照会自动释放回「未使用」。', async () => {
+        confirmModal('删除记录', '删除后关联的邮箱 / 付款工具 / 营业执照会自动释放回「未使用」。', async () => {
           await api(`/api/records/${id}`, { method: 'DELETE' });
           state.sel.delete(id);
           toast('已删除');
@@ -1348,11 +1456,11 @@ document.addEventListener('change', async (e) => {
   if (action === 'pool-item-status' || action === 'rec-status') t.disabled = true;
   try {
     if (action === 'pool-item-status') {
-      await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value } });
+      await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
       toast('状态已更新');
       await refresh();
     } else if (action === 'rec-status') {
-      await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value } });
+      await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
       toast('状态已更新');
       await refresh();
     } else if (action === 'sel-row') {
@@ -1385,6 +1493,7 @@ document.addEventListener('input', (e) => {
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
     state.poolPage = 1;
+    state.poolFilters[state.page] = {q:state.poolQ,status:state.poolStatus,page:1};
     const el = e.target;
     renderPoolTableInto();
     el.setSelectionRange(el.value.length, el.value.length);
@@ -1419,7 +1528,7 @@ function updateCreatePreview() {
   preview.querySelectorAll('.warn').forEach((w) => w.remove());
   const warns = [];
   if (count > avail.emails) warns.push(`⚠ 邮箱仅剩 ${avail.emails} 条`);
-  if (count > avail.cards) warns.push(`⚠ 信用卡仅剩 ${avail.cards} 张`);
+  if (count > avail.cards) warns.push(`⚠ 付款工具仅剩 ${avail.cards} 张`);
   const span = preview.querySelector('span');
   warns.forEach((w) => {
     const el = document.createElement('span');
@@ -1430,6 +1539,8 @@ function updateCreatePreview() {
 }
 
 function renderRecordsTableInto(input) {
+  const reset=document.querySelector('[data-action="clear-record-filter"]');
+  if(reset) reset.disabled=!state.q&&state.rstatus==='全部';
   // 只刷新表格部分，保持搜索框焦点
   const panels = document.querySelectorAll('#main .panel');
   const tablePanel = panels[panels.length - 1];
@@ -1511,7 +1622,7 @@ async function connect() {
   const main = document.getElementById('main');
   const status = document.getElementById('connectionStatus');
   if (status) { status.textContent = '正在连接…'; status.className = 'connection-status'; }
-  if (!state.loaded) main.innerHTML = '<section class="connection-panel" role="status"><span class="connection-spinner" aria-hidden="true"></span><h1>正在打开工作台</h1><p>正在读取本地记录和资源</p></section>';
+  if (!state.loaded) main.innerHTML = '<section class="connection-panel" role="status"><span class="connection-spinner" aria-hidden="true"></span><h1>正在打开工作台</h1><p>正在读取你的记录和资源</p></section>';
   const retry = document.querySelector('[data-action="retry-load"]');
   if (retry) { retry.disabled = true; retry.textContent = '正在连接…'; }
   try {

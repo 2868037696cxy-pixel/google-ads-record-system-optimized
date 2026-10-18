@@ -20,7 +20,7 @@ const { certificate } = require('../tests/pdf-fixture');
       executablePath: require('electron'),
       // CI container has no setuid sandbox helper; production Windows keeps sandbox:true.
       args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), '.'],
-      env: { ...process.env, ADS_DESKTOP_DATA_DIR: path.join(directory, 'userdata') },
+      env: { ...process.env, ADS_WORKBENCH_MODE: 'local', ADS_DESKTOP_DATA_DIR: path.join(directory, 'userdata') },
     });
     await electron.evaluate(({ dialog, shell }, filename) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: filename });
@@ -115,7 +115,7 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.waitForFunction(() => !document.querySelector('#auto-ok'));
     await page.locator('[data-action="nav"][data-page="cards"]').click();
     await page.locator('[data-action="open-import"][data-kind="cards"]').click();
-    await page.locator('#import-text').fill('4367970152619097 06/29 007');
+    await page.locator('#import-text').fill('Finance-A|0007|06/29');
     await page.waitForFunction(() => !document.querySelector('#import-ok').disabled);
     await page.locator('#import-ok').click();
     await page.waitForFunction(() => !document.querySelector('#import-ok'));
@@ -152,7 +152,9 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.locator('[data-action="desktop-backup"]').click();
     await page.waitForFunction(() => document.querySelector('#toast-root').innerText.includes('完整备份已导出'));
     const snapshot = JSON.parse(fs.readFileSync(backupFile));
-    assert.equal(Object.keys(snapshot.documents).length, 1);
+    assert.equal(snapshot.format,'adsworkbench-backup');
+    assert.equal(snapshot.counts.licenses,1);
+    assert.ok(!JSON.stringify(snapshot).includes('second@example.com'));
     console.log('PASS native complete backup includes original PDF');
 
     await page.locator('[data-action="nav"][data-page="workbench"]').first().click();
@@ -184,15 +186,22 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.locator('[data-action="nav"][data-page="licenses"]').click();
     await page.locator('[data-action="open-import"][data-kind="licenses"]').click();
     await page.locator('#license-file').setInputFiles(pdfFile);
-    await page.getByText('已提取信息，请核对后保存。原 PDF 将一并保存。', { exact: true }).waitFor();
+    await page.locator('#license-conflict').waitFor();
+    assert.match(await page.locator('#license-conflict').innerText(), /PDF 文件内容/);
+    assert.match(await page.locator('#license-file-status').innerText(), /不能重复/);
+    assert.equal((await page.evaluate(() => api('/api/bootstrap'))).pools.licenses.length, 1);
+    await page.locator('.modal-close').click();
+    // 修改本人资料可走“无重复文件”的资料更新，不允许以重传相同 PDF 的方式进行。
+    await page.locator('[data-action="open-import"][data-kind="licenses"]').click();
     await page.locator('#license-name').fill(name + ' corrected');
+    await page.locator('#license-legal_name').fill(name);
     await page.locator('#license-import').click();
     await page.waitForFunction(() => !document.querySelector('#license-import'));
     const corrected = await page.evaluate(() => api('/api/bootstrap'));
     assert.equal(corrected.pools.licenses.length, 1); assert.equal(corrected.pools.licenses[0].id, 1);
     assert.equal(corrected.records[0].license_name, name + ' corrected');
     assert.equal(await page.locator('[data-action="del-pool"]').isDisabled(), true);
-    console.log('PASS same-PDF corrected reimport updates one assigned license');
+    console.log('PASS duplicate PDF rejected while updating own existing license metadata succeeds');
 
     await page.locator('[data-action="desktop-restore"]').click();
     await page.getByText('已连接', { exact: true }).waitFor();
