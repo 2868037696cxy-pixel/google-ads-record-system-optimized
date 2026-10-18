@@ -685,7 +685,9 @@ function importItems(ownerId, type, items) {
       }
       if (mine) {
         try {
-          store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          // 本人只更新组织字段时，已有账号记录中的营业执照快照也要同步。
+          syncResource(ownerId, 'licenses', updatedLicense);
           updated++;
         } catch (error) {
           if (!store.isUniqueViolation(error)) throw error;
