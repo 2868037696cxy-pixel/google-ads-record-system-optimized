@@ -1,0 +1,169 @@
+diff --git a/public/index.html b/public/index.html
+index ffc7abf..d34bc60 100644
+--- a/public/index.html
++++ b/public/index.html
+@@ -46,2 +46,4 @@
+         </div>
++        <button class="ghost-btn w-full" data-action="my-audit">我的操作记录</button>
++        <button class="ghost-btn w-full" data-action="change-password">修改登录密码</button>
+         <div class="account-box">
+@@ -61,3 +63,4 @@
+   <script src="/licenses.js?v=20261018g"></script>
+-  <script src="/app.js?v=20261018g"></script>
++  <script src="/app.js?v=20261019r1"></script>
++  <script src="/security.js?v=20261019r1"></script>
+ </body>
+diff --git a/public/licenses.js b/public/licenses.js
+index 871beba..21eab69 100644
+--- a/public/licenses.js
++++ b/public/licenses.js
+@@ -18,3 +18,3 @@ function openLicenseDetails(id) {
+         <span class="license-document-icon" aria-hidden="true">PDF</span>
+-        <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存在本机 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
++        <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存到工作台 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
+       </div>
+diff --git a/public/login.html b/public/login.html
+index 04da0a7..ec4e709 100644
+--- a/public/login.html
++++ b/public/login.html
+@@ -45,3 +45,3 @@
+         <h1>广告账号资源<br><em>集中管控</em>的工作台</h1>
+-        <p>邮箱、代理、信用卡、营业执照与广告账号记录归档在同一处，供团队检索、分配与交接。</p>
++        <p>邮箱、代理、付款工具、营业执照与广告账号记录归档在同一处，供团队检索、分配与交接。</p>
+       </div>
+@@ -51,3 +51,3 @@
+         <li><span class="spec-key">PROXY</span><span class="spec-label">代理节点</span><span class="spec-idx">02</span></li>
+-        <li><span class="spec-key">CARD</span><span class="spec-label">信用卡</span><span class="spec-idx">03</span></li>
++        <li><span class="spec-key">CARD</span><span class="spec-label">付款工具</span><span class="spec-idx">03</span></li>
+         <li><span class="spec-key">LIC</span><span class="spec-label">营业执照资料</span><span class="spec-idx">04</span></li>
+diff --git a/public/login.js b/public/login.js
+index 3aa7ab7..444fe43 100644
+--- a/public/login.js
++++ b/public/login.js
+@@ -20,3 +20,3 @@ const AUTH_API = {
+ const DEFAULT_CONFIG = {
+-  registration: 'open',
++  registration: 'closed',
+   minPasswordLength: 8,
+@@ -61,3 +61,3 @@ async function request(path, options = {}) {
+   }
+-  return fetch(path, init);
++  return fetch(path, {...init,signal:AbortSignal.timeout(20000)});
+ }
+diff --git a/public/security.js b/public/security.js
+new file mode 100644
+index 0000000..32a5ec2
+--- /dev/null
++++ b/public/security.js
+@@ -0,0 +1,67 @@
++'use strict';
++let secretTimer;
++const protectedKeys=new Set(['pass','fakey','email_pass','email_fakey','proxy_pass','id_card']);
++function wipeSecrets(value) {
++  if(Array.isArray(value)) {value.forEach(wipeSecrets);return;}
++  if(!value||typeof value!=='object') return;
++  for(const key of Object.keys(value)) {
++    if(protectedKeys.has(key)) value[key]=value[key]?'[protected]':'';
++    else wipeSecrets(value[key]);
++  }
++}
++async function lockSensitive() {
++  clearTimeout(secretTimer);state.unlockedUntil=0;state.reveal=false;
++  wipeSecrets(state.pools);wipeSecrets(state.records);
++  if(state.loaded) render();
++  await api('/api/security/lock',{method:'POST',keepalive:true}).catch(()=>{});
++}
++async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u7801\u3002\u6388\u6743\u6709\u6548\u671f60\u79d2\uff0c\u4ec5\u53ef\u67e5\u770b\u672c\u4eba\u8d44\u6599\u3002') {
++  if(state.unlockedUntil>Date.now()+1000) return true;
++  if(window.desktop) {
++    const result=await api('/api/security/unlock',{method:'POST',body:{}});
++    state.unlockedUntil=result.unlocked_until;secretTimer=setTimeout(lockSensitive,60000);return true;
++  }
++  return new Promise(resolve=>{
++    openModal(`<div class="modal-head"><h3>\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c</h3><button class="modal-close" data-action="close-modal" aria-label="\u5173\u95ed">\u00d7</button></div>
++      <form id="unlock-form"><div class="modal-body"><p>${esc(reason)}</p><label for="unlock-password">\u5f53\u524d\u767b\u5f55\u5bc6\u7801</label><input id="unlock-password" type="password" autocomplete="current-password" required maxlength="200" style="width:100%"><p id="unlock-error" role="alert"></p></div>
++      <div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="close-modal">\u53d6\u6d88</button><button class="btn btn-primary" type="submit">\u9a8c\u8bc1</button></div></form>`);
++    const form=document.getElementById('unlock-form');let done=false;
++    const observer=new MutationObserver(()=>{if(!form.isConnected&&!done){done=true;observer.disconnect();resolve(false);}});
++    observer.observe(document.getElementById('modal-root'),{childList:true});
++    form.onsubmit=async e=>{
++      e.preventDefault();const button=form.querySelector('[type=submit]');if(button.disabled)return;button.disabled=true;
++      try {
++        const result=await api('/api/security/unlock',{method:'POST',body:{password:document.getElementById('unlock-password').value}});
++        document.getElementById('unlock-password').value='';
++        state.unlockedUntil=result.unlocked_until;clearTimeout(secretTimer);secretTimer=setTimeout(lockSensitive,Math.max(0,result.unlocked_until-Date.now()));
++        done=true;observer.disconnect();closeModal();resolve(true);
++      } catch(error){if(form.isConnected){document.getElementById('unlock-error').textContent=error.message;button.disabled=false;}}
++    };
++  });
++}
++async function showMyAudit() {
++  openModal(`<div class="modal-head"><h3>\u6211\u7684\u5b89\u5168\u64cd\u4f5c\u8bb0\u5f55</h3><button class="modal-close" data-action="close-modal" aria-label="\u5173\u95ed">\u00d7</button></div><div class="modal-body" id="my-audit">\u52a0\u8f7d\u4e2d\u2026</div>`);
++  try {
++    const {events}=await api('/api/audit');const box=document.getElementById('my-audit');if(!box)return;
++    const labels={'secrets.unlock':'\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c','export.credentials':'\u5bfc\u51fa\u51ed\u636e','backup.export':'\u5bfc\u51fa\u52a0\u5bc6\u5907\u4efd','backup.restore':'\u6062\u590d\u5907\u4efd','password.change':'\u4fee\u6539\u5bc6\u7801','records.create':'\u521b\u5efa\u8bb0\u5f55'};
++    box.innerHTML=events.length?`<p>\u4ec5\u663e\u793a\u672c\u4eba\u6700\u8fd1100\u6761\u8bb0\u5f55\uff0c\u4e0d\u5305\u542b\u5bc6\u7801\u539f\u6587\u3002</p><table><thead><tr><th>\u64cd\u4f5c</th><th>\u6570\u91cf</th><th>\u65f6\u95f4</th></tr></thead><tbody>${events.map(e=>`<tr><td>${esc(labels[e.action]||e.action)}</td><td>${esc(e.subject)}</td><td>${esc(new Date(e.created_at).toLocaleString())}</td></tr>`).join('')}</tbody></table>`:'<p>\u6682\u65e0\u64cd\u4f5c\u8bb0\u5f55</p>';
++  }catch(e){toast(e.message,'error');}
++}
++function showChangePassword() {
++  openModal(`<div class="modal-head"><h3>\u4fee\u6539\u767b\u5f55\u5bc6\u7801</h3><button class="modal-close" data-action="close-modal">\u00d7</button></div><form id="password-form"><div class="modal-body stack">
++    <label for="old-password">\u539f\u5bc6\u7801</label><input id="old-password" type="password" autocomplete="current-password" required maxlength="200">
++    <label for="new-password">\u65b0\u5bc6\u7801</label><input id="new-password" type="password" autocomplete="new-password" required minlength="8" maxlength="200">
++    <label for="repeat-password">\u786e\u8ba4\u65b0\u5bc6\u7801</label><input id="repeat-password" type="password" autocomplete="new-password" required maxlength="200"><p role="alert" id="password-error"></p>
++    <p>\u4fee\u6539\u540e\u6240\u6709\u8bbe\u5907\u9700\u91cd\u65b0\u767b\u5f55\u3002</p></div><div class="modal-foot"><button class="btn btn-primary" type="submit">\u786e\u8ba4\u4fee\u6539</button></div></form>`);
++  const form=document.getElementById('password-form');form.onsubmit=async e=>{e.preventDefault();const button=form.querySelector('button');button.disabled=true;
++    try {
++      const next=document.getElementById('new-password').value;
++      if(next!==document.getElementById('repeat-password').value) throw new Error('\u4e24\u6b21\u65b0\u5bc6\u7801\u4e0d\u4e00\u81f4');
++      await api('/api/account/password',{method:'POST',body:{current_password:document.getElementById('old-password').value,new_password:next}});
++      location.replace('/login.html');
++    }catch(error){document.getElementById('password-error').textContent=error.message;button.disabled=false;}
++  };
++}
++document.addEventListener('visibilitychange',()=>{if(document.hidden && state.unlockedUntil) void lockSensitive();});
++window.addEventListener('offline',()=>{if(state.unlockedUntil) void lockSensitive();const el=document.getElementById('connectionStatus');if(el){el.textContent='\u7f51\u7edc\u65ad\u5f00\uff0c\u65b0\u63d0\u4ea4\u5c1a\u672a\u4fdd\u5b58';el.className='connection-status disconnected';}});
++window.addEventListener('online',()=>{void connect();});
+diff --git a/public/styles.css b/public/styles.css
+index 6b506f6..6b1112a 100644
+--- a/public/styles.css
++++ b/public/styles.css
+@@ -1497 +1497,11 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
+ }
++
++/* Operational polish: stable controls, accessible form and sticky table header. */
++#password-form .stack {display:flex;flex-direction:column;gap:10px}
++#unlock-error,#password-error{color:var(--red);min-height:1.5em}
++.table-wrap{overscroll-behavior-x:contain}
++.table-wrap thead th{position:sticky;top:0;background:var(--surface-2);z-index:2}
++input[type=checkbox]{min-width:16px;min-height:16px}
++.modal-body label{display:block;margin:6px 0}
++.btn:disabled{cursor:not-allowed}
++@media(max-height:800px){.sidebar>.sidebar-foot{max-height:48vh;font-size:12px;gap:5px}}
+diff --git a/scripts/account.cjs b/scripts/account.cjs
+new file mode 100644
+index 0000000..f3715f4
+--- /dev/null
++++ b/scripts/account.cjs
+@@ -0,0 +1,22 @@
++'use strict';
++// Operator-only CLI. No HTTP administrator data browser and no plaintext passwords in argv.
++const fs=require('node:fs');const path=require('node:path');const {envFile}=require('./backup.cjs');
++envFile();
++const [action,username,passwordFile]=process.argv.slice(2);
++if(!['create','disable','enable','reset'].includes(action)||!username){console.error('Usage: account.cjs create|reset USER PRIVATE_PASSWORD_FILE, or disable|enable USER');process.exit(1);}
++const {openDatabase,transaction}=require('../lib/db');const store=require('../lib/store');const auth=require('../lib/auth');const {audit}=require('../lib/hardening');
++let db;
++try{
++  db=openDatabase(process.env.DB_FILE||path.join(process.env.DATA_DIR||'/var/lib/adsworkbench','workbench.sqlite'));
++  transaction(db,()=>{
++    let user=store.findUserByUsername(db,username);
++    if(action==='create'||action==='reset'){
++      if(!passwordFile)throw new Error('Private password file is required');const stat=fs.statSync(passwordFile);
++      if(process.platform!=='win32' && (stat.mode & 0o077))throw new Error('Password file must have permissions 600');
++      const password=fs.readFileSync(passwordFile,'utf8').replace(/\r?\n$/,'');const check=auth.validateCredentials({username,password});if(check.error)throw new Error(check.error);
++      if(action==='create'){if(user)throw new Error('Username already exists');user=store.insertUser(db,{username,displayName:username,passwordHash:auth.hashPassword(password),createdAt:new Date().toISOString()});}
++      else {if(!user)throw new Error('User not found');db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(auth.hashPassword(password),user.id);db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);}
++    }else{if(!user)throw new Error('User not found');db.prepare('UPDATE users SET disabled=? WHERE id=?').run(action==='disable'?1:0,user.id);db.prepare('DELETE FROM sessions WHERE user_id=?').run(user.id);}
++    audit(db,user.id,'operator.'+action);
++  });console.log('Account action completed. No records or PDFs were listed.');
++}catch(e){console.error(e.message);process.exitCode=1;}finally{if(db)db.close();}
