@@ -141,6 +141,7 @@ const state = {
   rstatus: '全部',
   poolQ: '',
   poolStatus: '全部',
+  poolFilters: Object.fromEntries(['emails','proxies','cards','licenses'].map(kind => [kind, {q:'',status:'全部',page:1}])),
   picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
   form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
   loaded: false,
@@ -224,11 +225,14 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 /* ============ 骨架渲染 ============ */
 
 function renderNav() {
-  const main = [{ key: 'workbench', label: '工作台', ico: '◧', count: state.records.length }];
+  const main = [
+    { key: 'overview', label: '运营总览', ico: '◈', count: '' },
+    { key: 'workbench', label: '创建与记录', ico: '◧', count: state.records.length },
+  ];
   const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
-  const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}">
+  const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}" ${state.page === it.key ? 'aria-current="page"' : ''}>
         <span class="ico">${it.ico}</span>${it.label}
-        <span class="count">${it.count}</span>
+        ${it.count !== '' ? `<span class="count">${it.count}</span>` : ''}
       </button>`;
   document.getElementById('nav').innerHTML = `
     <div class="nav-label">总览</div>
@@ -254,7 +258,8 @@ function renderAccount() {
 function render() {
   renderNav();
   renderAccount();
-  if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
+  if (state.page === 'overview') renderOverview();
+  else if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
 }
 
@@ -280,6 +285,63 @@ async function refresh() {
   bindLabels();
   const connection = document.getElementById('connectionStatus');
   if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
+}
+
+
+/* ============ 运营总览：当前账号授权数据，不代表团队共享已上线 ============ */
+function renderOverview() {
+  const records = state.records;
+  const normal = records.filter(r => r.status === '正常').length;
+  const abnormal = records.filter(r => r.status === '异常').length;
+  const paused = records.filter(r => r.status === '停用').length;
+  const recent = [...records].sort((a,b) => b.id - a.id).slice(0,6);
+  const resources = [
+    {kind:'emails', label:'邮箱资源', ico:'✉'},
+    {kind:'proxies', label:'代理资源', ico:'⇅'},
+    {kind:'cards', label:'支付资源', ico:'▤'},
+    {kind:'licenses', label:'营业执照', ico:'§'},
+  ];
+  const resourceRows = resources.map(({kind,label,ico}) => `
+    <button type="button" class="overview-resource" data-action="nav" data-page="${kind}">
+      <span class="overview-resource-icon" aria-hidden="true">${ico}</span>
+      <span class="overview-resource-name">${label}<small>管理和导入资源</small></span>
+      <b class="overview-resource-count ${poolCount(kind) === 0 ? 'overview-danger' : ''}">${poolCount(kind)}<small>可用</small></b>
+      <span class="overview-arrow" aria-hidden="true">↗</span>
+    </button>`).join('');
+  document.getElementById('main').innerHTML = `
+    <div class="page-head">
+      <div><h1>运营总览</h1><p class="sub">账号状态、资源库存、待办事项 · 当前账号可见范围</p></div>
+      <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
+      <button class="btn btn-primary" data-action="nav" data-page="workbench">＋ 创建账号记录</button></div>
+    </div>
+    <div class="overview-metrics">
+      <div class="overview-metric"><span>账号记录</span><b>${records.length}</b><small>已建档总数</small></div>
+      <div class="overview-metric"><span>正常</span><b class="overview-good">${normal}</b><small>当前状态正常</small></div>
+      <div class="overview-metric"><span>异常</span><b class="${abnormal?'overview-danger':''}">${abnormal}</b><small>建议优先核对</small></div>
+      <div class="overview-metric"><span>停用</span><b>${paused}</b><small>检查关联资源</small></div>
+    </div>
+    <div class="overview-columns">
+      <section class="panel"><div class="panel-head"><div class="panel-title">资源准备度</div><span class="dim">点击管理</span></div>
+        <div class="overview-resource-list">${resourceRows}</div>
+        <p class="overview-footnote">此处仅展示当前用户库存。实际批量创建还需服务端分配校验。</p>
+      </section>
+      <section class="panel"><div class="panel-head"><div class="panel-title">优先处理</div><span class="dim">账号状态</span></div>
+        <div class="overview-todo">
+          ${abnormal ? `<button class="overview-todo-row" data-action="jump-status" data-status="异常"><span class="overview-dot red"></span><span><b>${abnormal} 条异常账号</b><small>检查账号资料和异常原因</small></span><span class="overview-arrow">→</span></button>`:''}
+          ${paused ? `<button class="overview-todo-row" data-action="jump-status" data-status="停用"><span class="overview-dot"></span><span><b>${paused} 条停用账号</b><small>检查是否仍占用独占资源</small></span><span class="overview-arrow">→</span></button>`:''}
+          ${!abnormal && !paused ? '<div class="overview-ok"><b>✓ 暂无异常或停用记录</b><p>可以继续补充资源或创建账号记录。</p></div>' : ''}
+        </div>
+      </section>
+    </div>
+    <section class="panel overview-recent">
+      <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="workbench">查看全部 →</button></div>
+      ${recent.length ? recent.map(r => `<div class="overview-recent-row">
+        <span class="overview-recent-icon" aria-hidden="true">◧</span>
+        <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
+        <span class="overview-status">${esc(r.status)}</span>
+        <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>
+      </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="workbench">开始创建</button></div>'}
+    </section>`;
 }
 
 /* ============ 工作台 ============ */
@@ -442,7 +504,7 @@ function renderWorkbench() {
 
     <div class="panel">
       <div class="panel-head">
-        <div class="panel-title">创建记录</div>
+        <div class="panel-title">账号记录 <span class="overview-title-count">${filtered.length} / ${state.records.length} 条</span></div>
       </div>
       <div class="toolbar">
         <input class="search" id="rec-q" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
@@ -450,6 +512,7 @@ function renderWorkbench() {
           ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" data-action="rstatus" data-v="${s}">${s}</button>`).join('')}
         </div>
         <span class="sel-count">已选 <b>${state.sel.size}</b> 条</span>
+        <button class="btn btn-ghost btn-sm" data-action="clear-record-filter" ${!state.q && state.rstatus === '全部' ? 'disabled' : ''}>清除筛选</button>
         <span class="toolbar-spacer"></span>
         <button class="btn btn-ghost btn-sm" data-action="export-adspower">导出 AdsPower TXT</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">导出 CSV</button>
@@ -709,7 +772,8 @@ function renderPool(kind) {
     <div class="panel"><div class="toolbar">
       <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
       <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
-      <span class="sel-count">${list.length} 条</span></div>${renderPoolTable(kind, list)}</div>`;
+      <span class="sel-count">${list.length} 条</span>
+      <button class="btn btn-ghost btn-sm" data-action="clear-pool-filter" ${!state.poolQ && state.poolStatus === '全部' ? 'disabled' : ''}>清除筛选</button></div>${renderPoolTable(kind, list)}</div>`;
 }
 
 function renderPoolTableInto() {
@@ -1208,11 +1272,36 @@ document.addEventListener('click', async (e) => {
         await window.desktop.openDataFolder();
         break;
       case 'nav': {
-        if (state.page !== t.dataset.page) { state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1; }
-        state.page = t.dataset.page;
+        const prev = state.page;
+        const next = t.dataset.page;
+        if (KINDS.some(k => k.key === prev)) state.poolFilters[prev] = {q:state.poolQ,status:state.poolStatus,page:state.poolPage};
+        state.page = next;
+        if (KINDS.some(k => k.key === next)) {
+          const f = state.poolFilters[next];
+          state.poolQ = f.q; state.poolStatus = f.status; state.poolPage = f.page;
+        }
         render();
         break;
       }
+      case 'jump-status':
+        state.page = 'workbench'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
+        render();
+        document.querySelector('#rec-q')?.focus({preventScroll:true});
+        break;
+      case 'recent-record':
+        state.q = state.records.find(r => r.id === Number(t.dataset.id))?.fingerprint || '';
+        state.rstatus = '全部'; state.recordPage = 1; state.page = 'workbench';
+        render();
+        document.querySelector('#rec-q')?.focus({preventScroll:true});
+        break;
+      case 'clear-record-filter':
+        state.q = ''; state.rstatus = '全部'; state.recordPage = 1; render();
+        break;
+      case 'clear-pool-filter':
+        state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1;
+        state.poolFilters[state.page] = {q:'',status:'全部',page:1};
+        render();
+        break;
       case 'modal-overlay': {
         if (e.target === t) closeModal();
         break;
@@ -1262,11 +1351,12 @@ document.addEventListener('click', async (e) => {
       case 'pool-status':
         state.poolStatus = t.dataset.v;
         state.poolPage = 1;
+        state.poolFilters[state.page] = {q:state.poolQ,status:state.poolStatus,page:1};
         render();
         break;
       case 'table-page':
         if (t.dataset.kind === 'records') { state.recordPage = Number(t.dataset.page); renderRecordsTableInto(); }
-        else { state.poolPage = Number(t.dataset.page); renderPoolTableInto(); }
+        else { state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto(); }
         break;
       case 'export-adspower': {
         const ids = [...state.sel];
@@ -1385,6 +1475,7 @@ document.addEventListener('input', (e) => {
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
     state.poolPage = 1;
+    state.poolFilters[state.page] = {q:state.poolQ,status:state.poolStatus,page:1};
     const el = e.target;
     renderPoolTableInto();
     el.setSelectionRange(el.value.length, el.value.length);
