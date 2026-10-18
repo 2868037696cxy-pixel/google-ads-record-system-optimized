@@ -70,6 +70,7 @@
     currentPage: 1,
     sortKey: 'createdAt',
     sortDir: 'desc',
+    listFilters: { q: '', product: '', status: '', from: '', to: '' },
     dirty: false,
     loading: false,
     serverHealth: null,
@@ -1040,7 +1041,10 @@
 
     if (!State.loading) {
       const countTxt = $('#countTxt');
-      if (countTxt) countTxt.textContent = State.dirty ? '未保存' : '已保存';
+      if (countTxt) {
+        countTxt.textContent = State.dirty ? '● 未保存' : '✓ 已保存';
+        countTxt.className = 'save-indicator' + (State.dirty ? ' is-dirty' : '');
+      }
     }
   }
 
@@ -1063,13 +1067,13 @@
   // 筛选和搜索
   // ============================================
   function filters() {
-    return {
-      q: ($('#searchInp')?.value || '').trim().toLowerCase(),
-      product: $('#productFilter')?.value || '',
-      status: $('#statusFilter')?.value || '',
-      from: $('#dateFrom')?.value || '',
-      to: $('#dateTo')?.value || ''
-    };
+    return State.listFilters;
+  }
+
+  function resetListFilters() {
+    State.listFilters = { q: '', product: '', status: '', from: '', to: '' };
+    State.currentPage = 1;
+    renderListPage();
   }
 
   function inRange(ad, from, to) {
@@ -1180,10 +1184,10 @@ const get = (ad, c) => ({
     $('#content').innerHTML = `
       <div class="grid">
         <section class="panel sticky">
-          <div class="ph">广告列表</div>
+          <div class="ph"><span>广告记录 <span id="listCount" class="list-count"></span></span></div>
           <div class="pb stack">
-            <div class="safe">✅ 当前使用服务端 SQLite 数据库：${esc(State.serverHealth?.dbPath || 'data/ads.sqlite')}。清浏览器缓存不会丢数据。</div>
-            <input id="searchInp" class="inp inp-sm" placeholder="🔍 搜索编号、产品、市场、备注...">
+            <p class="list-helper">按条件筛选记录，点击左侧广告查看详情与每日数据。</p>
+            <input id="searchInp" class="inp inp-sm" type="search" aria-label="搜索广告记录" placeholder="搜索编号、产品、市场、备注…">
             <div class="row2">
               <select id="productFilter" class="inp inp-sm">
                 <option value="">全部产品</option>
@@ -1214,7 +1218,11 @@ const get = (ad, c) => ({
                 <option value="asc" ${State.sortDir === 'asc' ? 'selected' : ''}>升序</option>
               </select>
             </div>
-            <div class="toolbar">
+            <div class="filter-summary">
+              <span id="filterSummary" role="status" aria-live="polite">显示全部记录</span>
+              <button type="button" class="filter-reset" data-act="resetFilters">清除筛选</button>
+            </div>
+            <div class="toolbar bulk-toolbar">
               <button class="btn small" data-act="batchStatus">批量改状态</button>
               <button class="btn danger small" data-act="batchDelete">批量删除</button>
               <button class="btn small" data-act="undo">撤销</button>
@@ -1269,10 +1277,14 @@ const get = (ad, c) => ({
       </div>
     `;
 
-    // 绑定事件
-    ['searchInp', 'productFilter', 'statusFilter', 'dateFrom', 'dateTo'].forEach((id) => {
+    // 离开页面后保留筛选条件；返回列表时恢复用户的工作上下文
+    const filterFields = { searchInp: 'q', productFilter: 'product', statusFilter: 'status', dateFrom: 'from', dateTo: 'to' };
+    Object.entries(filterFields).forEach(([id, key]) => {
       const el = $(`#${id}`);
-      if (el) el.addEventListener('input', () => {
+      if (!el) return;
+      el.value = State.listFilters[key] || '';
+      el.addEventListener('input', () => {
+        State.listFilters[key] = key === 'q' ? el.value.trim().toLowerCase() : el.value;
         State.currentPage = 1;
         renderList();
       });
@@ -1300,6 +1312,16 @@ const get = (ad, c) => ({
       State.currentPage * CONFIG.PAGE_SIZE
     );
 
+    const activeFilterCount = Object.values(State.listFilters).filter(Boolean).length;
+    const summary = $('#filterSummary');
+    if (summary) summary.textContent = activeFilterCount
+      ? `已筛选 · ${list.length} / ${State.ads.length} 条 · ${activeFilterCount} 项条件`
+      : `显示 ${list.length} 条记录`;
+    const reset = document.querySelector('.filter-reset');
+    if (reset) reset.disabled = activeFilterCount === 0;
+    const count = $('#listCount');
+    if (count) count.textContent = `(${list.length})`;
+
     $('#adList').innerHTML = items.length
       ? items.map((ad) => {
           const c = calc(ad);
@@ -1307,10 +1329,10 @@ const get = (ad, c) => ({
           const isWarn = c.overBudget;
 
           return `
-            <label class="card ${isActive ? 'active' : ''} ${isWarn ? 'warn-row' : ''}"
+            <div class="card ${isActive ? 'active' : ''} ${isWarn ? 'warn-row' : ''}"
                    style="--accent:${ACCENT_COLORS[ad.status] || 'var(--line)'}">
-              <input type="checkbox" data-check="${ad.id}">
-              <button class="card-main" data-act="select" data-id="${ad.id}">
+              <input type="checkbox" data-check="${ad.id}" aria-label="选择广告 ${esc(ad.no || '未编号')}">
+              <button type="button" class="card-main" data-act="select" data-id="${ad.id}" aria-pressed="${isActive}">
                 <div class="card-name">#${highlight(ad.no || '未编号')} · ${highlight(ad.product || '未命名')}</div>
                 <div class="card-meta">
                   <span>${highlight(ad.market || '未选市场')}</span>
@@ -1320,10 +1342,15 @@ const get = (ad, c) => ({
                   ${isWarn ? '<span class="bad">成本预警</span>' : ''}
                 </div>
               </button>
-            </label>
+            </div>
           `;
         }).join('')
-      : '<div class="empty">没有符合条件的广告记录</div>';
+      : `<div class="list-empty">
+          <span class="empty-symbol" aria-hidden="true">⌕</span>
+          <b>${State.ads.length ? '没有找到匹配的广告' : '还没有广告记录'}</b>
+          <p>${State.ads.length ? '试试调整关键词或清除筛选条件。' : '新建第一条广告，开始记录投放数据。'}</p>
+          <button type="button" class="btn small" data-act="${State.ads.length ? 'resetFilters' : 'toggleAdd'}">${State.ads.length ? '清除筛选' : '新增广告'}</button>
+        </div>`;
 
     $('#pager').innerHTML = `
       <button class="btn small" data-act="prevPage" ${State.currentPage <= 1 ? 'disabled' : ''}>上一页</button>
@@ -2088,6 +2115,10 @@ const get = (ad, c) => ({
 
   function animateNum(el, target, format) {
     if (!el) return;
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      el.textContent = format(target);
+      return;
+    }
     const dur = 700, t0 = performance.now();
     const step = (t) => {
       const p = Math.min(1, (t - t0) / dur);
@@ -2147,11 +2178,14 @@ const get = (ad, c) => ({
         <div class="dash-head">
           <div>
             <h2 class="dash-title">业务总览</h2>
-            <p class="dash-sub">近 ${n} 天 · 与前 ${n} 天对比 · ${State.ads.length} 条广告在跑</p>
+            <p class="dash-sub">近 ${n} 天与前 ${n} 天对比 · 共 ${State.ads.length} 条广告记录</p>
           </div>
-          <div class="seg">
-            <button class="${n === 7 ? 'on' : ''}" data-act="dashRange" data-n="7">近7天</button>
-            <button class="${n === 30 ? 'on' : ''}" data-act="dashRange" data-n="30">近30天</button>
+          <div class="dash-actions">
+            <div class="seg" role="group" aria-label="统计时间范围">
+              <button type="button" aria-pressed="${n === 7}" class="${n === 7 ? 'on' : ''}" data-act="dashRange" data-n="7">近7天</button>
+              <button type="button" aria-pressed="${n === 30}" class="${n === 30 ? 'on' : ''}" data-act="dashRange" data-n="30">近30天</button>
+            </div>
+            <button type="button" class="btn primary dash-new" data-act="startNew">＋ 新增广告</button>
           </div>
         </div>
 
@@ -2181,10 +2215,10 @@ const get = (ad, c) => ({
                 const shown = alerts.slice(0, 6);
                 const more = alerts.length - shown.length;
                 return shown.map((a) => `
-                <div class="alert ${a.level}" data-act="openAd" data-id="${a.ad.id}">
+                <button type="button" class="alert ${a.level}" data-act="openAd" data-id="${a.ad.id}">
                   <b>${esc(a.ad.no || '')} · ${esc(a.ad.product || '')}</b>
                   <span>${esc(a.text)}</span>
-                </div>`).join('') + (more > 0 ? `<div class="hint">还有 ${more} 条预警，去列表查看</div>` : '');
+                </button>`).join('') + (more > 0 ? `<div class="hint">还有 ${more} 条预警，去列表查看</div>` : '');
               })()
                 : `<div class="empty-sm">暂无预警，投放状态健康</div>`}
             </div>
@@ -2210,12 +2244,16 @@ const get = (ad, c) => ({
       if (k.spark.filter((v) => v != null).length > 1) drawSpark('spark' + i, k.spark, k.color || '#0b6e74');
     });
     drawDashChart(map, dashDates(n));
-    window.addEventListener('resize', () => {
-      if (State.view === 'dashboard') {
-        drawDashChart(dashDailyMap(), dashDates(State.dashRange || 7));
-        kpis.forEach((k, i) => { if (k.spark.filter((v) => v != null).length > 1) drawSpark('spark' + i, k.spark, k.color || '#0b6e74'); });
-      }
-    });
+    // 只保留一个 resize 处理器，避免反复切换日期或页面时监听器累积
+    if (State.dashboardResizeHandler) window.removeEventListener('resize', State.dashboardResizeHandler);
+    State.dashboardResizeHandler = () => {
+      if (State.view !== 'dashboard') return;
+      drawDashChart(dashDailyMap(), dashDates(State.dashRange || 7));
+      kpis.forEach((k, i) => {
+        if (k.spark.filter((v) => v != null).length > 1) drawSpark('spark' + i, k.spark, k.color || '#0b6e74');
+      });
+    };
+    window.addEventListener('resize', State.dashboardResizeHandler);
 
     updateStats();
   }
@@ -2238,9 +2276,9 @@ const get = (ad, c) => ({
   function ensurePalette() {
     if ($('#cmdPalette')) return;
     document.body.insertAdjacentHTML('beforeend', `
-      <div id="cmdPalette" class="palette-overlay" hidden>
+      <div id="cmdPalette" class="palette-overlay" role="dialog" aria-modal="true" aria-label="快捷命令与广告搜索" hidden>
         <div class="palette">
-          <div class="palette-input-wrap"><span>⌕</span><input id="paletteInput" placeholder="输入命令或搜索广告编号、产品…" autocomplete="off"></div>
+          <div class="palette-input-wrap"><span aria-hidden="true">⌕</span><input id="paletteInput" type="search" aria-label="搜索命令和广告" placeholder="输入命令或搜索广告编号、产品…" autocomplete="off"></div>
           <div class="palette-list" id="paletteList"></div>
           <div class="palette-foot"><span><kbd>↑↓</kbd> 选择</span><span><kbd>↵</kbd> 执行</span><span><kbd>esc</kbd> 关闭</span></div>
         </div>
@@ -2256,7 +2294,10 @@ const get = (ad, c) => ({
   }
 
   function markPalette(items) {
-    items.forEach((el, i) => el.classList.toggle('sel', i === paletteIdx));
+    items.forEach((el, i) => {
+      el.classList.toggle('sel', i === paletteIdx);
+      el.setAttribute('aria-selected', String(i === paletteIdx));
+    });
     items[paletteIdx]?.scrollIntoView({ block: 'nearest' });
   }
 
@@ -2269,9 +2310,9 @@ const get = (ad, c) => ({
     paletteIdx = 0;
     $('#paletteList').innerHTML =
       (acts.length ? `<div class="palette-group">命令</div>` + acts.map((a) => `
-        <div class="palette-item" data-pid="${a.id}"><span>${esc(a.title)}</span>${a.hint ? `<kbd>${esc(a.hint)}</kbd>` : ''}</div>`).join('') : '') +
+        <button type="button" class="palette-item" data-pid="${a.id}"><span>${esc(a.title)}</span>${a.hint ? `<kbd>${esc(a.hint)}</kbd>` : ''}</button>`).join('') : '') +
       (ads.length ? `<div class="palette-group">广告</div>` + ads.map((a) => `
-        <div class="palette-item" data-aid="${a.id}"><span><b>${esc(a.no || '')}</b> · ${esc(a.product || '')} · ${esc(a.market || '')}</span></div>`).join('') : '') +
+        <button type="button" class="palette-item" data-aid="${a.id}"><span><b>${esc(a.no || '')}</b> · ${esc(a.product || '')} · ${esc(a.market || '')}</span></button>`).join('') : '') +
       (!acts.length && !ads.length ? `<div class="empty-sm">无匹配结果</div>` : '');
     [...document.querySelectorAll('.palette-item')].forEach((el) => {
       el.addEventListener('click', () => {
@@ -2283,15 +2324,20 @@ const get = (ad, c) => ({
     markPalette([...document.querySelectorAll('.palette-item')]);
   }
 
+  let paletteLastFocus = null;
   function togglePalette(open) {
     ensurePalette();
     const ov = $('#cmdPalette');
     const show = open === undefined ? ov.hidden : open;
     ov.hidden = !show;
     if (show) {
+      paletteLastFocus = document.activeElement;
       $('#paletteInput').value = '';
       renderPaletteList();
       setTimeout(() => $('#paletteInput').focus(), 30);
+    } else if (paletteLastFocus && document.contains(paletteLastFocus)) {
+      paletteLastFocus.focus();
+      paletteLastFocus = null;
     }
   }
 
@@ -2695,6 +2741,8 @@ const get = (ad, c) => ({
       const isActive = b.dataset.page === State.view &&
         (State.view !== 'market' || b.dataset.param === State.viewMarket);
       b.classList.toggle('active', isActive);
+      if (isActive) b.setAttribute('aria-current', 'page');
+      else b.removeAttribute('aria-current');
     });
   }
 
@@ -2758,58 +2806,36 @@ const get = (ad, c) => ({
               </button>
             </div>
 
-            <div class="section">
-              <div class="label">数据库</div>
+            <div class="section sync-section">
+              <div class="label">同步状态</div>
               <div class="db-box warn" id="dbBox">
                 <b id="dbTitle">连接中</b>
                 <span id="dbState">正在连接服务端 SQLite</span>
               </div>
-              <button class="nav-btn" data-act="saveNow">
-                <span class="nav-ico">✓</span>
-                <span class="nav-text">立即保存</span>
-              </button>
-              <button class="nav-btn" data-act="diagnose">
-                <span class="nav-ico">◎</span>
-                <span class="nav-text">诊断数据库</span>
-              </button>
-              <button class="nav-btn" data-act="backup">
-                <span class="nav-ico">DB</span>
-                <span class="nav-text">创建服务端备份</span>
-              </button>
+              <button class="nav-btn" data-act="saveNow"><span class="nav-ico">✓</span><span class="nav-text">立即保存</span></button>
             </div>
 
-            <div class="section">
-              <div class="label">数据</div>
-              <button class="nav-btn" data-act="exportAll">
-                <span class="nav-ico">JSON</span>
-                <span class="nav-text">导出JSON</span>
-              </button>
-              <button class="nav-btn" data-act="exportExcel">
-                <span class="nav-ico">XLS</span>
-                <span class="nav-text">导出Excel</span>
-              </button>
-              <button class="nav-btn" data-act="exportCsv">
-                <span class="nav-ico">CSV</span>
-                <span class="nav-text">导出CSV</span>
-              </button>
-              <button class="nav-btn" data-act="import">
-                <span class="nav-ico">⇧</span>
-                <span class="nav-text">导入数据</span>
-              </button>
-              <input id="importInput" class="hidden" type="file" accept=".json,.csv,.xlsx,.xls,text/csv,application/json">
-              <button class="nav-btn" data-act="clear">
-                <span class="nav-ico">⌧</span>
-                <span class="nav-text">清空数据</span>
-              </button>
-            </div>
+            <details class="section nav-tools">
+              <summary class="nav-disclosure-title">数据工具 <span aria-hidden="true">⌄</span></summary>
+              <div class="nav-tools-body">
+                <button class="nav-btn" data-act="diagnose"><span class="nav-ico">◎</span><span class="nav-text">诊断数据库</span></button>
+                <button class="nav-btn" data-act="backup"><span class="nav-ico">DB</span><span class="nav-text">创建服务端备份</span></button>
+                <button class="nav-btn" data-act="exportAll"><span class="nav-ico">JSON</span><span class="nav-text">导出 JSON</span></button>
+                <button class="nav-btn" data-act="exportExcel"><span class="nav-ico">XLS</span><span class="nav-text">导出 Excel</span></button>
+                <button class="nav-btn" data-act="exportCsv"><span class="nav-ico">CSV</span><span class="nav-text">导出 CSV</span></button>
+                <button class="nav-btn" data-act="import"><span class="nav-ico">⇧</span><span class="nav-text">导入数据</span></button>
+                <input id="importInput" class="hidden" type="file" accept=".json,.csv,.xlsx,.xls,text/csv,application/json">
+                <button class="nav-btn nav-danger" data-act="clear"><span class="nav-ico">⌧</span><span class="nav-text">清空数据</span></button>
+              </div>
+            </details>
           </nav>
 
           <div class="foot">
             <div class="user">
-              <div class="avatar">陈</div>
+              <div class="avatar" aria-hidden="true">AD</div>
               <div class="user-info">
-                <div class="user-name">陈羽</div>
-                <div class="user-role">广告管理员</div>
+                <div class="user-name">广告工作台</div>
+                <div class="user-role">运营数据管理</div>
               </div>
             </div>
           </div>
@@ -2822,10 +2848,10 @@ const get = (ad, c) => ({
               <span id="bc1">工作台</span> / <b id="bc2">广告列表</b>
             </div>
 <div class="top-right">
-              <button class="palette-trigger" data-act="palette" title="命令面板 (Ctrl+K)">⌕ <kbd>⌘K</kbd></button>
+              <button class="palette-trigger" type="button" data-act="palette" title="打开命令面板 (Ctrl / ⌘ + K)" aria-label="打开命令面板">⌕ <kbd>Ctrl K</kbd></button>
               <span class="hint">Ctrl+S 保存 · Ctrl+Z 撤销 · N 新增</span>
-              <span id="countTxt"></span>
-              <button class="icon" data-act="theme">◐</button>
+              <span id="countTxt" class="save-indicator" role="status" aria-live="polite"></span>
+              <button class="icon" data-act="theme" aria-label="切换深浅色主题" title="切换主题">◐</button>
               ${State.serverHealth?.authEnabled ? '<button class="icon" data-act="logout" title="退出登录">⏻</button>' : ''}
             </div>
           </header>
@@ -2894,11 +2920,27 @@ case 'logout':
           break;
 
         case 'nav':
+          if ($('#drawerToggle')) $('#drawerToggle').checked = false;
           State.view = b.dataset.page;
           State.viewMarket = b.dataset.param || '';
           State.selectedId = '';
           State.currentPage = 1;
           renderShell();
+          break;
+
+        case 'startNew':
+          State.view = 'list';
+          State.viewMarket = '';
+          State.currentPage = 1;
+          renderShell();
+          $('#qa')?.classList.add('open');
+          const noInput = $('#qNo');
+          if (noInput && !noInput.value) noInput.value = nextAdNo();
+          $('#qProduct')?.focus();
+          break;
+
+        case 'resetFilters':
+          resetListFilters();
           break;
 
         case 'dashRange':
@@ -2970,6 +3012,9 @@ case 'logout':
         case 'select':
           State.selectedId = b.dataset.id;
           renderList();
+          document.querySelectorAll('[data-act="select"]').forEach((el) => {
+            if (el.dataset.id === State.selectedId) el.focus({ preventScroll: true });
+          });
           break;
 
         case 'copyAd':
@@ -3093,6 +3138,7 @@ case 'logout':
         closeConfirm();
         closeChoice();
         $('#qa')?.classList.remove('open');
+        if ($('#drawerToggle')) $('#drawerToggle').checked = false;
       }
     });
 
