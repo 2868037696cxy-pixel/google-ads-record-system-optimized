@@ -1,0 +1,114 @@
+diff --git a/lib/hardening.js b/lib/hardening.js
+new file mode 100644
+index 0000000..5d73dc4
+--- /dev/null
++++ b/lib/hardening.js
+@@ -0,0 +1,77 @@
++'use strict';
++const {openVault,encode,SECRET_FIELDS,PREFIX}=require('./vault');
++const fs=require('node:fs');
++function addColumn(db,table,name,definition) {
++  if(!db.prepare(`PRAGMA table_info(${table})`).all().some(c=>c.name===name)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
++}
++function initialize(db,file) {
++  db.exec('PRAGMA secure_delete=ON');
++  db.exec('BEGIN IMMEDIATE');
++  let committed=false;
++  try {
++    const vault=openVault(db,file);
++    for(const table of ['emails','proxies','cards','licenses','records']) addColumn(db,table,'version','INTEGER NOT NULL DEFAULT 1');
++    addColumn(db,'cards','last4',"TEXT NOT NULL DEFAULT ''");
++    addColumn(db,'records','card_last4',"TEXT NOT NULL DEFAULT ''");
++    addColumn(db,'users','disabled','INTEGER NOT NULL DEFAULT 0');
++    addColumn(db,'sessions','secrets_until','INTEGER NOT NULL DEFAULT 0');
++    db.exec(`
++      CREATE TABLE IF NOT EXISTS document_registry (
++        sha256 TEXT PRIMARY KEY, owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
++        created_at TEXT NOT NULL, retired_at TEXT
++      );
++      CREATE TABLE IF NOT EXISTS audit_events (
++        id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL REFERENCES users(id),
++        action TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL
++      );
++      CREATE INDEX IF NOT EXISTS ix_audit_owner ON audit_events(owner_id,id DESC);
++      CREATE TABLE IF NOT EXISTS idempotency_requests (
++        owner_id INTEGER NOT NULL REFERENCES users(id), request_key TEXT NOT NULL, request_hash TEXT NOT NULL,
++        result_ids TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(owner_id,request_key)
++      );
++    `);
++    const migration=db.prepare("SELECT value FROM meta WHERE key='hardening_version'").get();
++    if(!migration) {
++      // Abort rather than silently choose the owner of a previously shared PDF.
++      if(db.prepare('SELECT document_id FROM licenses WHERE document_id IS NOT NULL GROUP BY document_id HAVING COUNT(*)>1 LIMIT 1').get()) throw new Error('Duplicate legacy PDF ownership detected. Resolve it before migration.');
++      db.exec(`INSERT OR IGNORE INTO document_registry(sha256,owner_id,created_at)
++        SELECT document_id,owner_id,created_at FROM licenses WHERE document_id IS NOT NULL;`);
++      // Legacy PANs become non-sensitive aliases. Remove CVV from pools and snapshots.
++      for(const row of db.prepare('SELECT id,number FROM cards').all()) {
++        if(/\d{12,19}/.test(row.number.replace(/[ -]/g,''))) {
++          const last4=row.number.replace(/\D/g,'').slice(-4);
++          const alias=`legacy-payment-${row.id}`;
++          db.prepare('UPDATE cards SET number=?,last4=?,cvv=\'\' WHERE id=?').run(alias,last4,row.id);
++          db.prepare('UPDATE records SET card_number=?,card_last4=?,card_cvv=\'\' WHERE card_id=?').run(alias,last4,row.id);
++        }
++      }
++      db.exec("UPDATE cards SET cvv=''; UPDATE records SET card_cvv='';");
++      for(const row of db.prepare('SELECT id,card_number FROM records').all()) {
++        if(/\d{12,19}/.test(row.card_number.replace(/[ -]/g,''))) db.prepare('UPDATE records SET card_number=?,card_last4=? WHERE id=?').run(`legacy-record-${row.id}`,row.card_number.replace(/\D/g,'').slice(-4),row.id);
++      }
++      for(const table of ['emails','proxies','records']) {
++        const fields=db.prepare(`PRAGMA table_info(${table})`).all().map(c=>c.name).filter(f=>SECRET_FIELDS.has(f));
++        for(const row of db.prepare(`SELECT id,owner_id,${fields.join(',')} FROM ${table}`).all()) {
++          for(const field of fields) if(row[field] && !String(row[field]).startsWith(PREFIX)) db.prepare(`UPDATE ${table} SET ${field}=? WHERE id=?`).run(encode(db,table,row.owner_id,field,row[field]),row.id);
++        }
++      }
++      for(const doc of db.prepare('SELECT sha256,owner_id,bytes FROM documents').all()) {
++        if(Buffer.from(doc.bytes).subarray(0,5).toString()!=='WBPD1') db.prepare('UPDATE documents SET bytes=? WHERE sha256=?').run(vault.sealBytes(doc.bytes,`pdf:${doc.owner_id}:${doc.sha256}`),doc.sha256);
++      }
++      db.prepare("INSERT INTO meta(key,value) VALUES('hardening_version','1')").run();
++    }
++    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_license_single_pdf ON licenses(document_id) WHERE document_id IS NOT NULL;
++      CREATE TRIGGER IF NOT EXISTS no_card_cvv_insert BEFORE INSERT ON cards WHEN NEW.cvv<>'' BEGIN SELECT RAISE(ABORT,'CVV storage prohibited'); END;
++      CREATE TRIGGER IF NOT EXISTS no_card_cvv_update BEFORE UPDATE OF cvv ON cards WHEN NEW.cvv<>'' BEGIN SELECT RAISE(ABORT,'CVV storage prohibited'); END;
++      CREATE TRIGGER IF NOT EXISTS no_record_cvv_insert BEFORE INSERT ON records WHEN NEW.card_cvv<>'' BEGIN SELECT RAISE(ABORT,'CVV storage prohibited'); END;
++      CREATE TRIGGER IF NOT EXISTS no_record_cvv_update BEFORE UPDATE OF card_cvv ON records WHEN NEW.card_cvv<>'' BEGIN SELECT RAISE(ABORT,'CVV storage prohibited'); END;`);
++    db.exec('COMMIT'); committed=true;
++    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
++    if(file!==':memory:' && process.platform!=='win32') fs.chmodSync(file,0o600);
++    return vault;
++  } catch(e) { if(!committed) db.exec('ROLLBACK'); throw e; }
++}
++function audit(db,owner,action,subject='') {
++  db.prepare('INSERT INTO audit_events(owner_id,action,subject,created_at) VALUES(?,?,?,?)').run(owner,action,String(subject).slice(0,120),new Date().toISOString());
++}
++module.exports={initialize,audit};
+diff --git a/lib/static.js b/lib/static.js
+new file mode 100644
+index 0000000..b7368f8
+--- /dev/null
++++ b/lib/static.js
+@@ -0,0 +1,13 @@
++'use strict';
++// Exact allowlist, no file path interpolation or directory listing.
++const fs=require('node:fs'); const path=require('node:path');
++module.exports=function installStatic(app,root) {
++  const types={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8'};
++  const allowed=new Map(fs.readdirSync(root).filter(n=>types[path.extname(n)] && /^[a-z0-9-]+\.(html|js|css)$/.test(n)).map(n=>[n,fs.readFileSync(path.join(root,n))]));
++  app.decorateReply('sendFile',function(name){
++    if(!allowed.has(name)) return this.code(404).send({error:'not found'});
++    return this.header('Content-Type',types[path.extname(name)]).header('Cache-Control','no-store').send(allowed.get(name));
++  });
++  app.get('/',(_req,reply)=>reply.sendFile('index.html'));
++  for(const name of allowed.keys()) app.get('/'+name,(_req,reply)=>reply.sendFile(name));
++};
+diff --git a/lib/storage.js b/lib/storage.js
+index 0d70c12..23301b8 100644
+--- a/lib/storage.js
++++ b/lib/storage.js
+@@ -7,2 +7,3 @@ const path = require('node:path');
+ const crypto = require('node:crypto');
++const {assertNoCardSecrets}=require('./vault');
+ const collections = ['emails', 'proxies', 'cards', 'licenses', 'records'];
+@@ -19,2 +20,3 @@ function validateSnapshot(value) {
+       }
++      assertNoCardSecrets(row);
+       ids.add(row.id);
