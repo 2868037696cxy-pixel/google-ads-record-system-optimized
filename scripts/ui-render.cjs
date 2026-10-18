@@ -78,6 +78,33 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   await goto(origin + '/login.html');
   await shot('r1-登录页.png', 1440, 900);
+  // 宽屏最容易暴露「两边太空」，单独看一眼
+  await shot('r8-登录页-宽屏.png', 1920, 1080);
+
+  // 转圈是伪元素，必须单独确认它真的会渲染：本地服务太快，真实提交抓不到加载态
+  await evaluate(`(() => { const b = document.querySelector('.auth-submit'); b.classList.add('btn-loading'); b.textContent = '登录中…'; b.disabled = true; })()`);
+  await sleep(250);
+  console.log('   转圈伪元素:', JSON.stringify(await evaluate(`(() => {
+    const s = getComputedStyle(document.querySelector('.auth-submit'), '::before');
+    return { content: s.content, animation: s.animationName, size: s.width + 'x' + s.height };
+  })()`)));
+  await shot('r9-登录页-加载中.png', 1440, 900);
+  await evaluate(`(() => { const b = document.querySelector('.auth-submit'); b.classList.remove('btn-loading'); b.textContent = '登录'; b.disabled = false; })()`);
+
+  // 用错误密码真实提交一次，检查失败反馈是否真的生效
+  await evaluate(`(() => {
+    document.getElementById('loginUsername').value = 'nobody-here';
+    document.getElementById('loginPassword').value = 'definitely-wrong';
+    document.querySelector('.auth-submit').click();
+  })()`);
+  await sleep(1800);
+  console.log('   失败态:', JSON.stringify(await evaluate(`(() => {
+    const card = document.querySelector('.auth-card');
+    const alert = document.getElementById('authAlert');
+    return { shaking: card.classList.contains('is-shaking'), alertShown: !alert.hidden, kind: alert.dataset.kind, text: alert.textContent.slice(0, 40), ariaInvalid: document.getElementById('loginPassword').getAttribute('aria-invalid') };
+  })()`)));
+  await shot('r10-登录页-失败.png', 1440, 900);
+  await goto(origin + '/login.html');
   await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '注册')?.click()`);
   await sleep(600);
   await shot('r2-登录页-注册.png', 1440, 900);

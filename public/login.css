@@ -556,3 +556,153 @@ body.auth-body {
     0 1px 0 rgba(255, 255, 255, 0.045) inset,
     0 44px 90px -44px rgba(0, 0, 0, 0.92);
 }
+
+/* ============================================================
+   铺满式分栏
+   ------------------------------------------------------------
+   上一步只把两栏做成了「两块面」，但整组内容仍然是居中的，1440 宽下只占
+   x≈325–1115，左右各留 300 多像素空白，看上去还是个孤岛。
+   这里改成真正的左右分栏：左栏贴左边缘、占满整屏高度，右侧区域居中放卡片，
+   页面不再有左右外边距。
+   ============================================================ */
+@media (min-width: 901px) {
+  .auth-shell {
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+  }
+
+  .auth-rail {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: clamp(420px, 46%, 720px);
+    gap: 30px;
+    padding: clamp(44px, 5vw, 84px) clamp(40px, 4.5vw, 76px);
+    background: linear-gradient(
+      180deg,
+      rgba(163, 190, 228, 0.06),
+      rgba(163, 190, 228, 0.02) 55%,
+      rgba(163, 190, 228, 0)
+    );
+    /* 贴边后不再需要圆角与外投影，改用一条边线做分界 */
+    border: 0;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .auth-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: clamp(44px, 5vw, 84px) clamp(28px, 3vw, 56px);
+  }
+
+  /* 卡片在更宽的区域里要更有分量，否则又显得空 */
+  .auth-card { max-width: 424px; }
+}
+
+/* ============================================================
+   设计升级
+   ------------------------------------------------------------
+   1) 左栏满高：品牌 / 主张 / 清单 整组垂直居中，脚注钉在底部，
+      不再是「中间一坨、上下各空 200 多像素」
+   2) 宽屏下标题与清单随栏宽放大，视线有落点
+   3) 主按钮做出材质感：渐变 + 内高光 + 悬停辉光 + 按下回弹 + 加载转圈
+   4) 登录失败抖一下，让「被拒绝」有即时反馈而不只是一段静态文字
+   ============================================================ */
+@media (min-width: 901px) {
+  .auth-rail-foot {
+    position: absolute;
+    left: clamp(40px, 4.5vw, 76px);
+    right: clamp(40px, 4.5vw, 76px);
+    bottom: clamp(28px, 3vw, 46px);
+    margin: 0;
+  }
+
+  .auth-pitch h1 { font-size: clamp(30px, 2.7vw, 42px); line-height: 1.24; }
+  .auth-pitch p { font-size: 14px; line-height: 1.85; max-width: 38ch; }
+  .auth-specs li { padding: 12px 2px; }
+  .auth-specs .spec-key { font-size: 10.5px; letter-spacing: 0.16em; }
+  .auth-specs .spec-label { font-size: 13.5px; }
+  .auth-brand .brand-text strong { font-size: 16px; }
+}
+
+/* ---- 主按钮：渐变与内高光，做出被压出来的材质 ---- */
+.auth-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent) 54%, var(--accent-deep));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 10px 26px -12px rgba(200, 246, 93, 0.5);
+  transition: filter var(--t-fast) var(--ease-quart), box-shadow var(--t-fast) var(--ease-quart),
+    transform var(--t-fast) var(--ease-quart);
+}
+
+.auth-submit:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    0 16px 34px -12px rgba(200, 246, 93, 0.6);
+}
+
+.auth-submit:active:not(:disabled) { transform: translateY(1px) scale(0.994); }
+.auth-submit:disabled { filter: saturate(0.55) brightness(0.92); cursor: progress; }
+
+/* 加载转圈必须是伪元素：setBusy() 用 btn.textContent 覆写文案，
+   真实子元素会被整个抹掉，伪元素不受影响。 */
+.auth-submit.btn-loading::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(19, 26, 4, 0.3);
+  border-top-color: var(--accent-ink);
+  animation: auth-spin 620ms linear infinite;
+}
+
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+
+/* ---- 登录失败：卡片抖一下 ---- */
+@keyframes auth-shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
+}
+
+.auth-card.is-shaking { animation: auth-shake 420ms var(--ease-quart) both; }
+
+/* ---- 输入框聚焦：主色描边 + 柔光，鼠标与键盘都能看清焦点 ---- */
+.auth-form input.auth-input:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+/* 放在最后，才能覆盖上面新加的动效 */
+@media (prefers-reduced-motion: reduce) {
+  .auth-card.is-shaking,
+  .auth-submit.btn-loading::before { animation: none; }
+  .auth-submit { transition: none; }
+}
+
+/* ---- 右下角脚注：与左栏底部的说明形成对称，补上构图重心 ---- */
+.auth-main-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: clamp(28px, 3vw, 46px);
+  margin: 0;
+  text-align: center;
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+  color: var(--ghost);
+}
+
+/* 窄屏是上下堆叠布局，绝对定位会压到卡片上，直接不显示 */
+@media (max-width: 900px) {
+  .auth-main-foot { display: none; }
+}

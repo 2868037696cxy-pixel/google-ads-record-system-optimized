@@ -192,6 +192,17 @@ function showAlert(kind, message) {
   el.authAlert.hidden = false;
   el.authAlert.dataset.kind = kind;
   el.authAlert.textContent = message;
+
+  // 失败时让卡片抖一下：即时反馈比一段静态红字更容易被注意到。
+  // 先移除再强制重排，保证连续失败也能重新播放动画。
+  if (kind === 'error') {
+    const card = document.querySelector('.auth-card');
+    if (card) {
+      card.classList.remove('is-shaking');
+      void card.offsetWidth;
+      card.classList.add('is-shaking');
+    }
+  }
 }
 
 function hideAlert() {
