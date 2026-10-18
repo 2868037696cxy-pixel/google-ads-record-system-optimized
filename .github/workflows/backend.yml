@@ -2,28 +2,62 @@ name: Linux backend
 on:
   pull_request:
   workflow_dispatch:
+  push:
+    branches: ["feat/team-console-ui-data-architecture"]
 permissions:
   contents: read
+concurrency:
+  group: backend-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   backend:
+    strategy:
+      matrix:
+        node: ['22.22.2', '24']
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci --omit=dev --ignore-scripts
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+      - run: npm test
+      - run: bash -n scripts/deploy-ubuntu.sh
+  installation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.22.2'
-          cache: npm
-      - run: npm ci --omit=dev --ignore-scripts
-      - name: Capture dependency audit and reproducible runtime
+      - name: Verify real systemd install and repeatable upgrade on disposable runner
         run: |
-          npm audit --omit=dev --json > audit.json || true
-          tar -czf runtime-dependencies.tar.gz node_modules
+          sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh
+          sleep 2
+          sudo systemctl is-active adsworkbench
+          curl --fail http://127.0.0.1:4317/api/healthz
+          sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh
+          sudo systemctl is-active adsworkbench
+          sudo systemctl start adsworkbench-backup.service
+          sudo systemctl is-enabled adsworkbench-backup.timer
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4317/api/bootstrap)" = 401
+      - name: Collect non-sensitive diagnostic logs
+        if: failure()
+        run: sudo journalctl -u adsworkbench -u adsworkbench-backup --no-pager -n 100
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - run: git archive --format=tar.gz --output=adsworkbench-source.tar.gz HEAD
       - uses: actions/upload-artifact@v4
         with:
-          name: AdsWorkbench-Linux-Runtime-Review
-          path: |
-            runtime-dependencies.tar.gz
-            audit.json
-          retention-days: 2
-      - run: npm test
+          name: AdsWorkbench-Source
+          path: adsworkbench-source.tar.gz
+          retention-days: 30
+          if-no-files-found: error
