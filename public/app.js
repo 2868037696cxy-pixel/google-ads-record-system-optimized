@@ -1313,11 +1313,9 @@ document.addEventListener('click', async (e) => {
         });
         break;
       }
-      case 'dev-login': {
-        const name = document.getElementById('dev-name')?.value.trim();
-        if (!name) { toast('请输入名字', 'error'); break; }
-        await api('/api/auth/dev-login', { method: 'POST', body: { name } });
-        await boot();
+      case 'login':
+      case 'register': {
+        await doAuth(action);
         break;
       }
       case 'logout': {
@@ -1481,12 +1479,10 @@ document.addEventListener('change', (e) => {
 
 /* ============ 登录 ============ */
 
-function renderLogin(meta) {
+function showLogin() {
   document.querySelector('.app').classList.add('login-mode');
   document.getElementById('nav').innerHTML = '';
   document.getElementById('userChip').innerHTML = '';
-  const feishu = meta?.feishu_enabled;
-  const dev = meta?.dev_login;
   document.getElementById('main').innerHTML = `
     <div class="login-wrap">
       <div class="login-card">
@@ -1499,25 +1495,36 @@ function renderLogin(meta) {
           </span>
           <strong>账号工作台</strong>
         </div>
-        <p class="login-sub">请登录后使用。资源库团队共享，记录按创建者归属。</p>
-        ${feishu ? `<a class="btn btn-primary btn-lg login-btn" href="/api/auth/login">使用飞书扫码登录</a>` : ''}
-        ${dev ? `
-          <div class="login-dev">
-            <span class="mini">开发登录（本地调试用，无需飞书）</span>
-            <div class="login-dev-row">
-              <input class="pd-input" id="dev-name" placeholder="输入你的名字，例如：张三">
-              <button class="btn btn-ghost" data-action="dev-login">进入</button>
-            </div>
-          </div>` : ''}
-        ${!feishu && !dev ? `<p class="login-hint">飞书登录尚未配置：请在服务端设置 FEISHU_APP_ID / FEISHU_APP_SECRET<br>（本地调试可设 AUTH_DEV_LOGIN=1 使用开发登录）。</p>` : ''}
+        <p class="login-sub">资源库团队共享 · 记录按创建者隔离，各自只看自己的记录。</p>
+        <div class="login-form">
+          <input class="pd-input" id="au-user" placeholder="用户名（2-24 位）" autocomplete="username" autocapitalize="off" spellcheck="false">
+          <input class="pd-input" id="au-pass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password">
+          <div class="login-actions">
+            <button class="btn btn-primary btn-lg login-btn" data-action="login">登录</button>
+            <button class="btn btn-ghost" data-action="register">注册</button>
+          </div>
+          <p class="login-hint" id="login-msg"></p>
+        </div>
       </div>
     </div>`;
+  const u = document.getElementById('au-user');
+  const p = document.getElementById('au-pass');
+  p.addEventListener('keydown', (e) => { if (e.key === 'Enter') doAuth('login'); });
+  u.addEventListener('keydown', (e) => { if (e.key === 'Enter') p.focus(); });
+  u.focus();
 }
 
-async function showLogin() {
-  let meta = null;
-  try { meta = await fetch('/api/auth/login-meta').then((r) => r.json()); } catch { /* ignore */ }
-  renderLogin(meta);
+async function doAuth(mode) {
+  const username = document.getElementById('au-user')?.value.trim() || '';
+  const password = document.getElementById('au-pass')?.value || '';
+  const msg = document.getElementById('login-msg');
+  try {
+    await api(`/api/auth/${mode}`, { method: 'POST', body: { username, password } });
+    await boot();
+  } catch (err) {
+    if (msg) msg.textContent = err.message;
+    else toast(err.message, 'error');
+  }
 }
 
 async function boot() {

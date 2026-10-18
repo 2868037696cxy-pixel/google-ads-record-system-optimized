@@ -1,24 +1,6 @@
 const path = require('node:path');
-const fs = require('node:fs');
 const fastify = require('fastify')({ logger: true });
 const fastifyStatic = require('@fastify/static');
-
-// 加载 .env（若存在）：用于存放飞书凭证等敏感配置。
-// 已存在的真实环境变量优先，方便用 `FEISHU_APP_ID=xx node server.js` 临时覆盖。
-function loadEnvFile(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
-    const i = t.indexOf('=');
-    if (i <= 0) continue;
-    const k = t.slice(0, i).trim();
-    let v = t.slice(i + 1).trim();
-    if (/^".*"$/.test(v) || /^'.*'$/.test(v)) v = v.slice(1, -1);
-    if (k && !(k in process.env)) process.env[k] = v;
-  }
-}
-loadEnvFile(path.join(__dirname, '.env'));
 
 const store = require('./db');
 const auth = require('./auth');
@@ -590,10 +572,8 @@ function buildCsv(records) {
 
 // 免登录接口白名单（登录相关）
 const API_PUBLIC = new Set([
+  '/api/auth/register',
   '/api/auth/login',
-  '/api/auth/login-meta',
-  '/api/auth/feishu/callback',
-  '/api/auth/dev-login',
   '/api/auth/me',
   '/api/auth/logout',
 ]);
@@ -607,51 +587,54 @@ fastify.addHook('onRequest', async (req, reply) => {
   req.user = user;
 });
 
-/* ---------------- 登录路由 ---------------- */
+/* ---------------- 登录 / 注册路由 ---------------- */
 
-fastify.get('/api/auth/login-meta', async (req) => auth.loginMeta(req.raw));
+// HTTPS 部署时给会话 Cookie 加 Secure（本地 http 不加，否则浏览器不发送）
+function isSecure(raw) {
+  return String(raw.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https';
+}
+
+function validateCreds(username, password) {
+  if (!username) return '请输入用户名';
+  if (!/^[\w\u4e00-\u9fa5.-]{2,24}$/.test(username)) return '用户名需 2-24 位（中英文、数字、下划线、点或连字符）';
+  if (password.length < 6) return '密码至少 6 位';
+  return '';
+}
+
+function issueSession(req, reply, userId) {
+  const { token } = store.createSession(userId, auth.SESSION_TTL_MS);
+  reply.header('set-cookie', auth.sessionCookie(token, { secure: isSecure(req.raw) }));
+}
 
 fastify.get('/api/auth/me', async (req, reply) => {
   const user = store.getUserByToken(auth.readSessionToken(req.raw));
   if (!user) return reply.code(401).send({ error: 'unauthorized', message: '未登录' });
-  return { user, meta: auth.loginMeta(req.raw) };
+  return { user };
 });
 
-fastify.get('/api/auth/login', async (req, reply) => {
-  if (!auth.config().configured) {
-    return reply.code(503).send({ error: 'feishu_not_configured', message: '飞书登录未配置，请设置 FEISHU_APP_ID / FEISHU_APP_SECRET' });
-  }
-  const redirectUri = auth.resolveRedirectUri(req.raw);
-  const state = auth.oauthState();
-  reply.header('set-cookie', auth.stateCookie(state));
-  return reply.redirect(auth.authorizeUrl(redirectUri, state));
-});
-
-fastify.get('/api/auth/feishu/callback', async (req, reply) => {
-  const { code, state } = req.query || {};
-  const expected = auth.readState(req.raw);
-  if (!code) return reply.code(400).send({ error: 'missing_code', message: '缺少授权码' });
-  if (expected && state && expected !== state) return reply.code(400).send({ error: 'bad_state', message: '登录校验失败，请重试' });
-  try {
-    const profile = await auth.exchangeCode(code);
-    const user = store.upsertFeishuUser(profile);
-    store.claimLegacyRecords(user.id);
-    const { token } = store.createSession(user.id, auth.SESSION_TTL_MS);
-    reply.header('set-cookie', auth.sessionCookie(token));
-    return reply.redirect('/');
-  } catch (e) {
-    return reply.code(400).send({ error: 'feishu_login_failed', message: e.message });
-  }
-});
-
-// 本地开发登录：仅当 AUTH_DEV_LOGIN=1 时启用
-fastify.post('/api/auth/dev-login', async (req, reply) => {
-  if (!auth.config().devLogin) return reply.code(403).send({ error: 'dev_login_disabled', message: '未启用开发登录' });
-  const user = store.devUser(req.body?.name);
+fastify.post('/api/auth/register', async (req, reply) => {
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  const invalid = validateCreds(username, password);
+  if (invalid) return reply.code(400).send({ error: 'invalid_input', message: invalid });
+  if (store.getUserByUsername(username)) return reply.code(409).send({ error: 'user_exists', message: '该用户名已被注册' });
+  const user = store.createUser(username, req.body?.name, auth.hashPassword(password));
   store.claimLegacyRecords(user.id);
-  const { token } = store.createSession(user.id, auth.SESSION_TTL_MS);
-  reply.header('set-cookie', auth.sessionCookie(token));
-  return { user, meta: auth.loginMeta(req.raw) };
+  issueSession(req, reply, user.id);
+  return { user };
+});
+
+fastify.post('/api/auth/login', async (req, reply) => {
+  const username = String(req.body?.username || '').trim();
+  const password = String(req.body?.password || '');
+  const row = store.getUserByUsername(username);
+  if (!row || !auth.verifyPassword(password, row.password_hash)) {
+    return reply.code(401).send({ error: 'bad_credentials', message: '用户名或密码错误' });
+  }
+  store.touchLogin(row.id);
+  store.claimLegacyRecords(row.id);
+  issueSession(req, reply, row.id);
+  return { user: { id: row.id, username: row.username, name: row.name } };
 });
 
 fastify.post('/api/auth/logout', async (req, reply) => {
@@ -677,16 +660,22 @@ fastify.post('/api/parse/auto', async (req) => {
 });
 
 fastify.post('/api/import/auto', async (req) => {
-  let emails = Array.isArray(req.body?.emails)
-    ? req.body.emails.filter((e) => e && e.user).map((x) => ({ user: String(x.user).trim(), pass: String(x.pass || ''), fakey: String(x.fakey || '') }))
-    : null;
-  let proxies = Array.isArray(req.body?.proxies)
-    ? req.body.proxies.filter((p) => p && p.host).map((x) => ({
-        sn: String(x.sn || ''), type: String(x.type || ''), host: String(x.host), port: String(x.port || ''),
-        user: String(x.user || ''), pass: String(x.pass || ''), country: String(x.country || ''), ip: String(x.ip || ''),
-      }))
-    : null;
-  if (!emails || !proxies) {
+  const hasEmails = Array.isArray(req.body?.emails);
+  const hasProxies = Array.isArray(req.body?.proxies);
+  // 只有当两池都未显式给出数组时才回落到文本解析，避免部分传参被空解析结果覆盖
+  let emails;
+  let proxies;
+  if (hasEmails || hasProxies) {
+    emails = hasEmails
+      ? req.body.emails.filter((e) => e && e.user).map((x) => ({ user: String(x.user).trim(), pass: String(x.pass || ''), fakey: String(x.fakey || '') }))
+      : [];
+    proxies = hasProxies
+      ? req.body.proxies.filter((p) => p && p.host).map((x) => ({
+          sn: String(x.sn || ''), type: String(x.type || ''), host: String(x.host), port: String(x.port || ''),
+          user: String(x.user || ''), pass: String(x.pass || ''), country: String(x.country || ''), ip: String(x.ip || ''),
+        }))
+      : [];
+  } else {
     const r = parseAuto(req.body?.text);
     emails = r.emails;
     proxies = r.proxies;

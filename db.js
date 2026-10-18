@@ -80,12 +80,13 @@ CREATE TABLE IF NOT EXISTS settings (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  feishu_open_id TEXT UNIQUE,
+  username TEXT NOT NULL,
   name TEXT NOT NULL DEFAULT '',
-  avatar TEXT NOT NULL DEFAULT '',
+  password_hash TEXT NOT NULL,
   created_at TEXT NOT NULL,
   last_login_at TEXT
 );
+CREATE UNIQUE INDEX IF NOT EXISTS ux_users_username ON users(lower(username));
 
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
@@ -176,10 +177,21 @@ CREATE INDEX IF NOT EXISTS ix_records_seq ON records(seq);
 
 /* ---------------- 初始化 + 迁移 ---------------- */
 
+// 早期版本用飞书登录，users 表存的是 feishu_open_id。现在改为账号密码，
+// 这些表里没有需要保留的账号数据，直接重建为 username / password_hash 结构。
+function dropLegacyAuthTables() {
+  const t = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").get();
+  if (!t) return;
+  const cols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+  if (cols.includes('username') && cols.includes('password_hash')) return;
+  db.exec('DROP TABLE IF EXISTS sessions; DROP TABLE IF EXISTS users;');
+}
+
 function initStorage() {
   db = new Database(DB_FILE);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  dropLegacyAuthTables();
   db.exec(SCHEMA);
   const ins = db.prepare('INSERT OR IGNORE INTO settings(k, v) VALUES(?, ?)');
   for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) ins.run(k, v);
@@ -588,31 +600,23 @@ function deleteRecords(ids, userId) {
 
 /* ---------------- 用户 / 会话 ---------------- */
 
-function upsertFeishuUser(profile) {
-  const openId = String(profile.open_id || '');
-  let user = db.prepare('SELECT * FROM users WHERE feishu_open_id = ?').get(openId);
-  if (user) {
-    db.prepare('UPDATE users SET name = ?, avatar = ?, last_login_at = ? WHERE id = ?')
-      .run(String(profile.name || user.name), String(profile.avatar_url || user.avatar), nowLocal(), user.id);
-  } else {
-    const info = db.prepare('INSERT INTO users (feishu_open_id, name, avatar, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)')
-      .run(openId, String(profile.name || ''), String(profile.avatar_url || ''), nowLocal(), nowLocal());
-    user = { id: Number(info.lastInsertRowid) };
-  }
-  return db.prepare('SELECT id, feishu_open_id, name, avatar FROM users WHERE id = ?').get(user.id);
+const USER_PUBLIC = 'id, username, name, created_at, last_login_at';
+
+function getUserByUsername(username) {
+  const u = String(username || '').trim();
+  if (!u) return null;
+  return db.prepare('SELECT * FROM users WHERE lower(username) = lower(?)').get(u);
 }
 
-// 开发/联调用：按名字创建或复用本地账号（仅在 AUTH_DEV_LOGIN 打开时由 server 调用）
-function devUser(name) {
-  const n = String(name || '').trim() || '本地用户';
-  const openId = 'dev:' + n;
-  let user = db.prepare('SELECT * FROM users WHERE feishu_open_id = ?').get(openId);
-  if (!user) {
-    const info = db.prepare('INSERT INTO users (feishu_open_id, name, avatar, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)')
-      .run(openId, n, '', nowLocal(), nowLocal());
-    user = { id: Number(info.lastInsertRowid) };
-  }
-  return db.prepare('SELECT id, feishu_open_id, name, avatar FROM users WHERE id = ?').get(user.id);
+function createUser(username, name, passwordHash) {
+  const u = String(username).trim();
+  const info = db.prepare('INSERT INTO users (username, name, password_hash, created_at, last_login_at) VALUES (?, ?, ?, ?, ?)')
+    .run(u, String(name || u).trim(), passwordHash, nowLocal(), nowLocal());
+  return db.prepare(`SELECT ${USER_PUBLIC} FROM users WHERE id = ?`).get(Number(info.lastInsertRowid));
+}
+
+function touchLogin(userId) {
+  db.prepare('UPDATE users SET last_login_at = ? WHERE id = ?').run(nowLocal(), userId);
 }
 
 function createSession(userId, ttlMs) {
@@ -625,13 +629,13 @@ function createSession(userId, ttlMs) {
 
 function getUserByToken(token) {
   if (!token) return null;
-  const row = db.prepare('SELECT s.expires_at, u.id, u.feishu_open_id, u.name, u.avatar FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?').get(token);
+  const row = db.prepare('SELECT s.expires_at, u.id, u.username, u.name FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?').get(token);
   if (!row) return null;
   if (row.expires_at && new Date(row.expires_at).getTime() < Date.now()) {
     db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
     return null;
   }
-  return { id: row.id, feishu_open_id: row.feishu_open_id, name: row.name, avatar: row.avatar };
+  return { id: row.id, username: row.username, name: row.name };
 }
 
 function deleteSession(token) {
@@ -662,8 +666,9 @@ module.exports = {
   updateRecord,
   deleteRecords,
   nextSeq,
-  upsertFeishuUser,
-  devUser,
+  getUserByUsername,
+  createUser,
+  touchLogin,
   createSession,
   getUserByToken,
   deleteSession,
