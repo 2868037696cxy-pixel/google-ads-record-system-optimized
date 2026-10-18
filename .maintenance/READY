@@ -1,0 +1,3 @@
+Apply the staged patch bundle on feat/team-console-ui-data-architecture only.
+No production server, DNS, secrets, main branch, or live data changes.
+Verify source-hashes.txt and pass backend tests before committing.
