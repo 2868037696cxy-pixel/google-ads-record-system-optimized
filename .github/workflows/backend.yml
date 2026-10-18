@@ -1,0 +1,29 @@
+name: Linux backend
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+      - run: npm ci --omit=dev --ignore-scripts
+      - name: Capture dependency audit and reproducible runtime
+        run: |
+          npm audit --omit=dev --json > audit.json || true
+          tar -czf runtime-dependencies.tar.gz node_modules
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AdsWorkbench-Linux-Runtime-Review
+          path: |
+            runtime-dependencies.tar.gz
+            audit.json
+          retention-days: 2
+      - run: npm test
