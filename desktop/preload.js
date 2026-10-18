@@ -1,7 +1,7 @@
 'use strict';
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('desktop', Object.freeze({
+if (!process.argv.includes('--ads-workbench-remote')) contextBridge.exposeInMainWorld('desktop', Object.freeze({
   info: () => ipcRenderer.invoke('desktop:info'),
   backup: () => ipcRenderer.invoke('desktop:backup'),
   restore: () => ipcRenderer.invoke('desktop:restore'),
