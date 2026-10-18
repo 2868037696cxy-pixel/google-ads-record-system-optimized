@@ -1520,6 +1520,22 @@ function restore(data, ownerId = null) {
   if (!owner) throw new Error('恢复备份需要先创建账号');
   const value = validateSnapshot(data);
   return mutate(() => {
+    // 备份恢复仍是一次“写入”，必须防止覆盖其他成员或绕过全员文件查重。
+    // 本人的旧备份属于替换本人数据，不视为新建重复。
+    for (const license of value.licenses) {
+      if (license.document_id) {
+        const foreign = db.prepare('SELECT 1 FROM licenses WHERE owner_id <> ? AND document_id = ? LIMIT 1')
+          .get(owner, license.document_id);
+        if (foreign) replyConflict('备份中包含已被其他账号保存的 PDF 文件，恢复已取消；您的现有数据未改变', [
+          { name: '备份中的 PDF', field: 'file', label: 'PDF 文件内容', message: '文件与全员数据库中已保存的文件重复' },
+        ]);
+      }
+      const keys = dedup.licenseKeys(license);
+      const conflict = dedup.findLicenseConflict(db, keys);
+      if (conflict && conflict.owner.id !== owner) {
+        replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, license)]);
+      }
+    }
     db.prepare('DELETE FROM records WHERE owner_id = ?').run(owner);
     for (const kind of POOL_TYPES) db.prepare(`DELETE FROM ${kind} WHERE owner_id = ?`).run(owner);
     store.adoptLegacySnapshot(db, owner, value, { createdAt: nowLocal() });
