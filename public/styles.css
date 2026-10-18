@@ -1437,3 +1437,44 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
   white-space: pre-wrap;
   word-break: break-all;
 }
+
+/* ===== Team Console UX · operations overview and refined hierarchy ===== */
+.overview-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}
+.overview-metric{display:flex;flex-direction:column;gap:4px;padding:19px 21px;border:1px solid var(--line-strong);border-radius:var(--r-lg);background:linear-gradient(150deg,var(--surface-2),var(--surface));min-width:0}
+.overview-metric>span{font-size:12px;color:var(--muted)}
+.overview-metric>b{font:700 31px/1.25 var(--mono);color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:-.045em}
+.overview-metric>small{font-size:11px;color:var(--faint)}
+.overview-metric>b.overview-good{color:var(--green)}
+.overview-metric>b.overview-danger,.overview-resource-count.overview-danger{color:var(--red)}
+.overview-columns{display:grid;grid-template-columns:1.15fr 1fr;gap:16px;margin-bottom:18px}
+.overview-columns>.panel{min-width:0;display:flex;flex-direction:column}
+.overview-resource-list{padding:8px 14px 2px}
+.overview-resource{width:100%;display:flex;align-items:center;gap:12px;padding:12px 10px;background:transparent;color:var(--text);border:0;border-bottom:1px solid var(--line);font:inherit;text-align:left;cursor:pointer;transition:background .14s ease}
+.overview-resource:last-child{border-bottom:0}
+.overview-resource:hover,.overview-todo-row:hover{background:var(--surface-3)}
+.overview-resource-icon,.overview-recent-icon{display:grid;place-items:center;width:36px;height:36px;flex:none;border:1px solid var(--line-strong);border-radius:10px;background:var(--surface-3);color:var(--accent)}
+.overview-resource-name,.overview-recent-name{display:flex;flex:1;flex-direction:column;min-width:0;font-weight:600;gap:2px}
+.overview-resource-name small,.overview-recent-name small,.overview-todo-row small{font-size:11px;color:var(--muted);font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.overview-resource-count{display:flex;align-items:baseline;gap:5px;font:700 20px var(--mono);font-variant-numeric:tabular-nums}
+.overview-resource-count small{font:400 11px var(--sans);color:var(--muted)}
+.overview-arrow{color:var(--ghost);font-size:15px;margin-left:4px}
+.overview-footnote{padding:8px 22px 16px;font-size:11px;color:var(--faint);margin:0;line-height:1.6}
+.overview-todo{padding:12px 14px;flex:1;display:flex;flex-direction:column;gap:9px}
+.overview-todo-row{border:1px solid var(--line);background:var(--surface-2);color:var(--text);font:inherit;width:100%;display:flex;align-items:center;gap:12px;text-align:left;padding:14px;border-radius:var(--r-md);cursor:pointer}
+.overview-todo-row>span:nth-child(2){display:flex;flex:1;flex-direction:column;gap:3px;min-width:0}
+.overview-dot{width:9px;height:9px;border-radius:50%;background:var(--amber);flex:none}
+.overview-dot.red{background:var(--red)}
+.overview-ok{margin:auto;text-align:center;padding:35px 14px;max-width:340px}
+.overview-ok>b{color:var(--green);font-size:14px}
+.overview-ok>p{color:var(--muted);font-size:12px}
+.overview-recent .panel-head{justify-content:space-between}
+.overview-recent-row{display:flex;align-items:center;gap:12px;margin:0 18px;padding:11px 2px;border-bottom:1px solid var(--line)}
+.overview-recent-row:last-child{border-bottom:0;margin-bottom:12px}
+.overview-recent-icon{width:32px;height:32px}
+.overview-recent-name b{font-size:13px;white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.overview-status{background:var(--surface-3);color:var(--muted);border:1px solid var(--line-strong);padding:4px 9px;border-radius:99px;font-size:11px;white-space:nowrap}
+.overview-title-count{font:500 11px var(--mono);color:var(--faint);margin-left:9px}
+.nav-item[aria-current="page"]{font-weight:700}
+@media(max-width:1180px){.overview-columns{grid-template-columns:1fr}.overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:640px){.overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.overview-metric{padding:13px}.overview-metric>b{font-size:25px}.overview-columns{gap:10px}.overview-recent-row{gap:7px;margin:0 10px}.overview-recent-row .overview-status{display:none}.overview-recent-icon{display:none}.overview-recent-name small{max-width:155px}.overview-resource-list{padding:6px}}
+@media(prefers-reduced-motion:reduce){.overview-resource,.overview-todo-row{transition:none}}
