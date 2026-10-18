@@ -14,6 +14,20 @@ let origin;
 let quitting = false;
 let busy = false;
 
+// Remote desktop mode uses only an explicitly configured HTTPS backend.
+// Never silently fall back to employee-local data when the server is unavailable.
+function remoteServerUrl() {
+  const configured = String(process.env.ADS_WORKBENCH_SERVER_URL || '').trim();
+  if (!configured) return '';
+  const url = new URL(configured);
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash ||
+      url.pathname !== '/' || url.origin !== configured.replace(/\/$/, '')) {
+    throw new Error('ADS_WORKBENCH_SERVER_URL 必须是 HTTPS 根地址，例如 https://ads.example.com');
+  }
+  return url.origin;
+}
+const remoteOrigin = remoteServerUrl();
+
 async function backup() {
   const result = await dialog.showSaveDialog(window, {
     title: '导出完整备份',
@@ -85,9 +99,9 @@ function windowBounds() {
 
 async function openWindow() {
   const partition = session.fromPartition('ads-desktop');
-  const token = crypto.randomBytes(32).toString('hex');
-  process.env.DATA_FILE = path.join(dataDirectory, 'data.json');
-  try { service = require('../server'); }
+  const token = remoteOrigin ? '' : crypto.randomBytes(32).toString('hex');
+  if (!remoteOrigin) process.env.DATA_FILE = path.join(dataDirectory, 'data.json');
+  try { if (!remoteOrigin) service = require('../server'); }
   catch (error) {
     // 服务器版的数据在 SQLite 里，data.json 只在首次启动时用于迁移。
     // 所以恢复手段是把损坏的库改名保留、让服务器重建空库，再从侧栏「恢复」导入备份。
@@ -106,8 +120,8 @@ async function openWindow() {
     }
     service = require('../server');
   }
-  origin = await service.start({ port: 0, host: '127.0.0.1', token });
-  partition.webRequest.onBeforeSendHeaders({ urls: [origin + '/*'] }, (details, callback) => {
+  origin = remoteOrigin || await service.start({ port: 0, host: '127.0.0.1', token });
+  if (!remoteOrigin) partition.webRequest.onBeforeSendHeaders({ urls: [origin + '/*'] }, (details, callback) => {
     callback({ requestHeaders: { ...details.requestHeaders, 'x-desktop-token': token } });
   });
   window = new BrowserWindow({
@@ -115,6 +129,7 @@ async function openWindow() {
     title: '账号工作台', backgroundColor: '#090c11', icon: path.join(__dirname, '../build/icon.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'), session: partition,
+      additionalArguments: remoteOrigin ? ['--ads-workbench-remote'] : [],
       nodeIntegration: false, contextIsolation: true, sandbox: true,
     },
   });
@@ -126,7 +141,7 @@ async function openWindow() {
     try { fs.writeFileSync(path.join(dataDirectory, 'window.json'), JSON.stringify(window.getNormalBounds())); }
     catch { /* Window preferences must never block shutdown. */ }
   });
-  for (const [name, operation] of Object.entries({
+  if (!remoteOrigin) for (const [name, operation] of Object.entries({
     info: async () => ({ version: app.getVersion(), platform: 'windows', dataDirectory }),
     backup, restore, 'open-data-folder': async () => {
       const error = await shell.openPath(dataDirectory);
@@ -139,7 +154,7 @@ async function openWindow() {
       return nativeAction(operation)();
     });
   }
-  for (const operation of ['open', 'reveal']) {
+  if (!remoteOrigin) for (const operation of ['open', 'reveal']) {
     ipcMain.handle(`desktop:${operation}-license-pdf`, (event, id) => {
       if (event.sender !== window.webContents || new URL(event.senderFrame.url).origin !== origin) throw new Error('无效调用');
       return nativeAction(async () => {
@@ -154,7 +169,7 @@ async function openWindow() {
     });
   }
   Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: '文件', submenu: [
+    { label: '文件', submenu: remoteOrigin ? [{ label: '退出', role: 'quit' }] : [
       { label: '导出完整备份', accelerator: 'Ctrl+Shift+S', click: nativeAction(backup) },
       { label: '恢复完整备份', accelerator: 'Ctrl+Shift+O', click: nativeAction(restore) },
       { type: 'separator' }, { label: '退出', role: 'quit' },
