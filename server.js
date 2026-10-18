@@ -13,6 +13,7 @@ const RECORD_STATUSES = ['正常', '异常', '停用'];
 
 let db = {
   counters: { emails: 0, proxies: 0, cards: 0, licenses: 0, records: 0 },
+  settings: { proxy_user: '437d8679', proxy_pass: '547be5d2' },
   emails: [],
   proxies: [],
   cards: [],
@@ -28,6 +29,7 @@ function loadDb() {
       for (const t of POOL_TYPES) if (!Array.isArray(db[t])) db[t] = [];
       if (!Array.isArray(db.records)) db.records = [];
       db.counters = db.counters || {};
+      db.settings = { proxy_user: '437d8679', proxy_pass: '547be5d2', ...(db.settings || {}) };
     }
   } catch (e) {
     console.error('读取数据文件失败:', e);
@@ -572,7 +574,8 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 
 const DUP_KEYS = {
   emails: (it) => (x) => x.user.toLowerCase() === it.user.toLowerCase(),
-  proxies: (it) => (x) => x.host === it.host && x.port === it.port && x.user === it.user,
+  // 代理以「主机:端口」判重（默认账号/密码对所有代理相同，不应参与判重）
+  proxies: (it) => (x) => x.host === it.host && x.port === it.port,
   cards: (it) => (x) => x.number === it.number,
   licenses: (it) => (x) => x.name === it.name,
 };
@@ -583,7 +586,7 @@ function dupLabel(type) {
     if (type === 'emails') return it.user;
     if (type === 'licenses') return it.name;
     if (type === 'cards') return it.number;
-    if (type === 'proxies') return `${it.host}:${it.port}${it.user ? ` @${it.user}` : ''}`;
+    if (type === 'proxies') return `${it.host}:${it.port}`;
     return '';
   };
 }
@@ -593,7 +596,11 @@ function importItems(type, items) {
   const skipped = [];
   const seen = new Set();
   const label = dupLabel(type);
-  for (const it of items) {
+  for (const raw of items) {
+    // 代理：账号/密码缺省时套用「默认代理账号」
+    const it = type === 'proxies'
+      ? { ...raw, user: raw.user || db.settings.proxy_user, pass: raw.pass || db.settings.proxy_pass }
+      : raw;
     // 同批次内也去重：以 dupLabel 作为本次批次的键
     const batchKey = label(it);
     if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
@@ -853,6 +860,7 @@ fastify.get('/api/bootstrap', async () => {
   for (const t of POOL_TYPES) pools[t] = db[t];
   return {
     pools,
+    settings: db.settings,
     records: [...db.records].sort((a, b) => b.id - a.id),
     next: { fingerprint: `${todayKey()}ads${nextSeq()}`, seq: nextSeq(), date_key: todayKey() },
   };
@@ -908,6 +916,34 @@ fastify.post('/api/import/:type', async (req) => {
   if (!POOL_TYPES.includes(type)) return { error: '未知类型' };
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
   return importItems(type, items);
+});
+
+fastify.post('/api/settings', async (req) => {
+  const b = req.body || {};
+  const old = { ...db.settings };
+  if ('proxy_user' in b) db.settings.proxy_user = String(b.proxy_user ?? '');
+  if ('proxy_pass' in b) db.settings.proxy_pass = String(b.proxy_pass ?? '');
+  let updated = 0;
+  let recordsUpdated = 0;
+  if (b.apply_to_existing) {
+    // 同步到已有代理：空值、或仍沿用旧默认值的，统一改为新默认值（保留单独改过的）
+    for (const p of db.proxies) {
+      let changed = false;
+      if ((!p.user || p.user === old.proxy_user) && p.user !== db.settings.proxy_user) { p.user = db.settings.proxy_user; changed = true; }
+      if ((!p.pass || p.pass === old.proxy_pass) && p.pass !== db.settings.proxy_pass) { p.pass = db.settings.proxy_pass; changed = true; }
+      if (changed) updated++;
+    }
+    // 记录中的代理快照同步（避免导出的账号/密码为空）
+    for (const r of db.records) {
+      if (!r.proxy_host) continue;
+      let changed = false;
+      if ((!r.proxy_user || r.proxy_user === old.proxy_user) && r.proxy_user !== db.settings.proxy_user) { r.proxy_user = db.settings.proxy_user; changed = true; }
+      if ((!r.proxy_pass || r.proxy_pass === old.proxy_pass) && r.proxy_pass !== db.settings.proxy_pass) { r.proxy_pass = db.settings.proxy_pass; changed = true; }
+      if (changed) recordsUpdated++;
+    }
+  }
+  saveDb();
+  return { settings: db.settings, updated, records_updated: recordsUpdated };
 });
 
 fastify.patch('/api/pool/:type/:id', async (req) => {

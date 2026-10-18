@@ -114,6 +114,7 @@ const KINDS = [
 const state = {
   page: 'workbench',
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
+  settings: { proxy_user: '', proxy_pass: '' },
   records: [],
   next: null,
   reveal: false,
@@ -204,6 +205,7 @@ function render() {
 async function refresh() {
   const data = await api('/api/bootstrap');
   state.pools = data.pools;
+  state.settings = data.settings || state.settings;
   state.records = data.records;
   state.next = data.next;
   state.loaded = true;
@@ -523,7 +525,7 @@ const POOL_TABLE = {
   },
   proxies: {
     cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '状态', '导入时间', '操作'],
-    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '95px', '160px', '65px'],
+    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '95px', '160px', '110px'],
     row: (p) => [
       `<span class="faint mono">${p.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.sn)}" title="点击复制">${esc(p.sn) || '<span class="faint">—</span>'}</span>`,
@@ -600,6 +602,66 @@ Capital Service ApS
 市/区：Frederikssund`,
 };
 
+// 代理库：默认账号/密码设置条
+function proxyDefaultBar() {
+  const s = state.settings;
+  return `<div class="panel proxy-default">
+      <div class="pd-row">
+        <span class="pd-label">默认代理账号</span>
+        <input class="pd-input" id="pd-user" value="${esc(s.proxy_user)}" placeholder="如 437d8679">
+        <span class="pd-label">默认密码</span>
+        <input class="pd-input" id="pd-pass" value="${esc(s.proxy_pass)}" placeholder="如 547be5d2">
+        <label class="pd-check"><input type="checkbox" id="pd-apply"> 同步到已有代理</label>
+        <button class="btn btn-ghost btn-sm" data-action="save-proxy-default">保存默认值</button>
+      </div>
+      <p class="pd-hint">新导入的代理若未自带账号/密码，会自动套用这里的默认值（所有代理共用同一账号）；也可在表格中逐条「编辑」单独修改。</p>
+    </div>`;
+}
+
+// 表格最后两列（状态 / 导入时间 / 操作），代理额外提供「编辑」
+function poolTailCells(kind, item, statusHtml) {
+  const actions = kind === 'proxies'
+    ? `<button class="icon-btn" data-action="edit-pool" data-kind="${kind}" data-id="${item.id}">编辑</button><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button>`
+    : `<button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button>`;
+  return [
+    `<td>${statusHtml}</td>`,
+    `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`,
+    `<td><div class="row-actions">${actions}</div></td>`,
+  ];
+}
+
+// 逐条编辑代理（可单独修改账号/密码等）
+function openPoolItemEdit(kind, id) {
+  const item = state.pools[kind].find((x) => x.id === id);
+  if (!item) return;
+  const fields = [
+    ['sn', '编号'], ['type', '类型', 'socks5'], ['host', '主机'], ['port', '端口'],
+    ['user', '代理账号', state.settings.proxy_user], ['pass', '代理密码', state.settings.proxy_pass],
+    ['country', '国家'], ['ip', '出口IP'],
+  ];
+  const inputs = fields
+    .map(([k, label, ph]) => `<label class="ef"><span>${label}</span><input data-field="${k}" value="${esc(item[k] || '')}"${ph ? ` placeholder="${esc(ph)}"` : ''}></label>`)
+    .join('');
+  openModal(`
+    <div class="modal-head"><h3>编辑代理 · <span class="mono" style="color:var(--accent)">${esc(item.host)}:${esc(item.port)}</span></h3><button class="modal-close" data-action="close-modal">✕</button></div>
+    <div class="modal-body"><div class="edit-fields">${inputs}</div></div>
+    <div class="modal-foot">
+      <button class="btn btn-ghost" data-action="close-modal">取消</button>
+      <button class="btn btn-primary" id="pool-item-save">保存</button>
+    </div>`, { large: false });
+  document.getElementById('pool-item-save').onclick = async () => {
+    const body = {};
+    document.querySelectorAll('#modal-root [data-field]').forEach((el) => { body[el.dataset.field] = el.value.trim(); });
+    try {
+      await api(`/api/pool/${kind}/${id}`, { method: 'PATCH', body });
+      toast('已保存');
+      await refresh();
+    } catch (e) {
+      toast(e.message, 'error');
+    }
+  };
+}
+
 function renderPool(kind) {
   const conf = KINDS.find((k) => k.key === kind);
   const tableConf = POOL_TABLE[kind];
@@ -635,6 +697,7 @@ function renderPool(kind) {
       ${statHtml('已使用', used, 'dot-blue-ic')}
       ${statHtml('停用', off, 'dot-red-ic')}
     </div>
+    ${kind === 'proxies' ? proxyDefaultBar() : ''}
     <div class="panel">
       <div class="toolbar">
         <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
@@ -666,7 +729,7 @@ function renderPool(kind) {
                     return `<tr style="--i:${i}">${rest
                       .slice(0, statusIdx)
                       .map((c) => `<td>${c}</td>`)
-                      .concat([`<td>${statusHtml}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
+                      .concat(poolTailCells(kind, item, statusHtml))
                       .join('')}</tr>`;
                   })
                   .join('')}
@@ -716,7 +779,7 @@ function renderPoolTableInto() {
             return `<tr style="--i:${i}">${rest
               .slice(0, statusIdx)
               .map((c) => `<td>${c}</td>`)
-              .concat([`<td>${statusHtml}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}">删除</button></div></td>`])
+              .concat(poolTailCells(kind, item, statusHtml))
               .join('')}</tr>`;
           })
           .join('')}
@@ -1206,6 +1269,24 @@ document.addEventListener('click', async (e) => {
             <table class="detail-table"><tbody>${rows}</tbody></table>
           </div>
           <div class="modal-foot"><button class="btn btn-primary" data-action="close-modal">关闭</button></div>`, { large: false });
+        break;
+      }
+      case 'edit-pool':
+        openPoolItemEdit(t.dataset.kind, Number(t.dataset.id));
+        break;
+      case 'save-proxy-default': {
+        const res = await api('/api/settings', {
+          method: 'POST',
+          body: {
+            proxy_user: document.getElementById('pd-user').value.trim(),
+            proxy_pass: document.getElementById('pd-pass').value.trim(),
+            apply_to_existing: document.getElementById('pd-apply').checked,
+          },
+        });
+        state.settings = res.settings;
+        const n = (res.updated || 0) + (res.records_updated || 0);
+        toast(`默认代理账号已保存${n ? `，同步更新 代理 ${res.updated || 0} 条 / 记录 ${res.records_updated || 0} 条` : ''}`);
+        await refresh();
         break;
       }
       case 'del-pool': {
