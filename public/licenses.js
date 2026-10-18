@@ -16,7 +16,7 @@ function openLicenseDetails(id) {
       <table class="detail-table"><tbody>${rows}</tbody></table>
       <div class="license-document">
         <span class="license-document-icon" aria-hidden="true">PDF</span>
-        <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存在本机 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
+        <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存到工作台 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
       </div>
     </div>
     <div class="modal-foot">

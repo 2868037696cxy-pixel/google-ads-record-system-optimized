@@ -20,7 +20,7 @@ const { certificate } = require('../tests/pdf-fixture');
       executablePath: require('electron'),
       // CI container has no setuid sandbox helper; production Windows keeps sandbox:true.
       args: [...(process.platform === 'linux' ? ['--no-sandbox'] : []), '.'],
-      env: { ...process.env, ADS_DESKTOP_DATA_DIR: path.join(directory, 'userdata') },
+      env: { ...process.env, ADS_WORKBENCH_MODE: 'local', ADS_DESKTOP_DATA_DIR: path.join(directory, 'userdata') },
     });
     await electron.evaluate(({ dialog, shell }, filename) => {
       dialog.showSaveDialog = async () => ({ canceled: false, filePath: filename });
@@ -115,7 +115,7 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.waitForFunction(() => !document.querySelector('#auto-ok'));
     await page.locator('[data-action="nav"][data-page="cards"]').click();
     await page.locator('[data-action="open-import"][data-kind="cards"]').click();
-    await page.locator('#import-text').fill('4367970152619097 06/29 007');
+    await page.locator('#import-text').fill('Finance-A|0007|06/29');
     await page.waitForFunction(() => !document.querySelector('#import-ok').disabled);
     await page.locator('#import-ok').click();
     await page.waitForFunction(() => !document.querySelector('#import-ok'));
@@ -152,7 +152,9 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.locator('[data-action="desktop-backup"]').click();
     await page.waitForFunction(() => document.querySelector('#toast-root').innerText.includes('完整备份已导出'));
     const snapshot = JSON.parse(fs.readFileSync(backupFile));
-    assert.equal(Object.keys(snapshot.documents).length, 1);
+    assert.equal(snapshot.format,'adsworkbench-backup');
+    assert.equal(snapshot.counts.licenses,1);
+    assert.ok(!JSON.stringify(snapshot).includes('second@example.com'));
     console.log('PASS native complete backup includes original PDF');
 
     await page.locator('[data-action="nav"][data-page="workbench"]').first().click();

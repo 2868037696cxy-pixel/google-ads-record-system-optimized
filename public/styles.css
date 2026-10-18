@@ -1495,3 +1495,13 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
   max-height: 53vh;
   overflow-y: auto;
 }
+
+/* Operational polish: stable controls, accessible form and sticky table header. */
+#password-form .stack {display:flex;flex-direction:column;gap:10px}
+#unlock-error,#password-error{color:var(--red);min-height:1.5em}
+.table-wrap{overscroll-behavior-x:contain}
+.table-wrap thead th{position:sticky;top:0;background:var(--surface-2);z-index:2}
+input[type=checkbox]{min-width:16px;min-height:16px}
+.modal-body label{display:block;margin:6px 0}
+.btn:disabled{cursor:not-allowed}
+@media(max-height:800px){.sidebar>.sidebar-foot{max-height:48vh;font-size:12px;gap:5px}}

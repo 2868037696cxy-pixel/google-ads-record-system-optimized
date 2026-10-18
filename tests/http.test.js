@@ -142,13 +142,16 @@ describe('个人备份与恢复', () => {
     });
     assert.equal(imported.status, 200);
 
+    assert.equal((await call('POST','/api/security/unlock',{body:{password:'smoke-pass-1'}})).status,200);
     const response = await call('GET', '/api/backup');
     assert.equal(response.status, 200);
     assert.match(response.headers.get('content-disposition') || '', /attachment/);
     backup = await response.text();
     const parsed = JSON.parse(backup);
-    assert.equal(parsed.emails.length, 1);
-    assert.equal(parsed.account, 'smoke');
+    assert.equal(parsed.format, 'adsworkbench-backup');
+    assert.ok(!backup.includes('backup@example.com'));
+    const original=service.decryptSnapshot(parsed,parsed.owner_id);
+    assert.equal(original.emails.length,1);
   });
 
   it('删除后可以完整恢复回来', async () => {

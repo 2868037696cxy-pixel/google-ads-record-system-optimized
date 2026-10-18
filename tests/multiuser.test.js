@@ -146,7 +146,7 @@ test('资源与记录完全按账号隔离', async () => {
 });
 
 test('导出只包含自己的记录', async () => {
-  await api('a', 'POST', '/api/import/cards', { body: { items: [{ number: '4111111111111111', expiry: '12/28', cvv: '123' }] } });
+  await api('a', 'POST', '/api/import/cards', { body: { items: [{ number: 'alice-payment', expiry: '12/28', last4: '1111' }] } });
   await api('a', 'POST', '/api/import/proxies', { body: { items: [{ host: '10.0.0.1', port: '8080', user: 'u1', pass: 'p1' }] } });
   await api('a', 'POST', '/api/import/licenses', { body: { items: [{ name: 'Alice Holding ApS', cvr: '11111111' }] } });
 
@@ -326,7 +326,11 @@ test('含别人原 PDF 的个人备份不能恢复，并且失败不清空自己
   snapshot.documents[snapshot.licenses[0].document_id] = {
     filename: 'another-filename.pdf', base64: certificate().toString('base64'),
   };
-  const attempt = await api('b', 'POST', '/api/backup/restore', { body: { snapshot } });
+  await api('b','POST','/api/security/unlock',{body:{password:'secret-pass-1'}});
+  const owner=service.db.prepare('SELECT id FROM users WHERE username=?').get('bob').id;
+  const envelope=service.encryptedSnapshot(owner);
+  envelope.payload=require('../lib/vault').getVault(service.db).seal(JSON.stringify(snapshot),`backup:${owner}`);
+  const attempt = await api('b', 'POST', '/api/backup/restore', { body: envelope });
   assert.equal(attempt.status, 409, JSON.stringify(attempt.body));
   const after = await api('b', 'GET', '/api/bootstrap');
   assert.deepEqual(after.body.pools.emails, before.body.pools.emails);
