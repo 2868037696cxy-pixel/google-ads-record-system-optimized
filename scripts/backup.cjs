@@ -2,6 +2,8 @@
 // Authenticated, streaming full-database backup. No network calls and no key logging.
 const fs=require('node:fs');const path=require('node:path');const os=require('node:os');const crypto=require('node:crypto');const {pipeline}=require('node:stream/promises');const {DatabaseSync,backup}=require('node:sqlite');
 function envFile(file='/etc/adsworkbench.env') {
+  // systemd has already read the private root-only EnvironmentFile.
+  if(process.env.ADS_SECRETS_KEY_FILE && (process.env.DB_FILE || process.env.DATA_DIR)) return;
   if(!fs.existsSync(file))return;
   for(const line of fs.readFileSync(file,'utf8').split(/\r?\n/)) {
     const match=line.match(/^([A-Z_][A-Z0-9_]*)=(.*)$/);if(!match||process.env[match[1]]!==undefined)continue;
