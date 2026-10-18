@@ -1,7 +1,13 @@
 node_modules/
 data.json
+data.json.migrated
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 *.log
 dist/
 *.tmp
 backups/
 .desktop-test/
+.shots/
