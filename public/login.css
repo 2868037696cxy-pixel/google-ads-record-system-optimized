@@ -685,7 +685,8 @@ body.auth-body {
 /* 放在最后，才能覆盖上面新加的动效 */
 @media (prefers-reduced-motion: reduce) {
   .auth-card.is-shaking,
-  .auth-submit.btn-loading::before { animation: none; }
+  .auth-submit.btn-loading::before,
+  body.auth-body::after { animation: none; }
   .auth-submit { transition: none; }
 }
 
@@ -718,18 +719,19 @@ body.auth-body {
    再逐处调排版、形状与交互细节，避免逐条硬改颜色留下不一致。
    ============================================================ */
 body.auth-body {
-  /* 色板：近黑底 + 中性白字 + 唯一强调色 Apple 蓝 */
-  --bg: #000;
-  --surface: rgba(255, 255, 255, 0.05);
-  --surface-2: rgba(255, 255, 255, 0.09);
-  --surface-3: rgba(255, 255, 255, 0.14);
-  --line: rgba(255, 255, 255, 0.09);
-  --line-strong: rgba(255, 255, 255, 0.16);
+  /* 色板：Liquid Glass 需要「有东西可折射」，所以表面色改成半透明白，
+     文字用纯白 + 高比例白灰，压住下方彩底。 */
+  --bg: #101a3e;
+  --surface: rgba(255, 255, 255, 0.14);
+  --surface-2: rgba(255, 255, 255, 0.2);
+  --surface-3: rgba(255, 255, 255, 0.26);
+  --line: rgba(255, 255, 255, 0.2);
+  --line-strong: rgba(255, 255, 255, 0.32);
 
-  --text: #f5f5f7;
-  --muted: rgba(255, 255, 255, 0.6);
-  --faint: rgba(255, 255, 255, 0.45);
-  --ghost: rgba(255, 255, 255, 0.3);
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, 0.78);
+  --faint: rgba(255, 255, 255, 0.62);
+  --ghost: rgba(255, 255, 255, 0.46);
 
   --accent: #0a84ff;
   --accent-strong: #409cff;
@@ -747,22 +749,35 @@ body.auth-body {
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
     "Helvetica Neue", "PingFang SC", "Microsoft YaHei UI", sans-serif;
 
-  background: #000;
+  /* 背景不再是黑的：一层高饱和色彩网格，玻璃面板浮在上面才有折射 */
+  background:
+    radial-gradient(1200px 820px at 12% 6%, rgba(88, 120, 255, 0.62), transparent 60%),
+    radial-gradient(1040px 800px at 90% 12%, rgba(178, 76, 255, 0.5), transparent 62%),
+    radial-gradient(1020px 740px at 76% 94%, rgba(0, 200, 255, 0.42), transparent 62%),
+    radial-gradient(920px 720px at 6% 90%, rgba(255, 76, 156, 0.36), transparent 62%),
+    linear-gradient(160deg, #1b2559 0%, #251a58 46%, #101c40 100%);
 }
 
 /* 去掉上一版的细网格，换成一片大范围柔光——Apple 的背景是氛围而不是纹理 */
 .auth-shell::before { display: none; }
 
+/* 流动层：两团大柔光缓慢漂移，制造「液态」而不是一张静止的渐变图 */
 body.auth-body::after {
   content: "";
   position: fixed;
-  inset: 0;
+  inset: -20%;
   z-index: 0;
   pointer-events: none;
   background:
-    radial-gradient(1000px 660px at 50% -12%, rgba(10, 132, 255, 0.2), transparent 62%),
-    radial-gradient(760px 560px at 88% 104%, rgba(120, 90, 255, 0.13), transparent 66%),
-    radial-gradient(700px 520px at 8% 96%, rgba(48, 209, 88, 0.08), transparent 66%);
+    radial-gradient(closest-side at 32% 32%, rgba(255, 255, 255, 0.2), transparent),
+    radial-gradient(closest-side at 68% 66%, rgba(130, 205, 255, 0.26), transparent);
+  filter: blur(64px);
+  animation: liquid-drift 24s var(--ease) infinite alternate;
+}
+
+@keyframes liquid-drift {
+  from { transform: translate3d(-3%, -2%, 0) scale(1); }
+  to { transform: translate3d(4%, 3%, 0) scale(1.12); }
 }
 
 /* ---- 左栏当英雄区：大字号、紧字距，去掉等宽标签与编号 ---- */
@@ -809,7 +824,8 @@ body.auth-body::after {
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: var(--accent);
+    /* 亮蓝而不是 --accent：深蓝小点压在蓝紫彩底上会糊掉 */
+    background: #9fcaff;
   }
 
   .auth-specs .spec-label {
@@ -824,44 +840,63 @@ body.auth-body::after {
   .auth-brand .brand-text span { color: var(--ghost); letter-spacing: 0.06em; }
 }
 
-/* ---- 卡片：毛玻璃 + 大圆角，去掉荧光发丝线 ---- */
+/* ---- 卡片：Liquid Glass ----
+   半透明白渐变（模拟光线从左上折进玻璃）+ 强模糊与高饱和（玻璃折射）
+   + 顶部镜面高光 + 一圈亮边。 */
 .auth-card {
   max-width: 400px;
   padding: 34px 32px 30px;
-  background: rgba(28, 28, 30, 0.72);
-  -webkit-backdrop-filter: blur(40px) saturate(180%);
-  backdrop-filter: blur(40px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 24px;
-  box-shadow: 0 34px 80px -28px rgba(0, 0, 0, 0.85);
+  background:
+    linear-gradient(
+      143deg,
+      rgba(255, 255, 255, 0.24),
+      rgba(255, 255, 255, 0.08) 44%,
+      rgba(255, 255, 255, 0.14) 100%
+    ),
+    /* 深色底层：彩底玻璃偏亮时白字会发飘，垫一层深色把对比度稳住 */
+    rgba(10, 22, 60, 0.3);
+  -webkit-backdrop-filter: blur(46px) saturate(190%);
+  backdrop-filter: blur(46px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 32px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 40px rgba(255, 255, 255, 0.06),
+    0 30px 70px -22px rgba(8, 14, 40, 0.6);
 }
 
 .auth-card::before { display: none; }
 
-/* ---- 登录 / 注册 → Apple 分段控件 ---- */
+/* ---- 登录 / 注册 → 玻璃胶囊分段控件 ---- */
 .auth-tabs .tabs {
-  gap: 2px;
-  padding: 2px;
-  border: 0;
-  border-radius: 9px;
-  background: rgba(120, 120, 128, 0.24);
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .auth-tabs .tab {
-  padding: 6px 16px;
-  border-radius: 7px;
+  padding: 7px 18px;
+  border-radius: 999px;
   font-size: 13px;
   font-weight: 500;
   letter-spacing: -0.005em;
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(255, 255, 255, 0.72);
   background: none;
   box-shadow: none;
 }
 
 .auth-tabs .tab.active {
-  background: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.26);
   color: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 2px 8px rgba(8, 14, 40, 0.28);
 }
 
 /* ---- 标题与说明 ---- */
@@ -878,10 +913,13 @@ body.auth-body::after {
 
 .auth-form input.auth-input {
   height: 48px;
-  padding: 0 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  background: rgba(255, 255, 255, 0.07);
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  backdrop-filter: blur(14px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
   font-size: 16px;
   letter-spacing: -0.01em;
   color: var(--text);
@@ -896,21 +934,34 @@ body.auth-body::after {
   box-shadow: 0 0 0 4px var(--accent-dim);
 }
 
-/* ---- 主按钮：Apple 用纯色不上渐变，按下轻微回弹 ---- */
+/* ---- 主按钮：Liquid Glass 用胶囊形，顶亮底暗做出玻璃的湿润高光 ---- */
 .auth-submit {
-  height: 48px;
-  border-radius: 12px;
-  background: var(--accent);
+  height: 50px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #5aabff 0%, #0a84ff 52%, #0a6ee0 100%);
   color: #fff;
-  box-shadow: none;
   font-size: 17px;
   font-weight: 500;
   letter-spacing: -0.01em;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    inset 0 -2px 8px rgba(4, 32, 74, 0.32),
+    0 14px 30px -12px rgba(10, 132, 255, 0.75);
 }
 
-.auth-submit:hover:not(:disabled) { background: var(--accent-strong); box-shadow: none; }
-.auth-submit:active:not(:disabled) { background: var(--accent-deep); transform: scale(0.985); }
-.auth-submit:disabled { opacity: 0.72; filter: none; cursor: progress; }
+.auth-submit:hover:not(:disabled) {
+  background: linear-gradient(180deg, #74bbff 0%, #1e90ff 52%, #0a78ee 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    inset 0 -2px 8px rgba(4, 32, 74, 0.32),
+    0 18px 38px -12px rgba(10, 132, 255, 0.85);
+}
+
+.auth-submit:active:not(:disabled) {
+  background: linear-gradient(180deg, #2f8ce8 0%, #0a6ee0 52%, #095cc0 100%);
+  transform: scale(0.985);
+}
+.auth-submit:disabled { opacity: 0.7; filter: none; cursor: progress; }
 
 .auth-submit.btn-loading::before {
   border-color: rgba(255, 255, 255, 0.3);
@@ -919,8 +970,9 @@ body.auth-body::after {
 
 /* ---- 底部切换与脚注 ---- */
 .auth-switch { font-size: 14px; color: var(--muted); }
-.link-btn { color: var(--accent); }
-.link-btn:hover { color: var(--accent-strong); border-bottom-color: var(--accent-strong); }
+/* 链接用白字加下划线：原来的蓝色 #0a84ff 压在蓝紫玻璃上几乎看不见 */
+.link-btn { color: #fff; border-bottom-color: rgba(255, 255, 255, 0.45); }
+.link-btn:hover { color: #fff; border-bottom-color: #fff; }
 .auth-main-foot { font-size: 12px; color: var(--ghost); }
 
 /* ---- 窄屏：大内边距在小屏上会挤，收一收 ---- */
