@@ -355,5 +355,5 @@ test('全员查重报告对普通成员关闭，内部审计仍可以识别历�
   const addressGroup = report.groups.find((g) => g.field === 'address');
   assert.ok(addressGroup, '应报告地址重复组');
   assert.equal(addressGroup.members.length, 2);
-  assert.ok(report.body.duplicate_licenses >= 2);
+  assert.ok(report.duplicate_licenses >= 2);
 });
