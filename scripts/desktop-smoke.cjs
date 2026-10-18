@@ -184,15 +184,22 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.locator('[data-action="nav"][data-page="licenses"]').click();
     await page.locator('[data-action="open-import"][data-kind="licenses"]').click();
     await page.locator('#license-file').setInputFiles(pdfFile);
-    await page.getByText('已提取信息，请核对后保存。原 PDF 将一并保存。', { exact: true }).waitFor();
+    await page.locator('#license-conflict').waitFor();
+    assert.match(await page.locator('#license-conflict').innerText(), /PDF 文件内容/);
+    assert.match(await page.locator('#license-file-status').innerText(), /不能重复/);
+    assert.equal((await page.evaluate(() => api('/api/bootstrap'))).pools.licenses.length, 1);
+    await page.locator('.modal-close').click();
+    // 修改本人资料可走“无重复文件”的资料更新，不允许以重传相同 PDF 的方式进行。
+    await page.locator('[data-action="open-import"][data-kind="licenses"]').click();
     await page.locator('#license-name').fill(name + ' corrected');
+    await page.locator('#license-legal_name').fill(name);
     await page.locator('#license-import').click();
     await page.waitForFunction(() => !document.querySelector('#license-import'));
     const corrected = await page.evaluate(() => api('/api/bootstrap'));
     assert.equal(corrected.pools.licenses.length, 1); assert.equal(corrected.pools.licenses[0].id, 1);
     assert.equal(corrected.records[0].license_name, name + ' corrected');
     assert.equal(await page.locator('[data-action="del-pool"]').isDisabled(), true);
-    console.log('PASS same-PDF corrected reimport updates one assigned license');
+    console.log('PASS duplicate PDF rejected while updating own existing license metadata succeeds');
 
     await page.locator('[data-action="desktop-restore"]').click();
     await page.getByText('已连接', { exact: true }).waitFor();
