@@ -1484,28 +1484,53 @@ function showLogin() {
   document.getElementById('nav').innerHTML = '';
   document.getElementById('userChip').innerHTML = '';
   document.getElementById('main').innerHTML = `
-    <div class="login-wrap">
-      <div class="login-card">
-        <div class="login-brand">
-          <span class="brand-mark" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+    <div class="login-stage">
+      <aside class="login-hero">
+        <div class="hero-glow" aria-hidden="true"></div>
+        <div class="hero-brand">
+          <span class="brand-mark brand-mark-lg" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
               <path d="M5 19V5h7a5 5 0 0 1 0 10H5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
               <circle cx="18.4" cy="18.4" r="2.1" fill="currentColor"/>
             </svg>
           </span>
-          <strong>账号工作台</strong>
-        </div>
-        <p class="login-sub">资源库团队共享 · 记录按创建者隔离，各自只看自己的记录。</p>
-        <div class="login-form">
-          <input class="pd-input" id="au-user" placeholder="用户名（2-24 位）" autocomplete="username" autocapitalize="off" spellcheck="false">
-          <input class="pd-input" id="au-pass" type="password" placeholder="密码（至少 6 位）" autocomplete="current-password">
-          <div class="login-actions">
-            <button class="btn btn-primary btn-lg login-btn" data-action="login">登录</button>
-            <button class="btn btn-ghost" data-action="register">注册</button>
+          <div class="brand-text">
+            <strong>账号工作台</strong>
+            <span>ADS CONSOLE</span>
           </div>
-          <p class="login-hint" id="login-msg"></p>
         </div>
-      </div>
+        <h1 class="hero-title">团队共享的<br>资源与账号作战台</h1>
+        <p class="hero-desc">资源库团队共享，一次导入全员可用；记录按创建者隔离，彼此只看得见自己的数据。</p>
+        <ul class="hero-feats">
+          <li><span class="feat-ico" aria-hidden="true"></span>资源池全局共享，导入即全员可用</li>
+          <li><span class="feat-ico" aria-hidden="true"></span>记录按创建者隔离，互不打扰</li>
+          <li><span class="feat-ico" aria-hidden="true"></span>跨用户全局判重，重复自动拦截</li>
+        </ul>
+        <p class="hero-foot">数据存储于服务端 SQLite · 密码 scrypt 加盐加密</p>
+      </aside>
+      <section class="login-panel">
+        <div class="login-card">
+          <div class="login-head">
+            <h2>欢迎回来</h2>
+            <p>登录已有账号，或一键注册新账号</p>
+          </div>
+          <div class="login-form">
+            <label class="field">
+              <span class="field-label">用户名</span>
+              <input class="pd-input" id="au-user" placeholder="2-24 位，中英文 / 数字 / 下划线" autocomplete="username" autocapitalize="off" spellcheck="false">
+            </label>
+            <label class="field">
+              <span class="field-label">密码</span>
+              <input class="pd-input" id="au-pass" type="password" placeholder="至少 6 位" autocomplete="current-password">
+            </label>
+            <div class="login-actions">
+              <button class="btn btn-primary btn-lg login-btn" data-action="login">登录</button>
+              <button class="btn btn-ghost" data-action="register">注册</button>
+            </div>
+            <p class="login-hint" id="login-msg"></p>
+          </div>
+        </div>
+      </section>
     </div>`;
   const u = document.getElementById('au-user');
   const p = document.getElementById('au-pass');
