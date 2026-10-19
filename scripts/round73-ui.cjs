@@ -8,9 +8,16 @@ const {certificate}=require('../tests/pdf-fixture');
 (async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ads-round73-ui-'));
   let electron,page;
+  const watchdog=setTimeout(()=>{
+    console.error('FAIL round73 watchdog: test exceeded 120 seconds; terminating the isolated test application');
+    electron?.process()?.kill();
+    process.exitCode=1;
+  },120000);
+  watchdog.unref();
   try {
     electron=await _electron.launch({executablePath:require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),'.'],env:{...process.env,ADS_WORKBENCH_MODE:'local',ADS_DESKTOP_DATA_DIR:path.join(directory,'userdata')}});
     page=await electron.firstWindow();
+    page.setDefaultTimeout(15000);
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.getByText('已连接',{exact:true}).waitFor();
     await page.evaluate(async()=>{
@@ -110,7 +117,16 @@ const {certificate}=require('../tests/pdf-fixture');
     assert.deepEqual(errors,[]);
     if(process.env.UI_SCREENSHOT_DIR){fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,'round73-picker.png')});}
   }catch(error){
-    if(page&&process.env.UI_SCREENSHOT_DIR){fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,'round73-failure.png')}).catch(()=>{});}
+    console.error('FAIL round73:',error.message);
+    if(page&&process.env.UI_SCREENSHOT_DIR){fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,'round73-failure.png'),timeout:5000}).catch(()=>{});}
     throw error;
-  }finally{if(electron)await electron.close();fs.rmSync(directory,{recursive:true,force:true});}
+  }finally{
+    clearTimeout(watchdog);
+    if(electron){
+      // A failed renderer/request must not keep CI waiting indefinitely in app.quit.
+      const cleanup=setTimeout(()=>{console.error('round73: forcing isolated Electron cleanup');electron.process()?.kill();},5000);
+      try{await electron.close();}catch{/* The watchdog may already have stopped it. */}finally{clearTimeout(cleanup);}
+    }
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
 })().catch(error=>{console.error(error);process.exitCode=1;});
