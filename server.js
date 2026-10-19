@@ -1310,18 +1310,33 @@ fastify.get('/api/bootstrap', async (req) => {
  * 只取当前页，让列表视图按需翻页，不再「读全部 + 传全部」。owner_id 恒定取自会话。
  * 敏感字段的脱敏由 onSend 的 redact() 统一处理，与本服务其他 /api/ 响应同一套规则。
  */
-fastify.get('/api/records', async (req) => {
+fastify.get('/api/records', async (req, reply) => {
   const ownerId = currentUserId(req);
   const requestedSort = String(req.query?.sort || 'id_desc');
+  // 审计 F13：分页参数此前用 `Number(x) || 默认值` 兜底 —— limit=abc 会被静默当成
+  // 50，limit=-3 被夹成 1，客户端以为按自己的要求翻了页，实际拿到的是另一页。
+  // 语义错误应当明确 400，而不是悄悄换一个值再假装成功。
+  const parsePaging = (raw, { min, max, fallback, name }) => {
+    if (raw === undefined || raw === '') return { value: fallback };
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      return { error: `${name} 必须是 ${min}..${max} 之间的整数` };
+    }
+    return { value: n };
+  };
+  const limit = parsePaging(req.query?.limit, { min: 1, max: 200, fallback: 50, name: 'limit' });
+  const offset = parsePaging(req.query?.offset, { min: 0, max: 1_000_000, fallback: 0, name: 'offset' });
+  if (limit.error) return reply.code(400).send({ error: limit.error });
+  if (offset.error) return reply.code(400).send({ error: offset.error });
   const page = store.listRecordsPage(db, ownerId, {
-    limit: Math.min(Math.max(Number(req.query?.limit) || 50, 1), 200),
-    offset: Math.max(Number(req.query?.offset) || 0, 0),
+    limit: limit.value,
+    offset: offset.value,
     q: String(req.query?.q || ''),
     status: String(req.query?.status || ''),
     sort: requestedSort,
   });
-  return { ...page, limit: Math.min(Math.max(Number(req.query?.limit) || 50, 1), 200),
-    offset: Math.max(Number(req.query?.offset) || 0, 0),
+  return { ...page, limit: limit.value,
+    offset: offset.value,
     sort: Object.hasOwn(store.RECORD_SORTS, requestedSort) ? requestedSort : 'id_desc' };
 });
 
