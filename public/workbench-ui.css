@@ -399,7 +399,7 @@ tr:hover .row-actions, tr:focus-within .row-actions { opacity: 1; }
 /* Tables are the working surface: legible at 100% zoom. */
 .table-wrap { min-height: 96px; max-height: calc(100dvh - 250px); overscroll-behavior-x: contain; }
 #recordsPanel .table-wrap { max-height: calc(100dvh - 310px); }
-table { font-size: 13px; font-variant-numeric: tabular-nums; }
+table { font-size: 14px; font-variant-numeric: tabular-nums; }
 thead th, .table-wrap thead th {
   height: 42px;
   padding: 11px 14px;
@@ -758,3 +758,5 @@ body.auth-body::after { display: none; animation: none; filter: none; }
   .auth-specs li::before { display: none; }
   .auth-specs .spec-label { font-size: 13px; letter-spacing: 0; color: var(--text); }
 }
+
+body[data-table-density="compact"] .rec-table, body[data-table-density="compact"] .pool-table { font-size: 13px; }
