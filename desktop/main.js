@@ -67,7 +67,7 @@ async function openWindow() {
   if(!app.isPackaged && process.env.NODE_ENV==='test' && new URL(origin).hostname==='127.0.0.1' && process.env.ADS_TEST_CERT_FINGERPRINT) {
     partition.setCertificateVerifyProc((request,callback)=>callback(request.hostname==='127.0.0.1' && new crypto.X509Certificate(request.certificate.data).fingerprint256===process.env.ADS_TEST_CERT_FINGERPRINT ? 0 : -3));
   }
-  window=new BrowserWindow({...windowBounds(),minWidth:1024,minHeight:720,show:false,title:'\u8d26\u53f7\u5de5\u4f5c\u53f0',backgroundColor:'#090c11',icon:path.join(__dirname,'../build/icon.ico'),webPreferences:{
+  window=new BrowserWindow({...windowBounds(),minWidth:1024,minHeight:720,show:false,title:'\u8d26\u53f7\u5de5\u4f5c\u53f0',backgroundColor:'#f5f7f9',icon:path.join(__dirname,'../build/icon.ico'),webPreferences:{
     preload:path.join(__dirname,'preload.js'),session:partition,additionalArguments:remote?['--ads-workbench-remote']:[],nodeIntegration:false,contextIsolation:true,sandbox:true,
   }});
   window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
