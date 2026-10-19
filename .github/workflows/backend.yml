@@ -77,7 +77,7 @@ jobs:
           fi
           wait "$lock_pid"
           test "$(readlink -f /opt/adsworkbench-current)" = "$current_before"
-          grep -F 'ExecStart=/usr/bin/flock -w 300 /var/lib/adsworkbench/.maintenance.lock' /etc/systemd/system/adsworkbench-backup.service
+          sudo grep -F 'ExecStart=/usr/bin/flock -w 300 /var/lib/adsworkbench/.maintenance.lock' /etc/systemd/system/adsworkbench-backup.service
 
           sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh
           sudo systemctl is-active adsworkbench
