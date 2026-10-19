@@ -138,7 +138,12 @@ const KINDS = [
 const state = {
   page: 'records',
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
+  // records 只保存当前服务端分页，不再缓存当前账号的全部记录。
   records: [],
+  recordFilteredTotal: 0,
+  recordStats: { total: 0, 正常: 0, 异常: 0, 停用: 0 },
+  recentRecords: [],
+  recordLimit: 50,
   next: null,
   reveal: false,
   unlockedUntil: 0,
@@ -161,6 +166,8 @@ const state = {
 };
 
 const MASK = '••••••';
+let recordRequestSeq = 0;
+let recordSearchTimer = null;
 
 /* ============ 记录表列显隐（方案工作包 06：列显隐 + 按用户保存的表格偏好） ============
    本地偏好里只写「哪些列被隐藏」这类列名，不写任何字段值 —— 方案要求
@@ -276,7 +283,7 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 
 function renderNav() {
   const main = [
-    { key: 'records', label: '我的记录', ico: '▤', count: state.records.length },
+    { key: 'records', label: '我的记录', ico: '▤', count: state.recordStats.total },
     { key: 'create', label: '新建记录', ico: '＋', count: '' },
     { key: 'overview', label: '运营总览', ico: '◈', count: '' },
   ];
@@ -320,19 +327,57 @@ function render() {
   applyColumnVisibility();
 }
 
+async function loadRecordsPage({ renderMode = 'none' } = {}) {
+  const requestId = ++recordRequestSeq;
+  const params = new URLSearchParams();
+  params.set('limit', String(state.recordLimit));
+  params.set('offset', String(Math.max(0, (state.recordPage - 1) * state.recordLimit)));
+  params.set('sort', 'id_desc');
+  if (state.q.trim()) params.set('q', state.q.trim());
+  if (state.rstatus !== '全部') params.set('status', state.rstatus);
+  if (state.reveal) params.set('reveal', '1');
+
+  const data = await api('/api/records?' + params.toString());
+  if (requestId !== recordRequestSeq) return false;
+  if (!data || !Array.isArray(data.items) || !Number.isSafeInteger(Number(data.total)) || Number(data.total) < 0) {
+    throw new Error('记录分页数据格式不正确');
+  }
+
+  const total = Number(data.total);
+  const pages = Math.max(1, Math.ceil(total / state.recordLimit));
+  if (state.recordPage > pages) {
+    state.recordPage = pages;
+    return loadRecordsPage({ renderMode });
+  }
+
+  state.records = data.items;
+  state.recordFilteredTotal = total;
+
+  if (renderMode === 'table') renderRecordsTableInto();
+  else if (renderMode === 'full') render();
+  return true;
+}
+
 async function refresh() {
   if(state.reveal && state.unlockedUntil<=Date.now()) state.reveal=false;
-  const data = await api('/api/bootstrap' + (state.reveal ? '?reveal=1' : ''));
-  if (!data?.pools || !Array.isArray(data.records) || !data.next || !KINDS.every((k) => Array.isArray(data.pools[k.key]))) {
+  const query = new URLSearchParams({ summary: '1' });
+  if (state.reveal) query.set('reveal', '1');
+  const data = await api('/api/bootstrap?' + query.toString());
+  if (!data?.pools || !data.next || !data.record_stats || !Array.isArray(data.recent_records)
+      || !KINDS.every((k) => Array.isArray(data.pools[k.key]))) {
     throw new Error('数据格式不正确，请检查备份或重启工作台');
   }
   state.pools = data.pools;
-  state.records = data.records;
   state.user = data.user || null;
-  // 列偏好按账号分别保存，账号就绪后再读；saveHiddenCols 写的就是这个键，重读不会丢改动
+  state.recordStats = {
+    total: Number(data.record_stats.total || 0),
+    正常: Number(data.record_stats['正常'] || 0),
+    异常: Number(data.record_stats['异常'] || 0),
+    停用: Number(data.record_stats['停用'] || 0),
+  };
+  state.recentRecords = data.recent_records;
   state.hiddenCols = loadHiddenCols();
-  const recordIds = new Set(data.records.map((record) => record.id));
-  state.sel = new Set([...state.sel].filter((id) => recordIds.has(id)));
+
   for (const kind of Object.keys(state.picked)) {
     const available = new Set(data.pools[kind].filter((item) => item.status === '未使用').map((item) => item.id));
     state.picked[kind] = new Set([...state.picked[kind]].filter((id) => available.has(id)));
@@ -341,20 +386,22 @@ async function refresh() {
   state.next = data.next;
   state.loaded = true;
   if (!state.form.start_seq) state.form.start_seq = data.next.seq;
+
+  await loadRecordsPage();
+  if (state.recordStats.total === 0) state.sel.clear();
+
   render();
   bindLabels();
   const connection = document.getElementById('connectionStatus');
   if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
 }
 
-
 /* ============ 运营总览：当前账号授权数据，不代表团队共享已上线 ============ */
 function renderOverview() {
-  const records = state.records;
-  const normal = records.filter(r => r.status === '正常').length;
-  const abnormal = records.filter(r => r.status === '异常').length;
-  const paused = records.filter(r => r.status === '停用').length;
-  const recent = [...records].sort((a,b) => b.id - a.id).slice(0,6);
+  const normal = state.recordStats['正常'];
+  const abnormal = state.recordStats['异常'];
+  const paused = state.recordStats['停用'];
+  const recent = state.recentRecords;
   const resources = [
     {kind:'emails', label:'邮箱资源', ico:'✉'},
     {kind:'proxies', label:'代理资源', ico:'⇅'},
@@ -375,7 +422,7 @@ function renderOverview() {
       <button class="btn btn-primary" data-action="nav" data-page="create">＋ 创建账号记录</button></div>
     </div>
     <div class="overview-metrics">
-      <div class="overview-metric"><span>账号记录</span><b>${records.length}</b><small>已建档总数</small></div>
+      <div class="overview-metric"><span>账号记录</span><b>${state.recordStats.total}</b><small>已建档总数</small></div>
       <div class="overview-metric"><span>正常</span><b class="overview-good">${normal}</b><small>当前状态正常</small></div>
       <div class="overview-metric"><span>异常</span><b class="${abnormal?'overview-danger':''}">${abnormal}</b><small>建议优先核对</small></div>
       <div class="overview-metric"><span>停用</span><b>${paused}</b><small>检查关联资源</small></div>
@@ -450,7 +497,7 @@ function renderWorkbench() {
     return `<span class="mini">记录中代理字段留空</span>`;
   };
 
-  const filtered = state.page === 'create' ? [] : getFilteredRecords();
+  const filtered = state.page === 'create' ? [] : state.records;
 
   const todayCN = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
 
@@ -471,7 +518,7 @@ function renderWorkbench() {
     </div>
 
     <div class="stat-strip">
-      <div class="strip-item hi"><span class="v">${state.records.length}</span><span class="k">记录总数</span></div>
+      <div class="strip-item hi"><span class="v">${state.recordStats.total}</span><span class="k">记录总数</span></div>
       <div class="strip-item"><span class="v">${avail.emails}<em>/${state.pools.emails.length}</em></span><span class="k"><span class="dot green"></span>可用邮箱</span></div>
       <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用付款工具</span></div>
       <div class="strip-item"><span class="v">${avail.licenses}<em>/${state.pools.licenses.length}</em></span><span class="k"><span class="dot amber"></span>可用营业执照</span></div>
@@ -479,7 +526,7 @@ function renderWorkbench() {
     </div>
 
     ${
-      state.records.length === 0
+      state.recordStats.total === 0
         ? `<div class="panel"><div class="panel-body"><div class="steps">
             ${[
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
@@ -568,7 +615,7 @@ function renderWorkbench() {
 
     <div class="panel" id="recordsPanel">
       <div class="panel-head">
-        <div class="panel-title">账号记录 <span class="overview-title-count">${filtered.length} / ${state.records.length} 条</span></div>
+        <div class="panel-title">账号记录 <span class="overview-title-count">${state.recordFilteredTotal} / ${state.recordStats.total} 条</span></div>
       </div>
       <div class="toolbar">
         <input class="search" id="rec-q" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
@@ -595,20 +642,19 @@ function renderWorkbench() {
 }
 
 function getFilteredRecords() {
-  const q = state.q.trim().toLowerCase();
-  return state.records.filter((r) => {
-    if (state.rstatus !== '全部' && r.status !== state.rstatus) return false;
-    if (!q) return true;
-    return [r.fingerprint, r.name, r.domain, r.email_user, r.card_number, r.license_name, r.proxy_host, r.proxy_sn]
-      .some((v) => String(v || '').toLowerCase().includes(q));
-  });
+  // 搜索与状态筛选已经下推到 /api/records；这里只返回当前服务端页。
+  return state.records;
 }
 
 function paginate(items, kind) {
-  const key = kind === 'records' ? 'recordPage' : 'poolPage';
+  if (kind === 'records') {
+    const pages = Math.max(1, Math.ceil(state.recordFilteredTotal / state.recordLimit));
+    state.recordPage = Math.max(1, Math.min(state.recordPage, pages));
+    return { items, total: state.recordFilteredTotal, page: state.recordPage, pages };
+  }
   const pages = Math.max(1, Math.ceil(items.length / 50));
-  state[key] = Math.max(1, Math.min(state[key], pages));
-  return { items: items.slice((state[key] - 1) * 50, state[key] * 50), total: items.length, page: state[key], pages };
+  state.poolPage = Math.max(1, Math.min(state.poolPage, pages));
+  return { items: items.slice((state.poolPage - 1) * 50, state.poolPage * 50), total: items.length, page: state.poolPage, pages };
 }
 
 function renderPagination(kind, page) {
@@ -620,14 +666,14 @@ function renderPagination(kind, page) {
 }
 
 function renderRecordsTable(list) {
-  if (!state.records.length) {
+  if (state.recordStats.total === 0) {
     return `<div class="empty">
       <div class="empty-ico">◧</div>
       <h3>还没有创建记录</h3>
-      <p>先在上方导入资源，然后填写国家 / 产品 / 域名，点击「立即创建」即可</p>
+      <p>先导入资源，然后到「新建记录」填写国家 / 产品 / 域名。</p>
     </div>`;
   }
-  if (!list.length) {
+  if (state.recordFilteredTotal === 0 || !list.length) {
     return `<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的记录</h3><p>换个关键词或筛选条件试试</p></div>`;
   }
   const page = paginate(list, 'records');
@@ -1364,17 +1410,23 @@ document.addEventListener('click', async (e) => {
       }
       case 'jump-status':
         state.page = 'records'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
+        await loadRecordsPage();
         render();
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
-      case 'recent-record':
-        state.q = state.records.find(r => r.id === Number(t.dataset.id))?.fingerprint || '';
+      case 'recent-record': {
+        const recent = state.recentRecords.find(r => r.id === Number(t.dataset.id));
+        state.q = recent?.fingerprint || '';
         state.rstatus = '全部'; state.recordPage = 1; state.page = 'records';
+        await loadRecordsPage();
         render();
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
+      }
       case 'clear-record-filter':
-        state.q = ''; state.rstatus = '全部'; state.recordPage = 1; render();
+        state.q = ''; state.rstatus = '全部'; state.recordPage = 1;
+        await loadRecordsPage();
+        render();
         break;
       case 'clear-pool-filter':
         state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1;
@@ -1433,6 +1485,7 @@ document.addEventListener('click', async (e) => {
       case 'rstatus':
         state.rstatus = t.dataset.v;
         state.recordPage = 1;
+        await loadRecordsPage();
         render();
         break;
       case 'reset-cols':
@@ -1447,8 +1500,12 @@ document.addEventListener('click', async (e) => {
         render();
         break;
       case 'table-page':
-        if (t.dataset.kind === 'records') { state.recordPage = Number(t.dataset.page); renderRecordsTableInto(); }
-        else { state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto(); }
+        if (t.dataset.kind === 'records') {
+          state.recordPage = Number(t.dataset.page);
+          await loadRecordsPage({ renderMode: 'table' });
+        } else {
+          state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto();
+        }
         break;
       case 'export-adspower': {
         if(!await ensureSensitive('此导出包含邮箱和代理凭据，请安全保存文件。')) break;
@@ -1554,7 +1611,7 @@ document.addEventListener('change', async (e) => {
       else state.sel.delete(id);
       refreshSelectionUI();
     } else if (action === 'sel-all') {
-      const list = paginate(getFilteredRecords(), 'records').items;
+      const list = state.records;
       if (t.checked) list.forEach((r) => state.sel.add(r.id));
       else list.forEach((r) => state.sel.delete(r.id));
       refreshSelectionUI();
@@ -1572,9 +1629,10 @@ document.addEventListener('input', (e) => {
   if (e.target.id === 'rec-q') {
     state.q = e.target.value;
     state.recordPage = 1;
-    const el = document.getElementById('rec-q');
-    renderRecordsTableInto(e.target);
-    el.setSelectionRange(el.value.length, el.value.length);
+    clearTimeout(recordSearchTimer);
+    recordSearchTimer = setTimeout(() => {
+      loadRecordsPage({ renderMode: 'table' }).catch((error) => toast(error.message, 'error'));
+    }, 250);
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
     state.poolPage = 1;
@@ -1634,6 +1692,8 @@ function renderRecordsTableInto(input) {
   if (old) old.remove();
   tablePanel.querySelector('.table-pagination')?.remove();
   tablePanel.insertAdjacentHTML('beforeend', renderRecordsTable(getFilteredRecords()));
+  const count = tablePanel.querySelector('.overview-title-count');
+  if (count) count.textContent = `${state.recordFilteredTotal} / ${state.recordStats.total} 条`;
   const selCount = tablePanel.querySelector('.sel-count');
   if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
   refreshSelectionUI();
@@ -1651,7 +1711,7 @@ function refreshSelectionUI() {
   });
   const allCb = document.querySelector('#main thead input[data-action="sel-all"]');
   if (allCb) {
-    const visible = paginate(getFilteredRecords(), 'records').items;
+    const visible = state.records;
     allCb.checked = visible.length > 0 && visible.every((r) => state.sel.has(r.id));
     allCb.indeterminate = visible.some((r) => state.sel.has(r.id)) && !allCb.checked;
   }
