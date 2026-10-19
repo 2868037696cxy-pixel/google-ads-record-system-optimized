@@ -490,6 +490,16 @@ function decodePdf(base64) {
   const bytes = Buffer.from(base64, 'base64');
   if (bytes.length > 10 * 1024 * 1024) return reply400('PDF 文件不能超过 10 MB');
   if (!bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))) return reply400('请选择有效 PDF 文件');
+  // 审计 F09：原先只比对 5 字节文件头，于是 "%PDF-" 后面跟任意垃圾也算有效原件，
+  // 库里可以存进根本打不开的 PDF，直到有人点开才发现 —— 而那时原件已经被当作
+  // 凭证收下了。真实 PDF 的尾部必有 %%EOF 结束标记（规范要求，阅读器据此判断
+  // 文件完整），因此在末尾 1 KB 内要求它：能挡掉截断与伪造，又不会误伤正常文件
+  // （%%EOF 之后允许有空白或增量更新段）。
+  // 说明：这不是完整的 PDF 结构校验，只是把"仅验文件头"这条具体的空子收窄；
+  // 严格解析需要引入 PDF 解析器，属后续工作（审计同样要求不要夸大此处强度）。
+  if (!bytes.subarray(Math.max(0, bytes.length - 1024)).includes('%%EOF')) {
+    return reply400('PDF 文件不完整（缺少 %%EOF 结束标记），请重新导出后上传');
+  }
   return bytes;
 }
 
