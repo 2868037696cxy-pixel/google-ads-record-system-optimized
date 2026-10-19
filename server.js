@@ -1046,6 +1046,9 @@ function updateRecord(ownerId, id, body) {
     const nu = targetId == null ? null : store.findPoolItem(db, ownerId, kind, targetId);
     if (targetId != null && !nu) return;
     rec[`${prefix}_id`] = nu ? nu.id : null;
+    // Persist the relation itself alongside its display snapshot. Mutating only
+    // the in-memory row leaves usage counts, later syncs and release logic stale.
+    patch[`${prefix}_id`] = rec[`${prefix}_id`];
     for (const key of Object.keys(SNAP[prefix]({}))) patch[key] = '';
     if (nu) {
       const snaps = SNAP[prefix](nu);
