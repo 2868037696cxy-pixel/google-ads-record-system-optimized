@@ -221,7 +221,7 @@ const { certificate } = require('../tests/pdf-fixture');
     assert.equal((await page.evaluate(() => api('/api/bootstrap'))).records.length, 0);
     console.log('PASS backup restore reloads app and preserves previous state');
     let failOnce = true;
-    await page.route('**/api/bootstrap', async (route) => {
+    await page.route('**/api/bootstrap?*', async (route) => {
       if (failOnce) { failOnce = false; await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'temporary outage' }) }); }
       else await route.continue();
     });
