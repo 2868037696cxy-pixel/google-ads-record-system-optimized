@@ -1185,6 +1185,12 @@ function replyConflict(message, conflicts) {
   throw err;
 }
 
+function replyPrecondition(message) {
+  const err = new Error(message);
+  err.statusCode = 428;
+  throw err;
+}
+
 /* ---------------- 认证路由 ---------------- */
 
 fastify.get('/api/healthz', async () => ({ ok: true, version: require('./package.json').version }));
@@ -1564,7 +1570,8 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     const id = Number(req.params.id);
     const current = store.findPoolItem(db, ownerId, type, id);
     if (!current) return reply400('资源不存在');
-    if(body.version !== undefined && body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+    if (!Number.isSafeInteger(body.version) || body.version < 0) return replyPrecondition('必须提供当前 version 后才能修改资源，请刷新后重试。');
+    if (body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
     assertNoCardSecrets(body);
     if ('status' in body) {
       if (!STATUSES.includes(body.status)) return reply400('无效状态');
@@ -1651,7 +1658,8 @@ fastify.patch('/api/records/:id', async (req) => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
   const current=store.getRecord(db,ownerId,Number(req.params.id));
   if(!current) return reply400('Record not found');
-  if(body.version!==undefined && body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+  if (!Number.isSafeInteger(body.version) || body.version < 0) return replyPrecondition('必须提供当前 version 后才能修改记录，请刷新后重试。');
+  if (body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
   const res = mutate(() => updateRecord(ownerId, Number(req.params.id), body));
   if (res.error) return reply400(res.error);
   // 修改也留痕：审核与排错时，「这个字段是谁改的」同样需要能回答
