@@ -1407,11 +1407,15 @@ fastify.get('/api/records', async (req, reply) => {
   const offset = parsePaging(req.query?.offset, { min: 0, max: 1_000_000, fallback: 0, name: 'offset' });
   if (limit.error) return reply.code(400).send({ error: limit.error });
   if (offset.error) return reply.code(400).send({ error: offset.error });
+  const q = String(req.query?.q || '').trim();
+  const status = String(req.query?.status || '').trim();
+  if (q.length > 200) return reply.code(400).send({ error: 'q 最多 200 个字符' });
+  if (status && !RECORD_STATUSES.includes(status)) return reply.code(400).send({ error: 'status 无效' });
   const page = store.listRecordsPage(db, ownerId, {
     limit: limit.value,
     offset: offset.value,
-    q: String(req.query?.q || ''),
-    status: String(req.query?.status || ''),
+    q,
+    status,
     sort: requestedSort,
     revealSecrets: req.allowSecrets === true,
   });
