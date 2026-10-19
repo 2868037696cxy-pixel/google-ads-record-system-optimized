@@ -1573,15 +1573,16 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     if (!Number.isSafeInteger(body.version) || body.version < 0) return replyPrecondition('必须提供当前 version 后才能修改资源，请刷新后重试。');
     if (body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
     assertNoCardSecrets(body);
-    if ('status' in body) {
+    const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in body).map((key) => [key, body[key]]));
+    const hasStatus = 'status' in body;
+    if (!hasStatus && !Object.keys(changed).length) return reply400('没有可修改的资源字段');
+    if (hasStatus) {
       if (!STATUSES.includes(body.status)) return reply400('无效状态');
       const prefix = POOL_PREFIX[type];
       if (body.status === '未使用' && store.recordsUsingResource(db, ownerId, prefix, id).length) {
         return reply400('资源仍关联记录，不能标记为未使用');
       }
-      store.setPoolStatus(db, ownerId, type, id, body.status);
     }
-    const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in body).map((key) => [key, body[key]]));
     const merged = normalizeImport(type, { ...store.toPublic(current), ...changed });
     if (type === 'licenses') {
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
@@ -1594,7 +1595,10 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     }
     let updated;
     try {
-      updated = store.updatePoolRow(db, ownerId, type, id, merged);
+      if (hasStatus && Object.keys(changed).length) store.setPoolStatus(db, ownerId, type, id, body.status, { bumpVersion: false });
+      updated = Object.keys(changed).length
+        ? store.updatePoolRow(db, ownerId, type, id, merged)
+        : store.setPoolStatus(db, ownerId, type, id, body.status);
     } catch (error) {
       if (!store.isUniqueViolation(error)) throw error;
       return reply400('修改后的资源与资料库中现有资源重复');
