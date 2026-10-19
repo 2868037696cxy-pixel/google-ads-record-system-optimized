@@ -109,7 +109,7 @@ function enhanceCopyTargets(root = document) {
 
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || document.querySelector('#modal-root .modal')) return;
-  const open = document.querySelector('.col-menu[open]');
+  const open = document.querySelector('.utility-menu[open], .col-menu[open]');
   if (open) {
     event.preventDefault();
     open.open = false;
@@ -1436,6 +1436,8 @@ function openRestoreDialog() {
 /* ============ 事件 ============ */
 
 document.addEventListener('click', async (e) => {
+  const utilityMenu = document.getElementById('utilityMenu');
+  if (utilityMenu?.open && !utilityMenu.contains(e.target)) utilityMenu.open = false;
   const t = e.target.closest('[data-action]');
 
   // 复制：优先用 data-copy 属性，否则兜底复制非交互单元格的文本
