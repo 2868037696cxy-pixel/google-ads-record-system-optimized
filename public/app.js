@@ -353,7 +353,7 @@ async function loadRecordsPage({ renderMode = 'none' } = {}) {
   state.records = data.items;
   state.recordFilteredTotal = total;
 
-  if (renderMode === 'table') renderRecordsTableInto();
+  if (renderMode === 'table' && state.page === 'records') renderRecordsTableInto();
   else if (renderMode === 'full') render();
   return true;
 }
