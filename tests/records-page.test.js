@@ -67,3 +67,45 @@ test('隔离：分页只能看到自己的记录，未登录一律 401',async()=
   assert.equal((await get('?limit=200',other)).data.total,0,'新账号不应看到别人的记录');
   assert.equal((await fetch(origin+'/api/records')).status,401);
 });
+
+
+test('summary bootstrap 不返回全量 records，但给出总数、状态统计和最近 6 条',async()=>{
+  const response=await fetch(origin+'/api/bootstrap?summary=1',{headers:{'x-workbench':'1',cookie}});
+  assert.equal(response.status,200);
+  const data=await response.json();
+  assert.equal(Object.hasOwn(data,'records'),false,'轻量 bootstrap 不应携带全量 records');
+  assert.equal(data.record_stats.total,12);
+  assert.equal(data.record_stats['停用'],4);
+  assert.equal(data.record_stats['正常'],8);
+  assert.equal(data.recent_records.length,6);
+  assert.deepEqual(data.recent_records.map(r=>r.id),[...data.recent_records.map(r=>r.id)].sort((a,b)=>b-a));
+
+  const legacy=await fetch(origin+'/api/bootstrap',{headers:{'x-workbench':'1',cookie}});
+  const legacyData=await legacy.json();
+  assert.equal(legacyData.records.length,12,'兼容 bootstrap 暂时保留全量 records 给旧调用方');
+});
+
+test('超过两页的数据仍由后端按页返回，不因 UI 每页 50 条而截断总数',async()=>{
+  const bulkCookie=await register('bulk-pager');
+  const ownerId=service.db.prepare("SELECT id FROM users WHERE username='bulk-pager'").get().id;
+  const insert=service.db.prepare(`INSERT INTO records(owner_id,seq,fingerprint,country,product,domain,name,status,created_at)
+                                   VALUES(?,?,?,?,?,?,?,?,?)`);
+  for(let i=1;i<=123;i+=1){
+    insert.run(ownerId,i,`bulk${String(i).padStart(3,'0')}`,'PL','批量测试',`bulk${i}.example`,`批量记录${i}`,i%10===0?'异常':'正常',`2026-02-${String((i%28)+1).padStart(2,'0')} 00:00:00`);
+  }
+  const first=await get('?limit=50&offset=0',bulkCookie);
+  const second=await get('?limit=50&offset=50',bulkCookie);
+  const third=await get('?limit=50&offset=100',bulkCookie);
+  assert.equal(first.data.total,123);
+  assert.equal(first.data.items.length,50);
+  assert.equal(second.data.items.length,50);
+  assert.equal(third.data.items.length,23);
+  const allIds=[...first.data.items,...second.data.items,...third.data.items].map(r=>r.id);
+  assert.equal(new Set(allIds).size,123,'三页记录不得重叠或丢失');
+
+  const summary=await fetch(origin+'/api/bootstrap?summary=1',{headers:{'x-workbench':'1',cookie:bulkCookie}});
+  const summaryData=await summary.json();
+  assert.equal(summaryData.record_stats.total,123);
+  assert.equal(summaryData.record_stats['异常'],12);
+  assert.equal(summaryData.recent_records.length,6);
+});
