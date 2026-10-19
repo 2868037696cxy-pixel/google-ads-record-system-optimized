@@ -44,6 +44,15 @@ const { _electron } = require('playwright');
     assert.equal(styles.mainScroll, 'auto');
     console.log('PASS desktop visual foundations: typography, density, color and navigation');
 
+    const settings = page.locator('#sidebarUtilities');
+    assert.equal(await settings.getAttribute('open'), null, 'infrequent settings should start collapsed');
+    await settings.locator('summary').focus();
+    await page.keyboard.press('Enter');
+    assert.notEqual(await settings.getAttribute('open'), null, 'settings must be keyboard-expandable');
+    await page.keyboard.press('Enter');
+    assert.equal(await settings.getAttribute('open'), null, 'settings must be keyboard-collapsible');
+    console.log('PASS secondary sidebar actions are discoverable and keyboard accessible');
+
     await page.locator('#nav [data-page="create"]').click();
     const form = await page.evaluate(() => {
       const field = document.querySelector('#f-country');
