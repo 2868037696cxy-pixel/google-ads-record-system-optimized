@@ -88,11 +88,36 @@ async function copyText(t) {
     ta.value = t;
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    const copied = document.execCommand('copy');
     ta.remove();
+    if (!copied) { toast('复制失败，请手动选择文本后复制', 'error'); return; }
   }
   toast('已复制到剪贴板');
 }
+
+/* Explicitly copyable values are keyboard reachable; ordinary cells are not
+   turned into hundreds of extra Tab stops. Never use their contents as labels. */
+function enhanceCopyTargets(root = document) {
+  for (const el of root.querySelectorAll('span[data-copy], div[data-copy]')) {
+    if (el.hasAttribute('data-action')) continue;
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', '复制字段内容');
+    if (!el.title) el.title = '点击或按 Enter 复制';
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target.closest('span[data-copy], div[data-copy]');
+  if (!target || target.hasAttribute('data-action')) return;
+  event.preventDefault();
+  if (!state.reveal && (target.dataset.sensitive === 'true' || target.querySelector('.masked'))) {
+    toast('请先显示敏感信息，再复制该字段', 'warn');
+    return;
+  }
+  copyText(target.dataset.copy || '');
+});
 
 function download(filename, text, type = 'text/plain;charset=utf-8') {
   const blob = new Blob([text], { type });
@@ -355,6 +380,7 @@ function render() {
   if (state.page === 'overview') renderOverview();
   else if (state.page === 'records' || state.page === 'create') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
+  enhanceCopyTargets(main);
   // 列偏好是全局样式规则，与记录表是否刚被重建无关
   applyColumnVisibility();
 }
@@ -1742,6 +1768,7 @@ function renderRecordsTableInto(input) {
   if (old) old.remove();
   tablePanel.querySelector('.table-pagination')?.remove();
   tablePanel.insertAdjacentHTML('beforeend', renderRecordsTable(getFilteredRecords()));
+  enhanceCopyTargets(tablePanel);
   const count = tablePanel.querySelector('.overview-title-count');
   if (count) count.textContent = `${state.recordFilteredTotal} / ${state.recordStats.total} 条`;
   const selCount = tablePanel.querySelector('.sel-count');
