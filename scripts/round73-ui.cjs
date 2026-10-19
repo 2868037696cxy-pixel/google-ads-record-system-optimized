@@ -77,6 +77,31 @@ const {certificate}=require('../tests/pdf-fixture');
     assert.equal(await page.locator('#license-form').count(),0);
     assert.equal(await page.evaluate(async()=>(await api('/api/bootstrap')).pools.licenses.length),1);
     console.log('PASS F19 PDF persisted once despite subsequent bootstrap failure');
+
+    const statusId=await page.evaluate(async()=>{
+      const r=await api('/api/records',{method:'POST',body:{domains:['round73-status.example'],country:'Status before',proxy_mode:'none',email_ids:[],card_ids:[],license_ids:[]}});
+      await refresh();return r.created[0].id;
+    });
+    await page.locator('#nav [data-page="records"]').click();
+    failRefresh=true;
+    await page.locator(`select[data-action="rec-status"][data-id="${statusId}"]`).selectOption('异常');
+    await page.getByText('状态已更新，但列表刷新失败；请重新连接，不要重复修改',{exact:true}).waitFor();
+    assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?q=round73-status.example&limit=10&offset=0');return r.items[0]?.status;}),'异常');
+    console.log('PASS F19 status mutation is not reported as failed when only refresh fails');
+
+    const deleteId=await page.evaluate(async()=>{
+      const r=await api('/api/records',{method:'POST',body:{domains:['round73-delete.example'],country:'Delete me',proxy_mode:'none',email_ids:[],card_ids:[],license_ids:[]}});
+      await refresh();return r.created[0].id;
+    });
+    await page.locator('#nav [data-page="records"]').click();
+    failRefresh=true;
+    await page.locator(`[data-action="del-record"][data-id="${deleteId}"]`).click();
+    await page.locator('#confirm-ok-btn').click();
+    await page.getByText('记录已删除，但列表刷新失败；请重新连接，不要重复删除',{exact:true}).waitFor();
+    assert.equal(await page.locator('#confirm-ok-btn').count(),0,'successful delete must close the confirmation even if refresh fails');
+    assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?q=round73-delete.example&limit=10&offset=0');return r.total;}),0);
+    console.log('PASS F19 delete mutation closes cleanly when only refresh fails');
+
     assert.deepEqual(errors,[]);
     if(process.env.UI_SCREENSHOT_DIR){fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,'round73-picker.png')});}
   }catch(error){
