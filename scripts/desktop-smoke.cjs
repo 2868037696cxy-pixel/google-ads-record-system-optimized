@@ -43,6 +43,7 @@ const { certificate } = require('../tests/pdf-fixture');
     assert.equal(await page.locator('#main tbody tr').count(), 50);
     await page.locator('[data-action="sel-all"]').check();
     await page.getByRole('button', { name: '下一页', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.table-pagination')?.textContent.includes('第 2 / 2 页') && document.querySelectorAll('#main tbody tr').length === 1);
     assert.equal(await page.locator('#main tbody tr').count(), 1);
     await page.locator('[data-action="sel-all"]').check();
     assert.ok((await page.locator('[data-action="export-csv"]').innerText()).includes('所选 51 条'));
