@@ -62,6 +62,16 @@ function toast(msg, type = 'ok') {
   }, type === 'error' ? 4200 : 2600);
 }
 
+async function refreshAfterCommit(warning) {
+  try {
+    await refresh();
+    return true;
+  } catch {
+    toast(warning, 'warn');
+    return false;
+  }
+}
+
 // 导入结果中重复项的提示文案：跳过 N 条（列出前几个具体值）
 function dupNote(res) {
   if (!res || !res.skipped) return '';
@@ -1350,7 +1360,7 @@ function openRestoreDialog() {
       const result = await api('/api/backup/restore', { method: 'POST', body: parsed });
       toast(`恢复完成：记录 ${result.records} 条、营业执照 ${result.licenses} 条`);
       if (go.isConnected) closeModal();
-      await refresh();
+      await refreshAfterCommit('恢复已完成，但列表刷新失败；请重新连接，不要重复恢复');
     } catch (error) {
       toast(error.message, 'error');
       go.disabled = false;
@@ -1533,7 +1543,7 @@ document.addEventListener('click', async (e) => {
           await api('/api/records/batch-delete', { method: 'POST', body: { ids } });
           state.sel.clear();
           toast('已删除');
-          await refresh();
+          await refreshAfterCommit('记录已删除，但列表刷新失败；请重新连接，不要重复删除');
         });
         break;
       }
@@ -1543,7 +1553,7 @@ document.addEventListener('click', async (e) => {
           await api(`/api/records/${id}`, { method: 'DELETE' });
           state.sel.delete(id);
           toast('已删除');
-          await refresh();
+          await refreshAfterCommit('记录已删除，但列表刷新失败；请重新连接，不要重复删除');
         });
         break;
       }
@@ -1575,7 +1585,7 @@ document.addEventListener('click', async (e) => {
         confirmModal('删除资源', '请先解除关联后再删除。删除后的原 PDF 仍可从历史完整备份恢复。', async () => {
           await api(`/api/pool/${kind}/${id}`, { method: 'DELETE' });
           toast('已删除');
-          await refresh();
+          await refreshAfterCommit('资源已删除，但列表刷新失败；请重新连接，不要重复删除');
         });
         break;
       }
@@ -1592,13 +1602,15 @@ document.addEventListener('change', async (e) => {
   if (action === 'pool-item-status' || action === 'rec-status') t.disabled = true;
   try {
     if (action === 'pool-item-status') {
-      await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
+      const item = state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id));
+      await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: item?.version } });
       toast('状态已更新');
-      await refresh();
+      await refreshAfterCommit('状态已更新，但列表刷新失败；请重新连接，不要重复修改');
     } else if (action === 'rec-status') {
-      await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
+      const record = state.records.find(r=>r.id===Number(t.dataset.id));
+      await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: record?.version } });
       toast('状态已更新');
-      await refresh();
+      await refreshAfterCommit('状态已更新，但列表刷新失败；请重新连接，不要重复修改');
     } else if (action === 'toggle-col') {
       const key = t.dataset.col;
       if (RECORD_COLUMNS.some((column) => column.key === key)) {
