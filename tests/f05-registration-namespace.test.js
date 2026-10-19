@@ -146,6 +146,27 @@ test('F05: unscoped registration number cannot bypass a scoped record and vice v
   assert.match(laterScoped.value.error, /注册号/);
 });
 
+test('F05: same user cannot silently rename/overwrite an unscoped company merely because the bare number matches', async () => {
+  const first = await importLicense('f05-c', {
+    name: 'Legacy Same User Original',
+    legal_name: 'Legacy Same User Original',
+    cvr: '88112233',
+  });
+  assert.equal(first.status, 200);
+
+  const second = await importLicense('f05-c', {
+    name: 'Completely Different Legacy Company',
+    legal_name: 'Completely Different Legacy Company',
+    cvr: '88112233',
+  });
+  assert.equal(second.status, 409, '历史裸号相同但名称不同不能自动覆盖本人旧资料');
+
+  const boot = await api('f05-c', 'GET', '/api/bootstrap');
+  const originals = boot.value.pools.licenses.filter((item) => item.cvr === '88112233');
+  assert.equal(originals.length, 1);
+  assert.equal(originals[0].name, 'Legacy Same User Original');
+});
+
 test('F05: historical unscoped row can be explicitly enriched, then a different namespace with same bare number is allowed', async () => {
   const owner = service.db.prepare("SELECT id FROM users WHERE username='f05-a'").get().id;
   service.db.prepare(`
