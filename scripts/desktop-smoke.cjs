@@ -157,7 +157,13 @@ const { certificate } = require('../tests/pdf-fixture');
     assert.ok(!JSON.stringify(snapshot).includes('second@example.com'));
     console.log('PASS native complete backup includes original PDF');
 
-    await page.locator('[data-action="nav"][data-page="workbench"]').first().click();
+    // 审计 F30：界面入口重构后「工作台」已拆成 records / create 两页，
+    // data-page="workbench" 不复存在，这里会一直等到超时，进而把远程回归与
+    // Windows 打包一起跳过（CI run 39233574665）。
+    // 本段的操作目的是「新建一条账号记录」，所以目标是 create 页。
+    // 不用可访问名称定位：工具栏里另有一个「＋ 新建记录」按钮，同名会造成歧义；
+    // data-page 是导航模板固有属性（public/app.js:279），比文案稳定。
+    await page.locator('[data-action="nav"][data-page="create"]').first().click();
     await page.locator('#f-country').fill('丹麦');
     await page.locator('#f-product').fill('测试产品');
     await page.locator('#f-domains').fill('test.example');
