@@ -14,7 +14,7 @@ const {certificate}=require('../tests/pdf-fixture');
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.getByText('已连接',{exact:true}).waitFor();
     await page.evaluate(async()=>{
-      await api('/api/import/emails',{method:'POST',body:{items:[{user:'picker-a@example.test'},{user:'picker-b@example.test'}]}});
+      await api('/api/import/emails',{method:'POST',body:{items:[{user:'picker-a@example.test'},{user:'picker-b@example.test'},{user:'fixture-c@example.test'},{user:'fixture-d@example.test'},{user:'fixture-e@example.test'}]}});
       await refresh();
     });
     await page.locator('#nav [data-page="create"]').click();
