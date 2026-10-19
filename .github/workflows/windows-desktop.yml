@@ -28,6 +28,8 @@ jobs:
       - run: npm run test:desktop:remote
       - name: Picker cancellation, maintenance response and saved-refresh regression
         run: npm run test:round73
+      - name: Server-paged records, cross-page selection and off-page resource occupancy
+        run: npm run test:f15
       - name: Build preconfigured Windows application without publishing
         run: npm run build:win
         env:
