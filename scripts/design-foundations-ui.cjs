@@ -89,6 +89,28 @@ const { _electron } = require('playwright');
       await page.screenshot({ path: path.join(process.env.UI_SCREENSHOT_DIR, 'design-foundations-overview.png') });
     }
     console.log('PASS desktop screenshot and table overflow smoke');
+    await page.setViewportSize({ width: 800, height: 720 });
+    const narrow = await page.evaluate(() => {
+      const nav = document.querySelector('#nav .nav-item');
+      const visible = [...document.querySelectorAll('.sidebar-foot .ghost-btn')]
+        .filter(button => getComputedStyle(button).display !== 'none')
+        .map(button => ({ label: button.textContent.trim(), size: parseFloat(getComputedStyle(button).fontSize) }));
+      return {
+        navText: nav?.textContent.trim() || '',
+        navSize: parseFloat(getComputedStyle(nav).fontSize),
+        sidebarWidth: document.querySelector('.sidebar').getBoundingClientRect().width,
+        buttons: visible,
+      };
+    });
+    assert.ok(narrow.navText.length > 1);
+    assert.ok(narrow.navSize >= 12);
+    assert.ok(narrow.sidebarWidth >= 170);
+    assert.ok(narrow.buttons.every(x => x.size >= 11),
+      'narrow desktop must not collapse utility actions into unreadable zero-size text');
+    if (process.env.UI_SCREENSHOT_DIR) {
+      await page.screenshot({ path: path.join(process.env.UI_SCREENSHOT_DIR, 'design-foundations-narrow.png') });
+    }
+    console.log('PASS narrow desktop retains labelled navigation and settings');
   } finally {
     if (electron) await electron.close();
     fs.rmSync(directory, { recursive: true, force: true });
