@@ -673,7 +673,7 @@ function normalizeImport(type, item) {
     row.zip = row.zip.replace(/^DK-/i, '');
     row.jurisdiction = dedup.normalizeJurisdiction(row.jurisdiction);
     row.registration_type = dedup.normalizeRegistrationType(row.registration_type);
-    row.registration_authority = dedup.normalizeRegistrationAuthority(row.registration_authority);
+    if (row.registration_authority.length > 160) return reply400('登记机关名称过长');
     if (row.cvr && row.registration_type === 'CVR' && !row.jurisdiction) row.jurisdiction = 'DK';
     const hasScope = !!(row.jurisdiction || row.registration_type || row.registration_authority);
     if (!row.cvr && hasScope) return reply400('填写注册国家、编号类型或登记机关时必须同时填写注册号');
