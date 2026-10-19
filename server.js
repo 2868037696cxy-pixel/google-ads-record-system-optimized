@@ -1587,7 +1587,13 @@ fastify.delete('/api/records/:id', async (req) => {
 
 fastify.post('/api/export/adspower', async (req) => {
   const ownerId = currentUserId(req);
-  if(req.url.split('?')[0]==='/api/export/adspower') requireUnlocked(req);
+  // 无条件二次授权（审计 F01）。原先写的是
+  //   if (req.url.split('?')[0] === '/api/export/adspower') requireUnlocked(req);
+  // 这是真实的绕过面：路由器按**解码后**的路径匹配路由，而 req.url 仍是编码态，
+  // 于是 POST /%61pi/export/adspower 会命中本 handler 却跳过解锁，
+  // 直接把邮箱密码、2FA 与代理密码以 text 字符串返回（JSON 脱敏洗不到它）。
+  // 此刻已经在 handler 内部，路径比较本身就没有存在理由，删掉即可。
+  requireUnlocked(req);
   if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
   const ids = new Set((req.body?.ids || []).map(Number));
   const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
@@ -1598,7 +1604,11 @@ fastify.post('/api/export/adspower', async (req) => {
 
 fastify.post('/api/export/csv', async (req) => {
   const ownerId = currentUserId(req);
-  if(req.url.split('?')[0]==='/api/export/adspower') requireUnlocked(req);
+  // 原先这里有一句 `if (req.url… === '/api/export/adspower') requireUnlocked(req)`，
+  // 但它位于 /api/export/csv 的 handler 内——那个条件在本路由上永远不成立，是死代码
+  // （审计 F01 修改动作 2）。已删除。
+  // CSV 不需要二次解锁：buildCsv 在映射阶段就把 email_pass / email_fakey /
+  // proxy_pass / id_card 清空（见 server.js:981），输出里本来就不含凭据。
   if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
   const ids = new Set((req.body?.ids || []).map(Number));
   const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
