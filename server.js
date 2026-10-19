@@ -1030,7 +1030,19 @@ fastify.addHook('onRequest', async (req, reply) => {
     return rejectEarly(reply, 400, { error: '不支持的请求目标形式' });
   }
 
-  if (!req.url.startsWith('/api/')) return;
+  // 鉴权判断必须建立在「解码后」的路径上，否则会与路由判断分歧：find-my-way 会解码
+  // 百分号编码后再路由，实测 `GET /%61pi/bootstrap`（%61='a'）被交给 /api/bootstrap
+  // 的 handler，而未解码的 req.url 不以 /api/ 开头 —— 原先这里直接 return，导致桌面
+  // 令牌、CSRF、会话鉴权、限速被整体跳过，onSend 的 Cache-Control: no-store 也一并
+  // 失效（实测该路径返回 200 且响应头里确实没有 no-store）。解码失败一律 400。
+  let pathname;
+  try {
+    pathname = decodeURIComponent(req.url.split('?')[0]);
+  } catch {
+    return rejectEarly(reply, 400, { error: '不支持的请求目标形式' });
+  }
+
+  if (!pathname.startsWith('/api/')) return;
 
   // 桌面版仍要求携带本机令牌；网页版没有令牌，这一层自动跳过
   if (desktopToken && !isDesktopRequest(req)) {
@@ -1043,7 +1055,6 @@ fastify.addHook('onRequest', async (req, reply) => {
     return rejectEarly(reply, 403, { error: '请求缺少来源标记，请刷新页面后重试' });
   }
 
-  const pathname = req.url.split('?')[0];
   if (PUBLIC_PATHS.has(pathname) || isDesktopRequest(req)) return;
 
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
@@ -1058,7 +1069,10 @@ fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('Referrer-Policy', 'same-origin');
   reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
-  if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+  // 与 onRequest 同理：响应的 no-store 也按解码后的路径判断，否则编码路径会绕过它。
+  let sendPath = req.url.split('?')[0];
+  try { sendPath = decodeURIComponent(sendPath); } catch { /* 畸形序列不在此处报错 */ }
+  if (sendPath.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
   return payload;
 });
 

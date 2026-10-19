@@ -122,6 +122,16 @@ describe('静态资源与会话', () => {
     // 对照：同一写请求改用 origin-form，应被 CSRF 层挡在 403（说明差异只来自请求行形式）
     const writeOrigin = await rawRequest(port, 'POST /api/backup/restore HTTP/1.1', writeHeaders, snapshot);
     assert.match(writeOrigin, /^HTTP\/1\.1 403/, `origin-form 写请求应被 CSRF 拦下，实际：${writeOrigin}`);
+
+    // 编码路径：find-my-way 会解码 %61='a'，把 /%61pi/bootstrap 交给 /api/bootstrap 的
+    // handler，而未解码的 req.url 不以 /api/ 开头 —— 鉴权判断与路由判断就此分歧。
+    // 修复前实测返回 200 且响应头缺少 cache-control: no-store（onSend 判断同样被跳过）。
+    for (const target of ['/%61pi/bootstrap', '/%61p%69/bootstrap']) {
+      const encoded = await rawRequest(port, `GET ${target} HTTP/1.1`, { Host: `127.0.0.1:${port}` });
+      assert.match(encoded, /^HTTP\/1\.1 401/, `编码路径 ${target} 不应绕过鉴权，实际：${encoded}`);
+    }
+    const encodedWrite = await rawRequest(port, 'POST /%61pi/backup/restore HTTP/1.1', writeHeaders, snapshot);
+    assert.match(encodedWrite, /^HTTP\/1\.1 (401|403)/, `编码路径写请求不应绕过鉴权，实际：${encodedWrite}`);
   });
 });
 
