@@ -548,6 +548,9 @@ const LIC_LABELS = {
   apt: '公寓|套房|门牌号|(?:apt|suite|unit)\\b',
   zip: '邮编|(?:postal\\s*code|zip\\s*code|zip)',
   city: '市(?:/区)?|城市|(?:city|town|municipality)',
+  jurisdiction: '注册国家(?:/地区)?|注册地区|登记地区|司法辖区|(?:registration\\s+)?jurisdiction|country\\s+of\\s+registration',
+  regtype: '注册号类型|编号类型|登记号类型|registration\\s*(?:number\\s*)?type|identifier\\s*type',
+  regauthority: '登记机关|注册机关|登记机构|注册机构|registration\\s*(?:authority|registry)|register',
   cvr: '公司注册号|企业注册号|商业注册号|注册号|登记号|统一社会信用代码|CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?|(?:company\\s+|business\\s+)?registration\\s*(?:number|no\\.?|nr\\.?)',
   type: '资料类型|(?:entity|business|organization)\\s*type|类型|type',
 };
@@ -572,6 +575,12 @@ function parseLicenses(text) {
     const flat = raw.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
     const name = licGrab(flat, LIC_LABELS.name) || licGrab(flat, LIC_LABELS.legal);
     if (!name) return [];
+    const cvr = licGrab(flat, LIC_LABELS.cvr);
+    let jurisdiction = licGrab(flat, LIC_LABELS.jurisdiction);
+    let registrationType = licGrab(flat, LIC_LABELS.regtype);
+    const explicitCvrLabel = /(?:^|[，,;；、\\s])CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?\\s*[:：=]/i.test(flat);
+    if (cvr && !registrationType && explicitCvrLabel) registrationType = 'CVR';
+    if (registrationType && dedup.normalizeRegistrationType(registrationType) === 'CVR' && !jurisdiction) jurisdiction = 'DK';
     return [{
       name,
       legal_name: licGrab(flat, LIC_LABELS.legal),
@@ -579,7 +588,10 @@ function parseLicenses(text) {
       apt: licGrab(flat, LIC_LABELS.apt),
       zip: licGrab(flat, LIC_LABELS.zip).replace(/^DK-/i, ''),
       city: licGrab(flat, LIC_LABELS.city),
-      cvr: licGrab(flat, LIC_LABELS.cvr),
+      jurisdiction,
+      registration_type: registrationType,
+      registration_authority: licGrab(flat, LIC_LABELS.regauthority),
+      cvr,
       type: licGrab(flat, LIC_LABELS.type) || '组织',
     }];
   }
@@ -604,7 +616,7 @@ const IMPORT_FIELDS = {
   emails: ['user', 'pass', 'fakey'],
   proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
   cards: ['number', 'expiry', 'last4'],
-  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
+  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr', 'jurisdiction', 'registration_type', 'registration_authority'],
 };
 
 // 同一账号内的重复判定（营业执照另外走跨用户全局判重）
@@ -612,7 +624,10 @@ const DUP_KEYS = {
   emails: (it) => (x) => x.user.toLowerCase() === it.user.toLowerCase(),
   proxies: (it) => (x) => x.host.toLowerCase() === it.host.toLowerCase() && x.port === it.port && x.user === it.user,
   cards: (it) => (x) => x.number === it.number,
-  licenses: (it) => (x) => x.name.toLowerCase() === it.name.toLowerCase(),
+  licenses: (it) => {
+    const keys = dedup.licenseKeys(it);
+    return (x) => dedup.rowMatchesKeys(x, keys);
+  },
 };
 
 /** 重复项展示用的标识（提示用户具体哪些被跳过）。 */
@@ -632,7 +647,8 @@ function batchKeyOf(type, it) {
   if (type === 'cards') return String(it.number || '');
   if (type === 'proxies') return `${String(it.host || '').toLowerCase()}|${it.port}|${it.user}`;
   const keys = dedup.licenseKeys(it);
-  return [keys.dup_name, keys.dup_cvr].filter(Boolean).join('|');
+  if (keys.dup_reg) return 'reg:' + keys.dup_reg;
+  return [keys.dup_name, keys.dup_legal].filter(Boolean).join('|');
 }
 
 function normalizeImport(type, item) {
@@ -655,6 +671,18 @@ function normalizeImport(type, item) {
     if (!row.name) return reply400('营业执照名称不能为空');
     row.legal_name ||= row.name;
     row.zip = row.zip.replace(/^DK-/i, '');
+    row.jurisdiction = dedup.normalizeJurisdiction(row.jurisdiction);
+    row.registration_type = dedup.normalizeRegistrationType(row.registration_type);
+    row.registration_authority = dedup.normalizeRegistrationAuthority(row.registration_authority);
+    if (row.cvr && row.registration_type === 'CVR' && !row.jurisdiction) row.jurisdiction = 'DK';
+    const hasScope = !!(row.jurisdiction || row.registration_type || row.registration_authority);
+    if (!row.cvr && hasScope) return reply400('填写注册国家、编号类型或登记机关时必须同时填写注册号');
+    if (row.cvr && (!!row.jurisdiction !== !!row.registration_type)) {
+      return reply400('要按国家/地区区分注册号时，请同时填写注册国家/地区和注册号类型');
+    }
+    if (row.registration_authority && !(row.jurisdiction && row.registration_type)) {
+      return reply400('填写登记机关前，请先填写注册国家/地区和注册号类型');
+    }
   }
   return row;
 }
