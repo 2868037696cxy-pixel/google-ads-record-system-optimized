@@ -3,7 +3,7 @@ const fs=require('node:fs');
 const path=require('node:path');
 const cp=require('node:child_process');
 process.chdir(path.resolve(__dirname,'../..'));
-let source=fs.readFileSync('server.js','utf8');
+let source=fs.readFileSync('server.js','utf8').replace(/\r\n/g,'\n');
 function replace(before,after) {
   if(source.includes(after)&&!source.includes(before))return;
   if(source.split(before).length!==2)throw new Error('Unexpected source at '+before.slice(0,80));
@@ -13,6 +13,11 @@ replace("  items = items.map((item) => normalizeImport(type, item));", "  const 
 replace("  const label = dupLabel(type);\n  for (const it of items) {", "  const label = dupLabel(type);\n  for (const [itemIndex, it] of items.entries()) {");
 replace("const updates = Object.fromEntries(Object.entries(it).filter(([, value]) => value !== ''));", "const updates = Object.fromEntries(Object.entries(it).filter(([key, value]) => Object.hasOwn(submittedItems[itemIndex], key) && value !== ''));" );
 replace("const updates = Object.fromEntries(Object.entries(item).filter(([, value]) => value !== ''));", "const updates = Object.fromEntries(Object.entries(item).filter(([key, value]) => Object.hasOwn(items[0], key) && value !== ''));" );
+// F11: never hand out a JSON backup which the same server is unable to accept.
+replace("  const filename = `账号工作台-${user.username}-${new Date().toISOString().slice(0, 10)}.json`;", "  requireUnlocked(req);\n  const envelope = encryptedSnapshot(ownerId);\n  const filename = `账号工作台-${user.username}-${new Date().toISOString().slice(0, 10)}.json`;");
+replace("return reply.send(JSON.stringify(encryptedSnapshot(ownerId)));", "return reply.send(JSON.stringify(envelope));");
+replace("fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 },", "fastify.post('/api/backup/restore', { bodyLimit: require('./lib/personal-backup-policy').RESTORE_BODY_LIMIT },");
+replace("  const value=snapshot(owner),vault=getVault(db);\n  return {format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),\n    counts:{records:value.records.length,licenses:value.licenses.length},\n    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)};", "  const policy = require('./lib/personal-backup-policy');\n  policy.assertDocumentBudget(db, owner);\n  const value=snapshot(owner),vault=getVault(db);\n  return policy.assertEnvelopeBudget({format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),\n    counts:{records:value.records.length,licenses:value.licenses.length},\n    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)});");
 fs.writeFileSync('server.js',source);
 cp.execFileSync(process.execPath,['--check','server.js'],{stdio:'inherit'});
-console.log('round73 import preservation: applied');
+console.log('round73 import preservation and backup size boundary: applied');
