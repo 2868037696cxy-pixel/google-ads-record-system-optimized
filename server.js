@@ -1332,13 +1332,14 @@ fastify.get('/api/bootstrap', async (req) => {
   const seq = store.nextSeq(db, ownerId);
   const summaryOnly = req.query?.summary === '1';
   const recordStats = store.countRecordsByStatus(db, ownerId);
+  const revealSecrets = req.allowSecrets === true;
   const recentRecords = summaryOnly
-    ? store.listRecordsPage(db, ownerId, { limit: 6, offset: 0, sort: 'id_desc' }).items
+    ? store.listRecordsPage(db, ownerId, { limit: 6, offset: 0, sort: 'id_desc', revealSecrets }).items
     : undefined;
   return {
     user: auth.publicUser(store.findUserById(db, ownerId)),
-    pools: store.listAllPools(db, ownerId),
-    ...(summaryOnly ? {} : { records: store.listRecords(db, ownerId) }),
+    pools: store.listAllPools(db, ownerId, { revealSecrets }),
+    ...(summaryOnly ? {} : { records: store.listRecords(db, ownerId, { revealSecrets }) }),
     counts: store.countPoolByStatus(db, ownerId),
     record_stats: recordStats,
     ...(summaryOnly ? { recent_records: recentRecords } : {}),
@@ -1378,6 +1379,7 @@ fastify.get('/api/records', async (req, reply) => {
     q: String(req.query?.q || ''),
     status: String(req.query?.status || ''),
     sort: requestedSort,
+    revealSecrets: req.allowSecrets === true,
   });
   return { ...page, limit: limit.value,
     offset: offset.value,
