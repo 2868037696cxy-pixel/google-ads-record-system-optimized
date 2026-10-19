@@ -1372,7 +1372,7 @@ fastify.get('/api/bootstrap', async (req) => {
     : undefined;
   return {
     user: auth.publicUser(store.findUserById(db, ownerId)),
-    pools: store.listAllPools(db, ownerId, { revealSecrets }),
+    pools: store.listAllPools(db, ownerId, { revealSecrets, includeUsage: true }),
     ...(summaryOnly ? {} : { records: store.listRecords(db, ownerId, { revealSecrets }) }),
     counts: store.countPoolByStatus(db, ownerId),
     record_stats: recordStats,
