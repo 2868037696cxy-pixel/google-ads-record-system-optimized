@@ -1713,8 +1713,8 @@ fastify.post('/api/export/adspower', async (req) => {
   // 此刻已经在 handler 内部，路径比较本身就没有存在理由，删掉即可。
   requireUnlocked(req);
   if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
-  const ids = new Set((req.body?.ids || []).map(Number));
-  const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
+  const ids = [...new Set((req.body?.ids || []).map(Number))];
+  const list = store.listRecordsForExport(db, ownerId, ids, { revealSecrets: true });
   if (!list.length) return reply400('没有可导出的记录');
   audit(db,ownerId,'export.credentials',String(list.length));
   return { text: buildAdspower(list), count: list.length };
@@ -1728,8 +1728,8 @@ fastify.post('/api/export/csv', async (req) => {
   // CSV 不需要二次解锁：buildCsv 在映射阶段就把 email_pass / email_fakey /
   // proxy_pass / id_card 清空（见 server.js:981），输出里本来就不含凭据。
   if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
-  const ids = new Set((req.body?.ids || []).map(Number));
-  const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
+  const ids = [...new Set((req.body?.ids || []).map(Number))];
+  const list = store.listRecordsForExport(db, ownerId, ids, { revealSecrets: false });
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildCsv(list), count: list.length };
 });
