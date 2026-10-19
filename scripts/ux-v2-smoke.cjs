@@ -94,6 +94,15 @@ function contrast(a,b) {
     assert.equal(recordMetrics.headerFont,'12px');
     assert.ok(recordMetrics.actionHeight>=32);
     assert.equal(recordMetrics.stickyColumn,'sticky');
+
+    // Presets are faster than 10 repeated checkbox interactions; custom visibility remains editable.
+    await page.locator('#recordsPanel .col-menu > summary').click();
+    await page.locator('#recordsPanel [data-action="preset-cols"][data-preset="core"]').click();
+    assert.deepEqual(await page.evaluate(()=>state.hiddenCols),['emailPass','fakey','ipreg','idcard']);
+    await page.locator('#recordsPanel .col-menu > summary').click();
+    await page.locator('#recordsPanel [data-action="reset-cols"]').click();
+    assert.deepEqual(await page.evaluate(()=>state.hiddenCols),[]);
+
     const screenshotDir=process.env.UI_SCREENSHOT_DIR;
     if(screenshotDir){
       fs.mkdirSync(screenshotDir,{recursive:true});
