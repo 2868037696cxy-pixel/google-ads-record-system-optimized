@@ -61,6 +61,16 @@ test('筛选：按状态与关键字，并且两者可叠加',async()=>{
   assert.equal(both.data.items[0].domain,'d3.shop');
 });
 
+test('分页筛选参数：非法状态和超长搜索词必须明确 400',async()=>{
+  const badStatus=await get('?status='+encodeURIComponent('不存在状态'));
+  assert.equal(badStatus.status,400);
+  assert.match(String(badStatus.data.error||''),/status/);
+
+  const longQ=await get('?q='+encodeURIComponent('x'.repeat(201)));
+  assert.equal(longQ.status,400);
+  assert.match(String(longQ.data.error||''),/200/);
+});
+
 test('隔离：分页只能看到自己的记录，未登录一律 401',async()=>{
   assert.equal((await get('?limit=200')).data.total,12);
   const other=await register('other-pager');
