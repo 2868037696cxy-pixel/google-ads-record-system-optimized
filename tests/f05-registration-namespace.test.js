@@ -223,6 +223,29 @@ test('F05: CVR parser infers DK/CVR while generic registration number remains un
   assert.equal(generic.value.items[0].cvr, 'AA990011');
 });
 
+test('F05: concurrent exact-scope and legacy-vs-scoped submissions still produce a single winner', async () => {
+  const exact = await Promise.all([
+    importLicense('f05-b', {
+      name: 'Concurrent Exact One', cvr: '99223344', jurisdiction: 'DK', registration_type: 'CVR',
+    }),
+    importLicense('f05-c', {
+      name: 'Concurrent Exact Two', cvr: '99223344', jurisdiction: 'DK', registration_type: 'CVR',
+    }),
+  ]);
+  assert.deepEqual(exact.map((item) => item.status).sort(), [200, 409]);
+
+  const ambiguous = await Promise.all([
+    importLicense('f05-b', {
+      name: 'Concurrent Legacy Number', cvr: '99334455',
+    }),
+    importLicense('f05-c', {
+      name: 'Concurrent Scoped Number', cvr: '99334455', jurisdiction: 'PL', registration_type: 'KRS',
+    }),
+  ]);
+  assert.deepEqual(ambiguous.map((item) => item.status).sort(), [200, 409],
+    '裸号与已分域同号并发时也只能有一个进入数据库');
+});
+
 test('F05: database no longer has global unique bare-number index and has unique namespaced key', () => {
   const indexes = service.db.prepare("PRAGMA index_list('licenses')").all();
   const old = indexes.find((item) => item.name === 'uq_licenses_dup_cvr');
