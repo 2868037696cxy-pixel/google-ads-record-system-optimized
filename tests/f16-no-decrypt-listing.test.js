@@ -82,6 +82,16 @@ test('F16: ordinary bootstrap and paged records never decrypt secrets; reveal do
     assert.equal(page.value.items[0].email_pass, PROTECTED);
     assert.equal(opens, 0, '普通分页列表不应先解密记录凭据');
 
+    const store = require('../lib/store');
+    const ownerId = service.db.prepare("SELECT id FROM users WHERE username='f16-user'").get().id;
+    const rawCipher = service.db.prepare('SELECT email_pass FROM records WHERE owner_id=? LIMIT 1').get(ownerId).email_pass;
+    assert.notEqual(rawCipher, PROTECTED, '前提：数据库中保存的应是密文而不是占位符');
+    const directPage = store.listRecordsPage(service.db, ownerId, { limit: 50, offset: 0, revealSecrets: false });
+    assert.equal(directPage.items[0].email_pass, PROTECTED,
+      '仓储分页层本身就应返回占位符，不能依赖 HTTP onSend 才遮掉密文');
+    assert.ok(!JSON.stringify(directPage).includes(rawCipher),
+      '普通分页结果对象不应携带数据库密文');
+
     const csv = await api('POST', '/api/export/csv', { ids: [page.value.items[0].id] });
     assert.equal(csv.status, 200);
     assert.equal(opens, 0, '普通 CSV 本来就不输出密码，不应为了导出再解密密码');
