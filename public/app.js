@@ -131,7 +131,7 @@ const KINDS = [
 ];
 
 const state = {
-  page: 'workbench',
+  page: 'records',
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
   records: [],
   next: null,
@@ -228,8 +228,9 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 
 function renderNav() {
   const main = [
+    { key: 'records', label: '我的记录', ico: '▤', count: state.records.length },
+    { key: 'create', label: '新建记录', ico: '＋', count: '' },
     { key: 'overview', label: '运营总览', ico: '◈', count: '' },
-    { key: 'workbench', label: '创建与记录', ico: '◧', count: state.records.length },
   ];
   const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
   const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}" ${state.page === it.key ? 'aria-current="page"' : ''}>
@@ -258,10 +259,14 @@ function renderAccount() {
 }
 
 function render() {
+  const main = document.getElementById('main');
+  // 页面键写到 main 上：「我的记录」与「新建记录」共用同一份渲染与统计条，
+  // 由 CSS 决定露出哪一块面板，避免把资源统计复制成两份、后续改漏一边。
+  if (main) main.className = `main page-${state.page}`;
   renderNav();
   renderAccount();
   if (state.page === 'overview') renderOverview();
-  else if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
+  else if (state.page === 'records' || state.page === 'create') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
 }
 
@@ -315,7 +320,7 @@ function renderOverview() {
     <div class="page-head">
       <div><h1>运营总览</h1><p class="sub">账号状态、资源库存、待办事项 · 当前账号可见范围</p></div>
       <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
-      <button class="btn btn-primary" data-action="nav" data-page="workbench">＋ 创建账号记录</button></div>
+      <button class="btn btn-primary" data-action="nav" data-page="create">＋ 创建账号记录</button></div>
     </div>
     <div class="overview-metrics">
       <div class="overview-metric"><span>账号记录</span><b>${records.length}</b><small>已建档总数</small></div>
@@ -337,13 +342,13 @@ function renderOverview() {
       </section>
     </div>
     <section class="panel overview-recent">
-      <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="workbench">查看全部 →</button></div>
+      <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="records">查看全部 →</button></div>
       ${recent.length ? recent.map(r => `<div class="overview-recent-row">
         <span class="overview-recent-icon" aria-hidden="true">◧</span>
         <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
         <span class="overview-status">${esc(r.status)}</span>
         <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>
-      </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="workbench">开始创建</button></div>'}
+      </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="create">开始创建</button></div>'}
     </section>`;
 }
 
@@ -393,18 +398,22 @@ function renderWorkbench() {
     return `<span class="mini">记录中代理字段留空</span>`;
   };
 
-  const filtered = getFilteredRecords();
+  const filtered = state.page === 'create' ? [] : getFilteredRecords();
 
   const todayCN = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
 
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>工作台</h1>
-        <p class="sub">指纹名称按今日日期自动生成，资源按状态分组、自动分配</p>
+        <h1>${state.page === 'create' ? '新建记录' : '我的记录'}</h1>
+        <p class="sub">${state.page === 'create'
+          ? '指纹名称按今日日期自动生成，资源按状态分组、自动分配'
+          : '查记录、看状态、处理异常优先；需要录入新记录时走「新建记录」'}</p>
       </div>
       <div class="head-actions">
-        <button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>
+        ${state.page === 'create'
+          ? '<button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>'
+          : '<button class="btn btn-primary" data-action="nav" data-page="create">＋ 新建记录</button><button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>'}
         <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
       </div>
     </div>
@@ -424,7 +433,7 @@ function renderWorkbench() {
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
               { n: '03', t: '导入付款工具', d: '工具别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
-              { n: '04', t: '创建记录', d: '回到本页填写国家/产品/域名，指纹名称按今天日期自动生成', k: '' },
+              { n: '04', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
             ]
               .map(
                 (s) => `<div class="step-card" ${s.k ? `data-action="nav" data-page="${s.k}"` : ''}>
@@ -436,7 +445,7 @@ function renderWorkbench() {
         : ''
     }
 
-    <div class="panel">
+    <div class="panel" id="createPanel">
       <div class="panel-head">
         <div class="panel-title">快速创建 <span class="tag">指纹名称自动生成</span></div>
         <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 付款工具 / 营业执照自动按顺序分配并标记已使用</span>
@@ -505,7 +514,7 @@ function renderWorkbench() {
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="recordsPanel">
       <div class="panel-head">
         <div class="panel-title">账号记录 <span class="overview-title-count">${filtered.length} / ${state.records.length} 条</span></div>
       </div>
@@ -1293,13 +1302,13 @@ document.addEventListener('click', async (e) => {
         break;
       }
       case 'jump-status':
-        state.page = 'workbench'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
+        state.page = 'records'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
         render();
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
       case 'recent-record':
         state.q = state.records.find(r => r.id === Number(t.dataset.id))?.fingerprint || '';
-        state.rstatus = '全部'; state.recordPage = 1; state.page = 'workbench';
+        state.rstatus = '全部'; state.recordPage = 1; state.page = 'records';
         render();
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;

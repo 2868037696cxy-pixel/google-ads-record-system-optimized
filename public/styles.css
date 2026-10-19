@@ -1505,3 +1505,9 @@ input[type=checkbox]{min-width:16px;min-height:16px}
 .modal-body label{display:block;margin:6px 0}
 .btn:disabled{cursor:not-allowed}
 @media(max-height:800px){.sidebar>.sidebar-foot{max-height:48vh;font-size:12px;gap:5px}}
+
+/* ---- 我的记录 / 新建记录：共用同一份渲染与统计条，按页面键决定露出哪一块面板 ----
+   方案工作包 06「信息架构」：默认进入「我的记录」，创建表单不再压在记录列表上方。
+   两块面板由同一个函数产出，资源统计只有一份，避免拆成两个渲染函数后改漏一边。 */
+.page-records #createPanel { display: none; }
+.page-create  #recordsPanel { display: none; }

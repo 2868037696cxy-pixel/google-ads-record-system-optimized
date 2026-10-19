@@ -16,7 +16,7 @@ const OUT = path.join(__dirname, '..', '.shots');
 fs.mkdirSync(OUT, { recursive: true });
 service_placeholder: {
   // 只清理本轮要覆盖的文件
-  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-工作台.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png']) {
+  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-我的记录.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png', 'r11-新建记录.png']) {
     const file = path.join(OUT, name);
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
@@ -119,16 +119,39 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-workbench': '1' }, body: JSON.stringify(body) }).then((r) => r.status);
     await post('/api/import/emails', { items: Array.from({ length: 12 }, (_, i) => ({ user: 'ads' + (i + 1) + '@gmail.com', pass: 'Passw0rd!' + i, fakey: 'JBSWY3DPEHPK3PXP' })) });
     await post('/api/import/cards', { items: Array.from({ length: 6 }, (_, i) => ({ number: '43679701526190' + (10 + i), expiry: '0' + (i % 9 + 1) + '/28', cvv: '00' + i })) });
-    await post('/api/import/licenses', { items: [{ name: 'Nordlys Handel ApS', legal_name: 'Nordlys Handel ApS', address: 'Nørregade 12', city: 'Aarhus', zip: '8000', cvr: '41234567' }] });
-    await post('/api/records', { domains: ['nordlys-shop.com', 'fjord-market.dk', 'kbh-tech.eu'], country: '丹麦', product: '呼吸机' });
+    // 建记录会按顺序占用邮箱/付款工具/营业执照，夹具必须够 3 条，否则记录表是空的
+    await post('/api/import/licenses', { items: [
+      { name: 'Nordlys Handel ApS', legal_name: 'Nordlys Handel ApS', address: 'Nørregade 12', city: 'Aarhus', zip: '8000', cvr: '41234567' },
+      { name: 'Fjord Market ApS', legal_name: 'Fjord Market ApS', address: 'Havnegade 4', city: 'Aalborg', zip: '9000', cvr: '42345678' },
+      { name: 'KBH Tech ApS', legal_name: 'KBH Tech ApS', address: 'Nørrebrogade 88', city: 'København', zip: '2200', cvr: '43456789' },
+    ] });
+    const created = await post('/api/records', { domains: ['nordlys-shop.com', 'fjord-market.dk', 'kbh-tech.eu'], country: '丹麦', product: '呼吸机' });
+    if (created !== 200) throw new Error('渲染夹具创建记录失败，HTTP ' + created);
     return true;
   })()`);
 
   await goto(origin + '/');
-  await waitFor('document.querySelectorAll("#nav .nav-item").length >= 5', '工作台');
+  await waitFor('document.querySelectorAll("#nav .nav-item").length >= 5', '我的记录');
   await sleep(800);
-  await shot('r3-工作台.png', 1440, 1000);
-  // 精确校验吸底操作条：主按钮必须落在视口内，而不是滚到底才看得到
+  // 默认入口必须是「我的记录」：记录表格在，创建表单不在（方案工作包 06「信息架构」）
+  console.log('   默认入口:', JSON.stringify(await evaluate(`(() => {
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none';
+    return {
+      page: document.getElementById('main').className,
+      active: (document.querySelector('#nav .nav-item.active') || {}).textContent?.trim(),
+      title: document.querySelector('.page-head h1')?.textContent.trim(),
+      rows: document.querySelectorAll('#recordsPanel tbody tr').length,
+      headerCount: document.querySelector('#recordsPanel .overview-title-count')?.textContent.trim(),
+      selCount: document.querySelector('#recordsPanel .sel-count')?.textContent.trim(),
+      createVisible: vis(document.getElementById('createPanel')),
+      recordsVisible: vis(document.getElementById('recordsPanel')),
+    };
+  })()`)));
+  await shot('r3-我的记录.png', 1440, 1000);
+
+  // 新建记录页：创建表单在、记录表格不在；吸底操作条必须落在视口内（不能滚到底才看得到）
+  await evaluate(`document.querySelector('#nav [data-page="create"]')?.click()`);
+  await sleep(700);
   const sticky = await evaluate(`(() => {
     const el = document.querySelector('.create-preview');
     if (!el) return 'missing';
@@ -136,7 +159,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: window.innerHeight, pinned: r.bottom <= window.innerHeight + 1 };
   })()`);
   console.log('   吸底操作条:', JSON.stringify(sticky));
-  await evaluate(`document.querySelectorAll('#nav .nav-item')[1]?.click()`);
+  console.log('   新建记录页:', JSON.stringify(await evaluate(`(() => {
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none';
+    return {
+      title: document.querySelector('.page-head h1')?.textContent.trim(),
+      createVisible: vis(document.getElementById('createPanel')),
+      recordsVisible: vis(document.getElementById('recordsPanel')),
+    };
+  })()`)));
+  await shot('r11-新建记录.png', 1440, 1000);
+
+  // 资源库用 data-page 定位：导航项下标会随信息架构调整而变，不可依赖
+  await evaluate(`document.querySelector('#nav [data-page="emails"]')?.click()`);
   await sleep(700);
   await shot('r4-邮箱库.png', 1440, 1000);
 
