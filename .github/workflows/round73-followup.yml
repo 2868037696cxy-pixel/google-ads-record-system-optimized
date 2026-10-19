@@ -7,6 +7,7 @@ on:
       - 'scripts/maintenance/**'
       - 'scripts/round73-*.cjs'
       - 'tests/round73-*.test.js'
+      - 'lib/personal-backup-policy.js'
 permissions:
   contents: read
 concurrency:
@@ -32,17 +33,7 @@ jobs:
       - run: npm ci --omit=dev --ignore-scripts
       - name: Confirm original defects before applying changes
         if: matrix.node == '24'
-        run: |
-          node <<'JS'
-          const cp=require('node:child_process'),fs=require('node:fs');
-          const probes=['F08: CVR after city','F04-PDF: direct PDF upload','F09-STRUCTURE: forged header','F13: structured field objects','F23: successful PDF'];
-          for(let i=0;i<probes.length;i++){
-            const r=cp.spawnSync(process.execPath,['--test','--test-reporter=tap','--test-name-pattern',probes[i],'tests/round73-regressions.test.js'],{encoding:'utf8',timeout:120000});
-            const text=(r.stdout||'')+(r.stderr||'');fs.writeFileSync(`test-artifacts/round73/baseline-${i}.txt`,text);
-            if(r.status!==1 || !text.includes('ERR_ASSERTION'))throw new Error(`Baseline ${probes[i]} did not fail with an assertion; do not claim a verified fix.\n${text.slice(-5000)}`);
-            console.log('CONFIRMED unpatched failure:',probes[i]);
-          }
-          JS
+        run: node scripts/round73-baseline.cjs
       - name: Apply deterministic source fixes
         run: |
           node scripts/maintenance/apply-round73.cjs
