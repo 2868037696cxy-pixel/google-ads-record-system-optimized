@@ -886,6 +886,9 @@ function releaseIfUnused(ownerId, prefix, oldId, excludeRecId) {
 }
 
 function updateRecord(ownerId, id, body) {
+  // 自守：目前唯一调用方（PATCH /api/records/:id）已在路由层校验，但本函数内部直接
+  // 取字段并用了 `k in body`；把守卫放在函数边界，将来新增调用方不会重新引入 500。
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: '请求体必须是一个 JSON 对象' };
   const rec = store.getRecord(db, ownerId, id);
   if (!rec) return { error: '记录不存在' };
 
