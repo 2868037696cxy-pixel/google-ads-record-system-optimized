@@ -337,7 +337,13 @@ async function loadRecordsPage({ renderMode = 'none' } = {}) {
   if (state.rstatus !== '全部') params.set('status', state.rstatus);
   if (state.reveal) params.set('reveal', '1');
 
-  const data = await api('/api/records?' + params.toString());
+  let data;
+  try {
+    data = await api('/api/records?' + params.toString());
+  } catch (error) {
+    if (requestId !== recordRequestSeq) return false;
+    throw error;
+  }
   if (requestId !== recordRequestSeq) return false;
   if (!data || !Array.isArray(data.items) || !Number.isSafeInteger(Number(data.total)) || Number(data.total) < 0) {
     throw new Error('记录分页数据格式不正确');
