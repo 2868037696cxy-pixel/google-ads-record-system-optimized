@@ -165,7 +165,19 @@ function parseEmailLine(line) {
     const restStr = t.slice(t.indexOf(parts[1])).trim();
     if (/^[^@\s]+@[^\s:@]+:\d{1,5}$/.test(restStr)) return null;
   }
-  return { user: parts[0], pass: parts[1] || '', fakey: parts[2] || '' };
+  // 审计 F14：原来机械取 parts[1]/parts[2]，密码里只要含分隔符就会被截断，
+  // 碎片还会被当成 2FA 写进 fakey（"pa:ss" → pass="pa", fakey="ss"）。
+  // 改为先取"邮箱之后的原文"，只有当尾部确实像一个 2FA 令牌时才单列，
+  // 其余整段视为密码 —— 这样密码内部的分隔符得以保留。
+  // 2FA 令牌的形状是可识别的：base32 大写串（16-32 位）或 6-8 位数字。
+  const at = t.indexOf(parts[0]);
+  let rest = (at >= 0 ? t.slice(at + parts[0].length) : parts.slice(1).join(' ')).trim();
+  rest = rest.replace(/^[\s:：|=,，;；\-–—\t|]+/, '').trim();
+  const twofa = rest.match(/[\s:：|=,，;；\-–—\t|]+([A-Z2-7]{16,32}|\d{6,8})$/);
+  if (twofa && rest.length > twofa[0].length) {
+    return { user: parts[0], pass: rest.slice(0, rest.length - twofa[0].length).trim(), fakey: twofa[1] };
+  }
+  return { user: parts[0], pass: rest, fakey: '' };
 }
 
 function parseEmails(text) {

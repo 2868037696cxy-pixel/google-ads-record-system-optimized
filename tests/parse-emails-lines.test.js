@@ -62,14 +62,21 @@ test('只有两列时 2FA 必须留空，不能把空串当成密钥', async () 
   assert.equal(rows[0].fakey, '', `无 2FA 时 fakey 应为空串，实际 ${JSON.stringify(rows[0].fakey)}`);
 });
 
-test('现状记录（即 F14 缺陷）：密码含分隔符会被截断，碎片落进 2FA 字段', async () => {
-  // 这一条断言的正是**有问题的现状**，不是期望行为。
-  // 密码 "pa:ss" 被 ':' 切成两段，于是 pass 只剩 "pa"，"ss" 被当成 2FA。
+test('密码含分隔符时不得截断，也不得污染 2FA（F14 修复目标）', async () => {
+  // 第 69 轮这条记为"现状记录"（当时 pass="pa"、fakey="ss"）。第 70 轮修好实现后
+  // 期望翻转为完整密码 —— 这个翻转就是 F14 闭环的证据。
   const rows = await parseEmails('ok3@example.test pa:ss');
   assert.equal(rows.length, 1);
   assert.equal(rows[0].user, 'ok3@example.test');
-  assert.equal(rows[0].pass, 'pa',
-    `现状应为截断后的 "pa"；若这里变成完整密码，说明 F14 已被修复，请同步更新本用例`);
-  assert.equal(rows[0].fakey, 'ss',
-    `现状应为被污染的 2FA "ss"；若变成空串，说明 F14 已修复，请同步更新本用例`);
+  assert.equal(rows[0].pass, 'pa:ss',
+    `密码被截断成 ${JSON.stringify(rows[0].pass)}，应保留完整的 "pa:ss"（审计 F14）`);
+  assert.equal(rows[0].fakey, '',
+    `2FA 被密码碎片污染成 ${JSON.stringify(rows[0].fakey)}，应为空串`);
+});
+
+test('密码含分隔符、同时确有 2FA 时，两者都要正确', async () => {
+  const rows = await parseEmails('ok4@example.test pa ss:word JBSWY3DPEHPK3PXP');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].pass, 'pa ss:word', `密码应为 "pa ss:word"，实际 ${JSON.stringify(rows[0].pass)}`);
+  assert.equal(rows[0].fakey, 'JBSWY3DPEHPK3PXP', `2FA 应被识别出来，实际 ${JSON.stringify(rows[0].fakey)}`);
 });
