@@ -858,6 +858,22 @@ function pickPool(pool, ids, count, label) {
 }
 
 function createRecords(ownerId, body) {
+  for (const key of ['country','product','date_key','fp_prefix','ip_reg_time','id_card','proxy_mode']) {
+    if (Object.hasOwn(body, key) && body[key] != null && typeof body[key] !== 'string') {
+      return { error: `${key} 必须为文本` };
+    }
+    if (typeof body[key] === 'string' && body[key].length > 8192) return { error: `${key} 过长` };
+  }
+  if (body.domains !== undefined && !Array.isArray(body.domains) && typeof body.domains !== 'string') {
+    return { error: 'domains 必须为文本或文本数组' };
+  }
+  if (Array.isArray(body.domains) && body.domains.some((item) => typeof item !== 'string')) {
+    return { error: 'domains 数组只能包含文本' };
+  }
+  if (body.proxy_mode !== undefined && !['shared','auto','none'].includes(body.proxy_mode)) {
+    return { error: '代理模式无效' };
+  }
+
   const country = String(body.country || '').trim();
   const product = String(body.product || '').trim();
   const rawDomains = Array.isArray(body.domains)
@@ -897,7 +913,7 @@ function createRecords(ownerId, body) {
   const pickedLic = pickPool(licenses, body.license_ids, count, '可用营业执照');
   if (pickedLic.error) return { error: pickedLic.error };
 
-  const proxyMode = ['shared', 'auto', 'none'].includes(body.proxy_mode) ? body.proxy_mode : 'shared';
+  const proxyMode = body.proxy_mode || 'shared';
   let sharedProxy = null;
   if (proxyMode === 'shared') {
     if (body.proxy_id !== undefined && body.proxy_id !== null) {
@@ -1015,9 +1031,12 @@ function updateRecord(ownerId, id, body) {
 
   const patch = {};
   for (const k of ['country', 'product', 'domain', 'ip_reg_time', 'id_card', 'status']) {
-    if (k in body) patch[k] = String(body[k] ?? '').trim();
+    if (!(k in body)) continue;
+    if (body[k] != null && typeof body[k] !== 'string') return { error: `${k} 必须为文本` };
+    if (typeof body[k] === 'string' && body[k].length > 8192) return { error: `${k} 过长` };
+    patch[k] = String(body[k] ?? '').trim();
   }
-  if ('status' in patch && !RECORD_STATUSES.includes(patch.status)) patch.status = '正常';
+  if ('status' in patch && !RECORD_STATUSES.includes(patch.status)) return { error: '无效记录状态' };
 
   const reassign = (prefix, kind, newId) => {
     if (newId === undefined) return;
@@ -1439,18 +1458,14 @@ fastify.get('/api/records', async (req, reply) => {
     sort: Object.hasOwn(store.RECORD_SORTS, requestedSort) ? requestedSort : 'id_desc' };
 });
 
-fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
+fastify.post('/api/parse/auto', async (req) => {
+  if (req.body?.text !== undefined && typeof req.body.text !== 'string') return reply400('text 必须为文本');
+  return parseAuto(req.body?.text);
+});
 fastify.post('/api/import/auto', async (req) => {
   const ownerId = currentUserId(req);
-  let emails = Array.isArray(req.body?.emails)
-    ? req.body.emails.filter((e) => e && e.user).map((x) => ({ user: String(x.user).trim(), pass: String(x.pass || ''), fakey: String(x.fakey || '') }))
-    : null;
-  let proxies = Array.isArray(req.body?.proxies)
-    ? req.body.proxies.filter((p) => p && p.host).map((x) => ({
-        sn: String(x.sn || ''), type: String(x.type || ''), host: String(x.host), port: String(x.port || ''),
-        user: String(x.user || ''), pass: String(x.pass || ''), country: String(x.country || ''), ip: String(x.ip || ''),
-      }))
-    : null;
+  let emails = Array.isArray(req.body?.emails) ? req.body.emails : null;
+  let proxies = Array.isArray(req.body?.proxies) ? req.body.proxies : null;
   if (!emails || !proxies) {
     const r = parseAuto(req.body?.text);
     emails = r.emails;
@@ -1462,6 +1477,7 @@ fastify.post('/api/import/auto', async (req) => {
 fastify.post('/api/parse/:type', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
+  if (req.body?.text !== undefined && typeof req.body.text !== 'string') return reply400('text 必须为文本');
   return { items: PARSERS[type](req.body?.text) };
 });
 
