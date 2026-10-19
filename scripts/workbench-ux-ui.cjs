@@ -196,6 +196,7 @@ const { _electron } = require('playwright');
     await ready();
     await page.waitForFunction(() => !state.syncError && !document.getElementById('syncNotice'));
     await page.unroute('**/api/bootstrap*');
+    await page.waitForFunction(() => !document.querySelector('#toast-root .toast'));
 
     // Keyboard loop and reachable footer on the longest existing form.
     await nav('licenses');

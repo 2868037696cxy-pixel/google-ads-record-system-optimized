@@ -137,6 +137,8 @@
   .settings-row > button { flex: none; }
   .settings-row p, .settings-hint { color: var(--faint); font-size: var(--font-label); line-height: var(--line-body); margin: 6px 0 0; }
   .settings-danger b { color: var(--red); }
+  #toast-root { pointer-events: none; max-width: min(420px, calc(100vw - 32px)); }
+  .toast { max-width: 100%; font-size: var(--font-label); }
   .sidebar-connection { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-2); }
   .sidebar-connection .connection-status { margin: 0; padding: 0; min-width: 0; }
   .sidebar-connection .ghost-btn { min-height: var(--ui-control-sm); padding: 6px 10px; font-size: var(--font-caption); }
