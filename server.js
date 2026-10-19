@@ -764,6 +764,10 @@ function createRecords(ownerId, body) {
   const seqInput = body.start_seq;
   let seq = seqInput === undefined || seqInput === '' ? store.nextSeq(db, ownerId) : Number(seqInput);
 
+  // 没有域名时必须**显式**给出创建数量。旧判据只看 count<1 或非整数，而 count 在没有
+  // count 字段时会默认成 1，于是「没有域名」这一情况恒不触发 —— 任何空体或畸形体都会
+  // 静默创建一条国家/产品/域名全空、只有指纹的垃圾记录。
+  if (!domains.length && body.count === undefined) return { error: '缺少域名：请至少填写一个域名，或显式指定创建数量' };
   if (!domains.length && (typeof body.count === 'boolean' || !Number.isSafeInteger(count) || count < 1)) return { error: '创建数量必须为 1 到 500 的整数' };
   if (count > 500) return { error: '单次最多创建 500 条记录' };
   if (typeof seqInput === 'boolean' || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(seq + count)) return { error: '指纹编号无效' };
@@ -1508,10 +1512,14 @@ fastify.delete('/api/pool/:type/:id', async (req) => {
 
 fastify.post('/api/records', async (req) => {
   const ownerId = currentUserId(req);
-  assertNoCardSecrets(req.body||{});
+  // 非对象请求体（null / 字符串 / 数字 / 数组）不能被当成「没有字段的对象」继续往下走：
+  // 旧行为会给它们创建一条空记录并返回 200，把「请求本身有问题」悄悄吞成一次成功。
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
+  assertNoCardSecrets(body);
   const requestKey=req.headers['idempotency-key'];
   if(requestKey && (typeof requestKey!=='string'||! /^[A-Za-z0-9_-]{16,128}$/.test(requestKey))) return reply400('Invalid idempotency key');
-  const hash=crypto.createHash('sha256').update(JSON.stringify(req.body||{})).digest('hex');
+  const hash=crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
   const res = mutate(() => {
     if(requestKey) {
       const old=db.prepare('SELECT request_hash,result_ids FROM idempotency_requests WHERE owner_id=? AND request_key=?').get(ownerId,requestKey);
@@ -1522,7 +1530,7 @@ fastify.post('/api/records', async (req) => {
         return {created,replayed:true};
       }
     }
-    const result=createRecords(ownerId,req.body||{});
+    const result=createRecords(ownerId,body);
     if(!result.error) {
       if(requestKey) db.prepare('INSERT INTO idempotency_requests VALUES(?,?,?,?,?)').run(ownerId,requestKey,hash,JSON.stringify(result.created.map(r=>r.id)),new Date().toISOString());
       audit(db,ownerId,'records.create',String(result.created.length));
