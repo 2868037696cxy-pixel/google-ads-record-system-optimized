@@ -28,7 +28,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: mkdir -p .ci-reports
+      - run: mkdir -p test-artifacts/round73
       - run: npm ci --omit=dev --ignore-scripts
       - name: Confirm original defects before applying changes
         if: matrix.node == '24'
@@ -38,7 +38,7 @@ jobs:
           const probes=['F08: CVR after city','F04-PDF: direct PDF upload','F09-STRUCTURE: forged header','F13: structured field objects','F23: successful PDF'];
           for(let i=0;i<probes.length;i++){
             const r=cp.spawnSync(process.execPath,['--test','--test-reporter=tap','--test-name-pattern',probes[i],'tests/round73-regressions.test.js'],{encoding:'utf8',timeout:120000});
-            const text=(r.stdout||'')+(r.stderr||'');fs.writeFileSync(`.ci-reports/baseline-${i}.txt`,text);
+            const text=(r.stdout||'')+(r.stderr||'');fs.writeFileSync(`test-artifacts/round73/baseline-${i}.txt`,text);
             if(r.status!==1 || !text.includes('ERR_ASSERTION'))throw new Error(`Baseline ${probes[i]} did not fail with an assertion; do not claim a verified fix.\n${text.slice(-5000)}`);
             console.log('CONFIRMED unpatched failure:',probes[i]);
           }
@@ -48,22 +48,22 @@ jobs:
           node scripts/maintenance/apply-round73.cjs
           node scripts/maintenance/apply-round73-extra.cjs
           git diff --check
-          git diff > .ci-reports/source.patch
+          git diff > test-artifacts/round73/source.patch
       - name: Production dependency audit
         run: npm audit --omit=dev --audit-level=high
       - name: Full backend regression suite
-        run: set -o pipefail; npm test 2>&1 | tee .ci-reports/backend.txt
+        run: set -o pipefail; npm test 2>&1 | tee test-artifacts/round73/backend.txt
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: Round73-backend-${{ matrix.node }}
-          path: .ci-reports/
+          path: test-artifacts/round73/
           retention-days: 14
   desktop:
     runs-on: windows-latest
     timeout-minutes: 20
     env:
-      UI_SCREENSHOT_DIR: ${{ github.workspace }}/.ci-reports/ui
+      UI_SCREENSHOT_DIR: ${{ github.workspace }}/test-artifacts/round73/ui
     steps:
       - uses: actions/checkout@v4
         with:
@@ -72,13 +72,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: New-Item -ItemType Directory -Force .ci-reports | Out-Null
+      - run: New-Item -ItemType Directory -Force test-artifacts/round73 | Out-Null
       - run: npm ci
       - name: Confirm picker defect in the original real UI
         run: |
-          node scripts/round73-ui.cjs *> .ci-reports/picker-before.txt
+          node scripts/round73-ui.cjs *> test-artifacts/round73/picker-before.txt
           $result = $LASTEXITCODE
-          $text = Get-Content .ci-reports/picker-before.txt -Raw
+          $text = Get-Content test-artifacts/round73/picker-before.txt -Raw
           if ($result -ne 1 -or $text -notmatch 'F18: changing an unconfirmed picker') { Write-Output $text; throw 'Baseline failed for an unrelated reason, or did not reproduce F18' }
           $global:LASTEXITCODE = 0
           Write-Output 'CONFIRMED F18 unpatched real picker failure'
@@ -107,7 +107,7 @@ jobs:
         if: always()
         with:
           name: Round73-UI-Evidence
-          path: .ci-reports/
+          path: test-artifacts/round73/
           retention-days: 14
       - uses: actions/upload-artifact@v4
         with:
