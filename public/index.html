@@ -33,8 +33,8 @@
         <button class="ghost-btn w-full" id="revealBtn" data-action="toggle-reveal">
           <span class="dot dot-eye"></span><span id="revealLabel">敏感信息：已隐藏</span>
         </button>
-        <p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
-        <button class="ghost-btn w-full" data-action="retry-load" title="重新读取数据（Ctrl+R）">重新连接</button>
+        <div class="sidebar-connection"><p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
+        <button class="ghost-btn" data-action="retry-load" title="重新读取数据（Ctrl+R）">重新连接</button></div>
         <details class="sidebar-utilities" id="sidebarUtilities">
           <summary>工具与设置 <span aria-hidden="true" class="utility-chevron">⌄</span></summary>
           <div class="sidebar-utilities-content">
@@ -60,7 +60,7 @@
             <span class="account-avatar" id="accountAvatar" aria-hidden="true">—</span>
             <span class="account-meta"><strong id="accountName">未登录</strong><span id="accountHint">数据仅本人可见</span></span>
           </div>
-          <button class="ghost-btn w-full" data-action="logout" title="退出当前账号">退出登录</button>
+          <button class="ghost-btn" data-action="logout" title="退出当前账号">退出</button>
         </div>
         <p class="foot-note">资源与记录按账号隔离<br>其他成员看不到，也不会互相覆盖</p>
       </div>

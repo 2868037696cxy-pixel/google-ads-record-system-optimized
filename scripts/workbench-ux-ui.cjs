@@ -12,7 +12,7 @@ const { _electron } = require('playwright');
   const shot = async name => {
     if (!shots) return;
     fs.mkdirSync(shots, { recursive: true });
-    await page.screenshot({ path: path.join(shots, `ux-${name}.png`) });
+    await page.screenshot({ path: path.join(shots, `ux-${name}.png`), animations: 'disabled' });
   };
   const ready = () => page.waitForFunction(() => state.recordsPhase === 'ready');
   const nav = async key => { await page.locator(`#nav [data-page="${key}"]`).click(); };
@@ -129,6 +129,26 @@ const { _electron } = require('playwright');
     await page.unroute('**/api/records?*');
     console.log('PASS persistent query failure, retry, focus preservation and stale-response isolation');
 
+    let releaseRevealed, revealStarted;
+    const revealGate = new Promise(resolve => { releaseRevealed = resolve; });
+    const revealing = new Promise(resolve => { revealStarted = resolve; });
+    await page.route('**/api/records?*', async route => {
+      if (new URL(route.request().url()).searchParams.get('reveal') === '1') {
+        revealStarted(); await revealGate;
+        await route.fulfill({ json: { items: [{ ...sample, email_pass: 'SYNTHETIC-LATE-SECRET' }], total: 1 } }).catch(() => {});
+      } else await route.continue();
+    });
+    await page.evaluate(async () => { await ensureSensitive(); state.reveal = true; });
+    const pendingRevealed = page.evaluate(() => loadRecordsPage({ renderMode: 'table' }));
+    await revealing;
+    await page.evaluate(() => lockSensitive());
+    releaseRevealed();
+    await pendingRevealed;
+    assert.equal(await page.evaluate(() => state.reveal), false);
+    assert.equal(await page.evaluate(() => JSON.stringify(state.records).includes('SYNTHETIC-LATE-SECRET')), false);
+    await page.unroute('**/api/records?*');
+    console.log('PASS sensitive lock invalidates in-flight plaintext responses');
+
     await nav('create');
     await page.locator('#f-domains').fill('https://same.example/path\nSAME.EXAMPLE');
     await page.locator('[data-action="create"]').click();
@@ -153,6 +173,13 @@ const { _electron } = require('playwright');
     await ready();
     assert.equal(await page.locator('#rec-q').inputValue(), '');
     await page.locator('[data-action="clear-selection"]').click();
+    await page.locator('.col-menu summary').click();
+    await page.locator('[data-action="toggle-col"][data-col="emailPass"]').uncheck();
+    assert.equal(await page.locator('[data-action="reset-cols"]').isEnabled(), true);
+    const menuBounds = await page.locator('.col-menu-body').boundingBox();
+    assert.ok(menuBounds.y >= 0 && menuBounds.y + menuBounds.height <= 901, 'column picker stays inside the current viewport');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('.col-menu').getAttribute('open'), null);
     console.log('PASS normalized validation, review cancellation, single submission and success navigation');
 
     // A committed update must remain distinguishable from a failed refresh.
@@ -193,6 +220,8 @@ const { _electron } = require('playwright');
         await nav(key);
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 || document.getElementById('main').scrollWidth > document.getElementById('main').clientWidth + 1);
         assert.equal(overflow, false, `${key} must not overflow the viewport at ${viewport.width}`);
+        const unlabeled = await page.evaluate(() => [...document.querySelectorAll('input, select, textarea')].filter(element => element.getClientRects().length && !element.labels?.length && !element.getAttribute('aria-label') && !element.getAttribute('aria-labelledby')).map(element => element.id || element.name));
+        assert.deepEqual(unlabeled, [], `${key} inputs must have an accessible label`);
         if (viewport.width === 1440 || key === 'records') await shot(`${key}-${viewport.width}`);
       }
     }

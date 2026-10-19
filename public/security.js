@@ -42,7 +42,8 @@ async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u780
       e.preventDefault();const button=form.querySelector('[type=submit]');if(button.disabled)return;button.disabled=true;
       try {
         const result=await api('/api/security/unlock',{method:'POST',body:{password:document.getElementById('unlock-password').value}});
-        document.getElementById('unlock-password').value='';
+        if(!form.isConnected||done)return;
+        form.querySelector('#unlock-password').value='';
         state.unlockedUntil=result.unlocked_until;clearTimeout(secretTimer);secretTimer=setTimeout(lockSensitive,Math.max(0,result.unlocked_until-Date.now()));
         done=true;observer.disconnect();closeModal();resolve(true);
       } catch(error){if(form.isConnected){document.getElementById('unlock-error').textContent=error.message;button.disabled=false;}}
@@ -51,11 +52,12 @@ async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u780
 }
 async function showMyAudit() {
   openModal(`<div class="modal-head"><h3>\u6211\u7684\u5b89\u5168\u64cd\u4f5c\u8bb0\u5f55</h3><button class="modal-close" data-action="close-modal" aria-label="\u5173\u95ed">\u00d7</button></div><div class="modal-body" id="my-audit">\u52a0\u8f7d\u4e2d\u2026</div>`);
+  const box=document.getElementById('my-audit');
   try {
-    const {events}=await api('/api/audit');const box=document.getElementById('my-audit');if(!box)return;
+    const {events}=await api('/api/audit');if(!box.isConnected)return;
     const labels={'secrets.unlock':'\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c','export.credentials':'\u5bfc\u51fa\u51ed\u636e','backup.export':'\u5bfc\u51fa\u52a0\u5bc6\u5907\u4efd','backup.restore':'\u6062\u590d\u5907\u4efd','password.change':'\u4fee\u6539\u5bc6\u7801','records.create':'\u521b\u5efa\u8bb0\u5f55'};
     box.innerHTML=events.length?`<p>\u4ec5\u663e\u793a\u672c\u4eba\u6700\u8fd1100\u6761\u8bb0\u5f55\uff0c\u4e0d\u5305\u542b\u5bc6\u7801\u539f\u6587\u3002</p><table><thead><tr><th>\u64cd\u4f5c</th><th>\u6570\u91cf</th><th>\u65f6\u95f4</th></tr></thead><tbody>${events.map(e=>`<tr><td>${esc(labels[e.action]||e.action)}</td><td>${esc(e.subject)}</td><td>${esc(new Date(e.created_at).toLocaleString())}</td></tr>`).join('')}</tbody></table>`:'<p>\u6682\u65e0\u64cd\u4f5c\u8bb0\u5f55</p>';
-  }catch(e){toast(e.message,'error');}
+  }catch(e){if(box.isConnected)box.innerHTML=WorkbenchUI.emptyState({title:'暂时无法读取操作记录',description:e.message,action:'my-audit',actionLabel:'重新加载'});}
 }
 function showChangePassword() {
   openModal(`<div class="modal-head"><h3>\u4fee\u6539\u767b\u5f55\u5bc6\u7801</h3><button class="modal-close" data-action="close-modal">\u00d7</button></div><form id="password-form"><div class="modal-body stack">
@@ -69,7 +71,7 @@ function showChangePassword() {
       if(next!==document.getElementById('repeat-password').value) throw new Error('\u4e24\u6b21\u65b0\u5bc6\u7801\u4e0d\u4e00\u81f4');
       await api('/api/account/password',{method:'POST',body:{current_password:document.getElementById('old-password').value,new_password:next}});
       location.replace('/login.html');
-    }catch(error){document.getElementById('password-error').textContent=error.message;button.disabled=false;}
+    }catch(error){if(form.isConnected){form.querySelector('#password-error').textContent=error.message;button.disabled=false;}}
   };
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden && state.unlockedUntil) void lockSensitive();});

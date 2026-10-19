@@ -41,6 +41,14 @@ globalThis.WorkbenchUI = (() => {
     if (!value) delete button.dataset.idleLabel;
   }
   let fieldSequence = 0;
+  function positionMenu(menu) {
+    const anchor = menu.querySelector('summary').getBoundingClientRect();
+    const below = innerHeight - anchor.bottom - 20;
+    const above = anchor.top - 20;
+    const useAbove = below < 260 && above > below;
+    menu.dataset.side = useAbove ? 'above' : 'below';
+    menu.style.setProperty('--menu-max-height', `${Math.max(100, Math.min(480, useAbove ? above : below))}px`);
+  }
   function enhance(root = document) {
     root.querySelectorAll('.field').forEach(field => {
       const label = field.querySelector('label');
@@ -95,7 +103,7 @@ globalThis.WorkbenchUI = (() => {
     (preferred || focusable(root)[0] || root.querySelector('.modal')).focus({ preventScroll: true });
     document.addEventListener('keydown', onDialogKey);
   }
-  return Object.freeze({ escape, icon, button, emptyState, status, busy, enhance, dialog: Object.freeze({ open: openDialog, close: closeDialog, isBusy }) });
+  return Object.freeze({ escape, icon, button, emptyState, status, busy, enhance, positionMenu, dialog: Object.freeze({ open: openDialog, close: closeDialog, isBusy }) });
 })();
 
 if (typeof module !== 'undefined') module.exports = globalThis.WorkbenchUI;

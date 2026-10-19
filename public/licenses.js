@@ -33,7 +33,7 @@ function openLicenseImport() {
   openModal(`
     <div class="modal-head"><div><span class="license-eyebrow">营业执照资料库</span><h3>导入与校对</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
     <div class="modal-body">
-      <div class="license-upload"><strong>一个 PDF · 一条营业执照记录</strong><p>自动提取公司资料，字段合并到同一条记录中。多页证书也只保存一条，最大 10 MB。</p><input type="file" id="license-file" accept=".pdf,application/pdf"><span id="license-file-status" role="status">也可以不上传文件，直接填写资料。</span></div>
+      <div class="license-upload"><strong>一个 PDF · 一条营业执照记录</strong><p>自动提取公司资料，字段合并到同一条记录中。多页证书也只保存一条，最大 10 MB。</p><input type="file" id="license-file" aria-label="选择营业执照 PDF" aria-describedby="license-file-status" accept=".pdf,application/pdf"><span id="license-file-status" role="status">也可以不上传文件，直接填写资料。</span></div>
       <form id="license-form" class="license-form" autocomplete="off">
         ${LICENSE_FIELDS.map(([key, label, required]) => {
           const placeholder = key === 'zip' ? '9310 或 DK-9310'
@@ -44,7 +44,7 @@ function openLicenseImport() {
           return `<div class="field ${key === 'address' ? 'license-wide' : ''}"><label for="license-${key}">${label}${required ? ' *' : '（选填）'}</label><input id="license-${key}" name="${key}" ${required ? 'required' : ''} ${placeholder ? `placeholder="${placeholder}"` : ''}></div>`;
         }).join('')}
       </form>
-      <details class="license-source"><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" class="mono" rows="7" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n注册国家：DK\n注册号类型：CVR\nCVR：12345678\n街道地址：Følfodvej 1\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
+      <details class="license-source"><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" aria-label="营业执照结构化信息或识别原文" class="mono" rows="7" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n注册国家：DK\n注册号类型：CVR\nCVR：12345678\n街道地址：Følfodvej 1\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
       <p class="license-help">全员统一查重：相同 PDF 文件禁止重复上传（即使改名）。注册号按“国家/地区 + 注册号类型 + 注册号”区分；历史资料若还没有国家/类型，同裸号会先阻止并要求核对，避免误合并。只显示冲突原因，不展示其他成员资料。</p>
     </div>
     <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="license-import">确认保存</button></div>
@@ -114,6 +114,7 @@ function openLicenseImport() {
     submit.disabled = true;
     const item = Object.fromEntries(LICENSE_FIELDS.map(([key]) => [key, form.elements[key].value.trim()]));
     if (!item.name || !item.legal_name) { submit.disabled = false; return toast('组织名称和法定名称不能为空', 'warn'); }
+    WorkbenchUI.busy(submit, true, '正在保存…');
     saving = true;
     fileInput.disabled = true;
     parseText.disabled = true;
@@ -126,7 +127,7 @@ function openLicenseImport() {
       if (Array.isArray(error.conflicts) && error.conflicts.length) showLicenseConflicts(error);
       else toast(error.message, 'error');
     }
-    finally { saving = false; submit.disabled = false; fileInput.disabled = false; parseText.disabled = false; }
+    finally { saving = false; WorkbenchUI.busy(submit, false); fileInput.disabled = false; parseText.disabled = false; }
   };
   form.onsubmit = (event) => { event.preventDefault(); submit.click(); };
 }

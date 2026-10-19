@@ -277,13 +277,13 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
   document.querySelector('#modal-root [data-action="close-modal"].btn')?.focus();
   confirm.onclick = async () => {
     if (confirm.disabled) return;
-    confirm.disabled = true;
+    WorkbenchUI.busy(confirm, true, '正在处理…');
     try {
       await onOk();
       if (confirm.isConnected) closeModal();
     } catch (err) {
       toast(err.message || '操作失败', 'error');
-      confirm.disabled = false;
+      WorkbenchUI.busy(confirm, false);
     }
   };
 }
@@ -302,7 +302,7 @@ function renderNav() {
         ${it.count !== '' ? `<span class="count">${it.count}</span>` : ''}
       </button>`;
   document.getElementById('nav').innerHTML = `
-    <div class="nav-label">总览</div>
+    <div class="nav-label">工作台</div>
     ${main.map(item).join('')}
     <div class="nav-label">资源库</div>
     ${pools.map(item).join('')}
@@ -610,7 +610,7 @@ function renderWorkbench() {
 
   const proxyModeExtra = (fm) => {
     if (fm.proxy_mode === 'shared') {
-      return `<select id="f-proxy">${proxyOptions}</select>`;
+      return `<select id="f-proxy" aria-label="共享代理">${proxyOptions}</select>`;
     }
     if (fm.proxy_mode === 'auto') {
       return `<span class="mini">每条记录从代理库按顺序取一个 · 可用 <b>${poolCount('proxies')}</b> 条</span>`;
@@ -714,7 +714,7 @@ function renderWorkbench() {
               </div>
               <div class="assign-row">
                 <span class="assign-info">⇅ 代理：
-                  <select id="f-proxy-mode" style="flex:0 0 auto">
+                  <select id="f-proxy-mode" aria-label="代理分配方式" style="flex:0 0 auto">
                     <option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个</option>
                     <option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>自动分配</option>
                     <option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>不使用</option>
@@ -740,13 +740,15 @@ function renderWorkbench() {
       <div class="panel-head">
         <div class="panel-title">账号记录 <span class="overview-title-count">${state.recordFilteredTotal} / ${state.recordStats.total} 条</span></div>
       </div>
-      <div class="toolbar">
+      <div class="toolbar record-toolbar">
+        <div class="record-filter-row">
         <input class="search" id="rec-q" maxlength="200" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 付款工具…" value="${esc(state.q)}">
         <div class="tabs">
           ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" aria-pressed="${state.rstatus === s}" data-action="rstatus" data-v="${s}">${s}<i class="n">${s === '全部' ? state.recordStats.total : state.recordStats[s]}</i></button>`).join('')}
         </div>
         <span class="sel-count">已选 <b>${state.sel.size}</b> 条</span>
         <button class="btn btn-ghost btn-sm" data-action="clear-record-filter" ${!state.q && state.rstatus === '全部' ? 'disabled' : ''}>清除筛选</button>
+        </div><div class="record-tools-row">
         <label class="toolbar-field">排序<select id="rec-sort" aria-label="记录排序">${[['id_desc','最新记录在前'],['id_asc','最早记录在前'],['created_desc','创建时间从新到旧'],['created_asc','创建时间从旧到新']].map(([value,label]) => `<option value="${value}" ${state.recordSort === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
         <details class="col-menu">
           <summary class="btn btn-ghost btn-sm" aria-label="选择显示的列">列 <span class="dim">${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}</span></summary>
@@ -760,6 +762,7 @@ function renderWorkbench() {
         <button class="btn btn-ghost btn-sm" data-action="export-adspower">导出 AdsPower TXT</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">导出 CSV</button>
         <button class="btn btn-danger btn-sm" data-action="delete-selected" ${state.sel.size === 0 ? 'disabled' : ''}>删除所选</button>
+        </div>
       </div>
       <div class="selection-bar" id="selectionBar" ${state.sel.size ? '' : 'hidden'}><p class="selection-scope" role="status"></p><button class="btn btn-ghost btn-sm" data-action="clear-selection">清空选择</button></div>
       <div class="query-feedback" id="recordsFeedback" role="status" hidden><span data-feedback-text></span><button class="btn btn-ghost btn-sm" data-action="retry-records">重试查询</button></div>
@@ -1130,7 +1133,7 @@ async function openImportModal(kind) {
         <p class="format-rule">${esc(POOL_FORMAT[kind].rule)}</p>
         ${POOL_FORMAT[kind].sample ? `<pre class="format-sample">${esc(POOL_FORMAT[kind].sample)}</pre>` : ''}
       </div>
-      <textarea id="import-text" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
+      <label for="import-text">粘贴资源文本</label><textarea id="import-text" aria-describedby="parse-result" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
       <div class="parse-result" id="parse-result">等待粘贴内容…</div>
     </div>
     <div class="modal-foot">
@@ -1161,7 +1164,7 @@ async function openImportModal(kind) {
 
   okBtn.onclick = async () => {
     if (saving || okBtn.disabled || !parsed.length) return;
-    saving = true; okBtn.disabled = true; ta.readOnly = true;
+    saving = true; WorkbenchUI.busy(okBtn, true, '正在导入…'); ta.readOnly = true;
     try {
       const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
       toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
@@ -1171,7 +1174,7 @@ async function openImportModal(kind) {
       toast(e.message, 'error');
       okBtn.disabled = false;
     } finally {
-      saving = false; ta.readOnly = false;
+      saving = false; WorkbenchUI.busy(okBtn, false); ta.readOnly = false;
     }
   };
 
@@ -1195,7 +1198,7 @@ function openAutoImport() {
         <input type="file" id="auto-file" accept=".txt,.csv,text/plain" hidden>
         <span class="mini faint" id="auto-file-name"></span>
       </div>
-      <textarea id="auto-text" class="mono" rows="9" style="width:100%" placeholder="粘贴 AdsPower TXT / 邮箱 / 代理，任意混合…"></textarea>
+      <label for="auto-text">粘贴需要识别的文本</label><textarea id="auto-text" aria-describedby="auto-result" class="mono" rows="9" style="width:100%" placeholder="粘贴 AdsPower TXT / 邮箱 / 代理，任意混合…"></textarea>
       <div class="parse-result" id="auto-result">等待粘贴内容…</div>
     </div>
     <div class="modal-foot">
@@ -1260,7 +1263,7 @@ function openAutoImport() {
     if (saving || okBtn.disabled || (!parsed.emails.length && !parsed.proxies.length)) return;
     saving = true; ta.readOnly = true; fileInput.disabled = true;
     document.getElementById('auto-file-btn').disabled = true;
-    okBtn.disabled = true;
+    WorkbenchUI.busy(okBtn, true, '正在导入…');
     try {
       const res = await api('/api/import/auto', { method: 'POST', body: parsed });
       const parts = [];
@@ -1273,7 +1276,7 @@ function openAutoImport() {
       okBtn.disabled = false;
       toast(e.message, 'error');
     } finally {
-      saving = false; ta.readOnly = false; fileInput.disabled = false;
+      saving = false; WorkbenchUI.busy(okBtn, false); ta.readOnly = false; fileInput.disabled = false;
       const fileButton = document.getElementById('auto-file-btn');
       if (ta.isConnected && fileButton) fileButton.disabled = false;
     }
@@ -1299,7 +1302,7 @@ function openPicker(kind) {
   openModal(`
     <div class="modal-head"><h3>选择${conf.label.replace('库', '')} <span class="dim" style="font-size:12px;font-weight:400">（多选，不选则自动分配）</span></h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
-      <input id="picker-q" placeholder="搜索…" style="width:100%">
+      <input id="picker-q" aria-label="搜索可选资源" placeholder="搜索…" style="width:100%">
       <div class="picker-list" id="picker-list">
         ${items
           .map(
@@ -1400,7 +1403,7 @@ function openEditRecord(id) {
   const save = document.getElementById('edit-ok');
   save.onclick = async () => {
     if (save.disabled) return;
-    save.disabled = true;
+    WorkbenchUI.busy(save, true, '正在保存…');
     const form = document.getElementById('edit-form');
     const val = (n) => form.querySelector(`[name="${n}"]`).value;
     const body = {
@@ -1424,7 +1427,7 @@ function openEditRecord(id) {
     } catch (e) {
       toast(e.message, 'error');
     } finally {
-      save.disabled = false;
+      WorkbenchUI.busy(save, false);
     }
   };
 }
@@ -1487,7 +1490,7 @@ function openRestoreDialog() {
       <div class="license-upload">
         <strong>只恢复你自己的数据</strong>
         <p>恢复会覆盖当前账号下的资源与记录，不会影响其他成员。请选择本工作台导出的备份文件；恢复前建议先「导出备份」留一份当前数据。</p>
-        <input type="file" id="restore-file" accept=".json,application/json">
+        <input type="file" id="restore-file" aria-label="选择个人备份文件" accept=".json,application/json">
         <span id="restore-status" role="status">尚未选择文件</span>
       </div>
     </div>
@@ -2007,7 +2010,7 @@ document.addEventListener('change', (e) => {
         )
         .join('');
       if (state.form.proxy_mode === 'shared') {
-        extra.innerHTML = `<select id="f-proxy">${proxyOptions}</select>`;
+        extra.innerHTML = `<select id="f-proxy" aria-label="共享代理">${proxyOptions}</select>`;
       } else if (state.form.proxy_mode === 'auto') {
         extra.innerHTML = `<span class="mini">每条记录从代理库按顺序取一个 · 可用 <b>${poolCount('proxies')}</b> 条</span>`;
       } else {
@@ -2046,6 +2049,13 @@ async function connect() {
 function bindLabels() { WorkbenchUI.enhance(); }
 new MutationObserver(bindLabels).observe(document.getElementById('main'), { childList: true, subtree: true });
 new MutationObserver(bindLabels).observe(document.getElementById('modal-root'), { childList: true, subtree: true });
+document.addEventListener('toggle', event => {
+  if (event.target.matches('.col-menu[open]')) WorkbenchUI.positionMenu(event.target);
+}, true);
+document.addEventListener('pointerdown', event => {
+  document.querySelectorAll('.col-menu[open]').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; });
+});
+window.addEventListener('resize', () => document.querySelectorAll('.col-menu[open]').forEach(WorkbenchUI.positionMenu));
 
 if (window.desktop) {
   document.getElementById('desktopTools').hidden = false;
