@@ -772,3 +772,109 @@ body[data-table-density="compact"] .rec-table, body[data-table-density="compact"
   border-bottom: 1px solid var(--line);
 }
 .col-preset-actions .btn { min-width: 0; font-size: 12px; }
+
+/* Screenshot review at 1008×655: sidebar must expose all seven destinations.
+   Only infrequent backup/account actions float in one accessible disclosure. */
+.sidebar > .sidebar-foot {
+  flex: 0 0 auto;
+  max-height: none;
+  min-height: 0;
+  overflow: visible;
+  gap: 7px;
+}
+.sidebar > .nav { scrollbar-width: thin; }
+.connection-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
+  gap: 8px;
+  min-height: 32px;
+}
+.connection-row .connection-status { margin: 0; font-size: 12px; }
+.connection-retry {
+  min-height: 30px;
+  width: auto;
+  padding: 4px 8px;
+  font-size: 12px;
+  border: 0;
+}
+.utility-menu { position: relative; z-index: 9; width: 100%; }
+.utility-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  min-height: 37px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: var(--surface);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.utility-menu-trigger::-webkit-details-marker { display: none; }
+.utility-menu-trigger:hover { background: #f0f5f6; color: var(--text); border-color: #cdd7dd; }
+.utility-menu-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.utility-menu-trigger svg { color: var(--faint); flex: none; }
+.utility-chevron { margin-left: auto; font-size: 15px; color: var(--faint); }
+.utility-menu[open] .utility-chevron { transform: rotate(180deg); }
+.utility-menu-content {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: min(370px, 63vh);
+  overflow-y: auto;
+  background: white;
+  border: 1px solid #d5dfe4;
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: 0 14px 38px rgba(17, 34, 45, .18);
+}
+.utility-menu-label {
+  margin: 4px 2px 6px;
+  color: var(--faint);
+  font-size: 12px;
+  font-weight: 650;
+}
+.utility-menu-content .ghost-btn { background: transparent; border-color: transparent; color: var(--text); }
+.utility-menu-content .ghost-btn:hover { background: #f1f5f6; }
+.utility-menu-content .desktop-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.utility-menu-content .desktop-actions .ghost-btn { flex: 1 1 auto; width: auto; }
+.utility-menu-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  margin: 8px 2px 2px;
+}
+.account-box { margin-top: 1px; padding-top: 9px; gap: 4px; }
+.account-box .ghost-btn { min-height: 29px; text-align: left; padding-left: 2px; }
+
+/* Longer helper text is a second line, never allowed to squeeze Chinese labels
+   into one-character columns. */
+.field label {
+  display: block;
+  line-height: 1.45;
+  min-width: 0;
+}
+.field label .mini {
+  display: inline;
+  margin-left: 7px;
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* On shorter laptop windows a sticky create footer occludes fields. Let it
+   follow the document instead of covering inputs or the resource selector. */
+@media (max-height: 770px) {
+  .page-create .create-preview { position: static; box-shadow: none; }
+  .page-create #createPanel .panel-body { padding-bottom: 24px; }
+}
