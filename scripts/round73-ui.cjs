@@ -4,6 +4,7 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const {_electron}=require('playwright');
+const {certificate}=require('../tests/pdf-fixture');
 (async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ads-round73-ui-'));
   let electron,page;
@@ -44,6 +45,38 @@ const {_electron}=require('playwright');
     assert.match(denial.message,/维护|拦截/);
     assert.ok(!denial.message.includes('<html>'));
     console.log('PASS F33 HTTP maintenance rejection keeps status and safe guidance');
+
+    const id=await page.evaluate(async()=>{
+      const r=await api('/api/records',{method:'POST',body:{domains:['round73-refresh.example'],country:'Before'}});
+      await refresh();return r.created[0].id;
+    });
+    await page.locator('#nav [data-page="records"]').click();
+    await page.locator(`[data-action="edit-record"][data-id="${id}"]`).click();
+    await page.locator('#edit-form [name="country"]').fill('After saved');
+    let failRefresh=false;
+    await page.route('**/api/bootstrap*',async route=>{
+      if(failRefresh){failRefresh=false;await route.fulfill({status:503,contentType:'text/html',body:'<html>synthetic refresh outage</html>'});}
+      else await route.continue();
+    });
+    failRefresh=true;
+    await page.locator('#edit-ok').click();
+    await page.getByText('修改已保存，但列表刷新失败；请重新连接，不要重复提交',{exact:true}).waitFor();
+    assert.equal(await page.locator('#edit-form').count(),0);
+    assert.equal(await page.evaluate(async id=>(await api('/api/bootstrap')).records.find(r=>r.id===id).country,id),'After saved');
+    console.log('PASS F19 edit persisted once despite subsequent bootstrap failure');
+
+    await page.locator('#nav [data-page="licenses"]').click();
+    await page.locator('[data-action="open-import"][data-kind="licenses"]').click();
+    const file=path.join(directory,'refresh-probe.pdf');
+    fs.writeFileSync(file,certificate());
+    await page.locator('#license-file').setInputFiles(file);
+    await page.getByText('已提取信息，请核对后保存。原 PDF 将一并保存。',{exact:true}).waitFor();
+    failRefresh=true;
+    await page.locator('#license-import').click();
+    await page.getByText('资料已保存，但列表刷新失败；请重新连接，不要重复导入',{exact:true}).waitFor();
+    assert.equal(await page.locator('#license-form').count(),0);
+    assert.equal(await page.evaluate(async()=>(await api('/api/bootstrap')).pools.licenses.length),1);
+    console.log('PASS F19 PDF persisted once despite subsequent bootstrap failure');
     assert.deepEqual(errors,[]);
     if(process.env.UI_SCREENSHOT_DIR){fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,'round73-picker.png')});}
   }catch(error){
