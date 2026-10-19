@@ -618,7 +618,7 @@ function renderWorkbench() {
         <div class="panel-title">账号记录 <span class="overview-title-count">${state.recordFilteredTotal} / ${state.recordStats.total} 条</span></div>
       </div>
       <div class="toolbar">
-        <input class="search" id="rec-q" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
+        <input class="search" id="rec-q" maxlength="200" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 付款工具…" value="${esc(state.q)}">
         <div class="tabs">
           ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" data-action="rstatus" data-v="${s}">${s}</button>`).join('')}
         </div>
