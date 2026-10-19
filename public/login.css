@@ -999,3 +999,10 @@ body.auth-body::after {
   pointer-events: none;
   z-index: -1;
 }
+
+/* ---- 窄屏修正 ----
+   上面「不做双色标题」与「白色品牌标」原本只写在 @media (min-width: 901px) 分支里，
+   窄屏走不到：<em>集中管控</em> 于是拿回 --accent，而 --accent 这一版已从荧光绿改成
+   蓝色，压在蓝紫彩底上几乎看不见。这两条必须在所有宽度都生效，所以不套媒体查询。 */
+.auth-pitch h1 em { color: var(--text); font-style: normal; }
+.auth-brand .brand-mark { background: #f5f5f7; color: #000; }
