@@ -83,15 +83,27 @@ function dupNote(res) {
 }
 
 async function copyText(t) {
+  const opener = document.activeElement;
   try {
     await navigator.clipboard.writeText(t);
   } catch {
     const ta = document.createElement('textarea');
-    ta.value = t;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    ta.remove();
+    let copied = false;
+    try {
+      ta.value = t;
+      ta.readOnly = true;
+      ta.style.cssText = 'position:fixed;inset:0 auto auto 0;opacity:0';
+      // Keep the fallback within the dialog when the app background is inert.
+      (document.querySelector('#modal-root .modal') || document.body).appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+    } catch {
+      copied = false;
+    } finally {
+      ta.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    }
+    if (!copied) return toast('复制未完成，请检查剪贴板权限或手动复制', 'warn');
   }
   toast('已复制到剪贴板');
 }
@@ -176,6 +188,7 @@ const state = {
   loaded: false,
   user: null,
   creating: false,
+  startSeqAutomatic: true,
   recordPage: 1,
   poolPage: 1,
   // 列显隐偏好（方案工作包 06）：只存「哪些列被隐藏」这类列名，不存任何字段值。
@@ -464,7 +477,7 @@ async function refresh() {
   }
   if (state.form.proxy_id && !data.pools.proxies.some((proxy) => String(proxy.id) === String(state.form.proxy_id) && proxy.status !== '停用')) state.form.proxy_id = '';
   state.next = data.next;
-  if (!state.form.start_seq) state.form.start_seq = data.next.seq;
+  if (state.startSeqAutomatic || !state.form.start_seq) state.form.start_seq = data.next.seq;
 
   const current = await loadRecordsPage();
   if (!current || requestId !== refreshRequestSeq || reveal !== state.reveal) return false;
@@ -503,7 +516,7 @@ function renderOverview() {
     <div class="page-head">
       <div><h1>运营总览</h1><p class="sub">账号状态、资源库存、待办事项 · 当前账号可见范围</p></div>
       <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
-      <button class="btn btn-primary" data-action="nav" data-page="create">＋ 创建账号记录</button></div>
+      <button class="btn btn-primary" data-action="nav" data-page="create">创建账号记录</button></div>
     </div>
     <div class="overview-metrics">
       <div class="overview-metric"><span>账号记录</span><b>${state.recordStats.total}</b><small>已建档总数</small></div>
@@ -619,8 +632,8 @@ function renderWorkbench() {
       </div>
       <div class="head-actions">
         ${state.page === 'create'
-          ? '<button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>'
-          : '<button class="btn btn-primary" data-action="nav" data-page="create">＋ 新建记录</button><button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>'}
+          ? '<button class="btn btn-primary" data-action="open-auto-import">智能导入</button>'
+          : '<button class="btn btn-primary" data-action="nav" data-page="create">新建记录</button><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>'}
         <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
       </div>
     </div>
@@ -1049,7 +1062,7 @@ function renderPool(kind) {
   const counts = { 全部: state.pools[kind].length, 未使用: poolCount(kind), 已使用: poolCount(kind, '已使用'), 停用: poolCount(kind, '停用') };
   document.getElementById('main').innerHTML = `
     <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p></div>
-      <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>' : ''}
+      <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>' : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
     <div class="panel"><div class="toolbar">
       <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
@@ -1153,7 +1166,7 @@ async function openImportModal(kind) {
       const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
       toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
       if (ta.isConnected) closeModal();
-      await refresh().catch(error=>toast('已保存，但列表刷新失败；请点击重新连接','warn'));
+      await refreshAfterCommit('已保存，但列表刷新失败；请点击重新连接');
     } catch (e) {
       toast(e.message, 'error');
       okBtn.disabled = false;
@@ -1255,7 +1268,7 @@ function openAutoImport() {
       if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${dupNote(res.proxies)}`);
       toast(`✅ 导入成功：${parts.join('，')}`);
       if (ta.isConnected) closeModal();
-      await refresh().catch(error=>toast('已保存，但列表刷新失败；请点击重新连接','warn'));
+      await refreshAfterCommit('已保存，但列表刷新失败；请点击重新连接');
     } catch (e) {
       okBtn.disabled = false;
       toast(e.message, 'error');
@@ -1407,7 +1420,7 @@ function openEditRecord(id) {
       await api(`/api/records/${id}`, { method: 'PATCH', body });
       toast('✅ 已保存');
       if (form.isConnected) closeModal();
-      await refresh().catch(() => toast('修改已保存，但列表刷新失败；请重新连接，不要重复提交', 'warn'));
+      await refreshAfterCommit('修改已保存，但列表刷新失败；请重新连接，不要重复提交');
     } catch (e) {
       toast(e.message, 'error');
     } finally {
@@ -1838,6 +1851,8 @@ document.addEventListener('change', async (e) => {
         applyColumnVisibility();
         const counter = document.querySelector('.col-menu summary .dim');
         if (counter) counter.textContent = `${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}`;
+        const reset = document.querySelector('[data-action="reset-cols"]');
+        if (reset) reset.disabled = !state.hiddenCols.length;
       }
     } else if (action === 'sel-row') {
       const id = Number(t.dataset.id);
@@ -1877,6 +1892,7 @@ document.addEventListener('input', (e) => {
     const key = e.target.id.replace('f-', '');
     const map = { country: 'country', product: 'product', start: 'start_seq', ipreg: 'ip_reg_time', idcard: 'id_card', domains: 'domains' };
     if (map[key]) state.form[map[key]] = e.target.value;
+    if (key === 'start') state.startSeqAutomatic = !e.target.value.trim();
     if (['country', 'product', 'domains', 'start'].includes(key)) {
       // 轻量更新预览与按钮状态，不重建输入框
       updateCreatePreview();

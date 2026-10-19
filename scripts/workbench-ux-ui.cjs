@@ -49,6 +49,7 @@ const { _electron } = require('playwright');
       await refresh();
     });
     await ready();
+    assert.equal(await page.evaluate(() => Number(state.form.start_seq)), 124, 'automatic start number follows the newly synchronized server sequence');
 
     await page.locator('#rec-sort').selectOption('id_asc');
     await page.waitForFunction(() => state.records.length === 50 && state.records[0].id < state.records.at(-1).id);
@@ -190,7 +191,7 @@ const { _electron } = require('playwright');
       await page.setViewportSize(viewport);
       for (const key of ['records','create','overview','emails','proxies','cards','licenses','settings']) {
         await nav(key);
-        const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 || document.getElementById('main').scrollWidth > document.getElementById('main').clientWidth + 1);
         assert.equal(overflow, false, `${key} must not overflow the viewport at ${viewport.width}`);
         if (viewport.width === 1440 || key === 'records') await shot(`${key}-${viewport.width}`);
       }
@@ -220,6 +221,7 @@ const { _electron } = require('playwright');
     assert.deepEqual(errors, []);
     console.log('PASS eight pages, three desktop sizes, sticky columns, dialog keyboard loop and 125/150% zoom');
   } catch (error) {
+    if (page) console.error('UX failure state:', await page.evaluate(() => ({ phase: state.recordsPhase, queryError: state.recordError, syncError: state.syncError, modalTitle: document.querySelector('.modal h3')?.textContent, submitError: document.getElementById('create-submit-error')?.textContent })).catch(() => ({})));
     if (page) await shot('failure').catch(() => {});
     throw error;
   } finally {

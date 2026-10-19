@@ -121,7 +121,7 @@ function openLicenseImport() {
       const result = await api('/api/import/licenses', { method: 'POST', body: { items: [item], ...attachment } });
       toast(result.added ? '营业执照已保存' : result.attached ? '资料已更新，原 PDF 已关联' : result.updated ? '组织资料已更新' : '该组织已在资料库中');
       if (form.isConnected) closeModal();
-      await refresh().catch(() => toast('资料已保存，但列表刷新失败；请重新连接，不要重复导入', 'warn'));
+      await refreshAfterCommit('资料已保存，但列表刷新失败；请重新连接，不要重复导入');
     } catch (error) {
       if (Array.isArray(error.conflicts) && error.conflicts.length) showLicenseConflicts(error);
       else toast(error.message, 'error');

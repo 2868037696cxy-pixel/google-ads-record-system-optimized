@@ -36,7 +36,7 @@ body::before, body::after { display: none; }
   color: var(--accent-strong);
   box-shadow: inset 0 0 0 1px rgba(147,197,253,.17);
 }
-.brand-text strong { font-size: 16px; font-weight: 700; letter-spacing: -.015em; }
+.brand-text strong { font-size: 16px; font-weight: 700; letter-spacing: 0; }
 .brand-text span {
   font: 500 10px/1.5 var(--sans);
   letter-spacing: .09em;
@@ -46,7 +46,7 @@ body::before, body::after { display: none; }
 .nav-label {
   padding: 16px 12px 8px;
   color: var(--faint);
-  font-size: 11px;
+  font-size: var(--font-caption);
   font-weight: 650;
   letter-spacing: .04em;
   text-transform: none;
@@ -106,7 +106,7 @@ body::before, body::after { display: none; }
   font-size: var(--font-title);
   font-weight: 720;
   line-height: 1.28;
-  letter-spacing: -.035em;
+  letter-spacing: 0;
 }
 .page-head .sub { max-width: 760px; font-size: var(--font-label); line-height: 1.6; color: var(--muted); }
 .head-actions { flex-wrap: wrap; gap: 9px; }
@@ -131,7 +131,7 @@ body::before, body::after { display: none; }
   align-items: center;
 }
 .strip-item .v { font-size: 19px; font-weight: 680; }
-.strip-item .k { font-size: 12.5px; }
+.strip-item .k { font-size: var(--font-label); }
 .strip-item .v em { font-size: var(--font-caption); color: var(--faint); }
 .strip-item.hi { background: rgba(136, 188, 255, .06); }
 .strip-item.hi .v { color: var(--text); }
@@ -147,7 +147,7 @@ body::before, body::after { display: none; }
   padding: 17px 22px;
   gap: 12px;
 }
-.panel-title { font-size: var(--font-section); font-weight: 670; letter-spacing: -.012em; gap: 9px; }
+.panel-title { font-size: var(--font-section); font-weight: 670; letter-spacing: 0; gap: 9px; }
 .panel-body { padding: 22px; }
 .overview-title-count { font: 500 12px/1.4 var(--sans); color: var(--muted); }
 .tag {
@@ -207,7 +207,7 @@ textarea { line-height: 1.6; }
 .create-preview .fp { color: var(--accent-strong); text-shadow: none; }
 .btn, .ghost-btn {
   min-height: var(--ui-control-height);
-  font-size: 13.5px;
+  font-size: var(--font-label);
   font-weight: 620;
   border-radius: 8px;
   letter-spacing: 0;
@@ -215,7 +215,7 @@ textarea { line-height: 1.6; }
   transform: none;
 }
 .btn:active:not(:disabled), .ghost-btn:active { transform: none; }
-.btn-sm { min-height: 36px; font-size: 12.5px; padding: 8px 12px; }
+.btn-sm { min-height: 36px; font-size: var(--font-label); padding: 8px 12px; }
 .btn-primary {
   background: #a6cbff;
   color: #15263d;
@@ -242,7 +242,7 @@ textarea { line-height: 1.6; }
   gap: 10px;
   row-gap: 12px;
 }
-.toolbar .search { min-height: 40px; font-size: 13.5px; }
+.toolbar .search { min-height: 40px; font-size: var(--font-label); }
 .tabs { gap: 4px; background: #121b26; padding: 3px; border: 1px solid var(--line); border-radius: 9px; }
 .tab {
   min-height: 34px;
@@ -279,14 +279,14 @@ textarea { line-height: 1.6; }
 .status-select {
   min-width: 86px;
   min-height: 34px;
-  font-size: 12.5px;
+  font-size: var(--font-label);
 }
 .table-pagination { padding: 16px 20px; font-size: var(--font-label); gap: 16px; }
 .table-pagination > div { gap: 10px; }
 .overview-metrics { gap: 14px; margin-bottom: 20px; }
 .overview-metric { background: var(--surface); border-color: var(--line-strong); padding: 20px 22px; }
 .overview-metric > span { font-size: var(--font-label); }
-.overview-metric > b { font-size: 29px; font-weight: 700; letter-spacing: -.035em; }
+.overview-metric > b { font-size: 29px; font-weight: 700; letter-spacing: 0; }
 .overview-metric > small { font-size: var(--font-caption); color: var(--muted); }
 .overview-columns { gap: 18px; }
 .overview-resource-icon, .overview-recent-icon {
@@ -362,7 +362,7 @@ textarea { line-height: 1.6; }
   .nav-item { font-size: var(--font-caption); }
   .nav-item .count { font-size: 10px; padding-inline: 4px; }
   .sidebar-foot > .foot-note { display: none; }
-  .sidebar-foot .ghost-btn { font-size: 11px; }
+  .sidebar-foot .ghost-btn { font-size: var(--font-caption); }
 }
 
 /* Secondary sidebar actions are discoverable but not always competing with navigation. */
