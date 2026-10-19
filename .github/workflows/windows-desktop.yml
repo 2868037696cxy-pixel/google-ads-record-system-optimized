@@ -24,6 +24,8 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm test
+      - name: Verify native design system and complete workbench interactions
+        run: npm run test:ux
       - run: npm run test:desktop
       - run: npm run test:desktop:remote
       - name: Picker cancellation, maintenance response and saved-refresh regression

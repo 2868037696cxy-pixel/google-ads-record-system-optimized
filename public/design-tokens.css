@@ -1,0 +1,84 @@
+/* Explicit order keeps legacy selectors from winning through specificity. */
+@layer legacy, tokens, foundations, components;
+
+@layer tokens {
+  :root {
+    color-scheme: dark;
+    --sans: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+    --mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", ui-monospace, monospace;
+    --font-caption: 12px;
+    --font-label: 13px;
+    --font-body: 14px;
+    --font-section: 15px;
+    --font-dialog: 18px;
+    --font-title: 27px;
+    --line-body: 1.55;
+    --line-heading: 1.28;
+    --weight-regular: 400;
+    --weight-medium: 500;
+    --weight-label: 600;
+    --weight-heading: 700;
+
+    --bg: #10151c;
+    --bg-soft: #151c25;
+    --surface: #19222d;
+    --surface-2: #202b38;
+    --surface-3: #273545;
+    --surface-input: #131b25;
+    --surface-sidebar: #141c25;
+    --surface-workspace: #111923;
+    --surface-table-head: #223041;
+    --surface-hover: #243648;
+    --surface-selected: #2a3e50;
+    --line: rgba(193, 208, 225, .14);
+    --line-strong: rgba(193, 208, 225, .26);
+    --text: #f1f5fa;
+    --muted: #c2cedb;
+    --faint: #a5b5c6;
+    --ghost: #92a4b8;
+    --accent: #88bcff;
+    --accent-strong: #a8d0ff;
+    --accent-deep: #4877bd;
+    --accent-ink: #11233b;
+    --accent-dim: rgba(113, 164, 233, .13);
+    --accent-line: rgba(139, 192, 255, .62);
+    --action-fill: #a6cbff;
+    --action-hover: #c0daff;
+    --green: #72d9b0;
+    --blue: #93c5fd;
+    --amber: #f9c984;
+    --red: #ffa6a6;
+    --danger-dim: rgba(255, 166, 166, .10);
+    --warning-dim: rgba(249, 201, 132, .09);
+    --success-dim: rgba(114, 217, 176, .09);
+
+    --ui-space-1: 4px;
+    --ui-space-2: 8px;
+    --ui-space-3: 12px;
+    --ui-space-4: 16px;
+    --ui-space-5: 20px;
+    --ui-space-6: 24px;
+    --ui-space-8: 32px;
+    --ui-control-height: 40px;
+    --ui-control-sm: 36px;
+    --ui-touch-height: 42px;
+    --ui-line-body: var(--line-body);
+    --ui-checkbox-column: 44px;
+    --r-sm: 8px;
+    --r-md: 12px;
+    --r-lg: 14px;
+    --shadow-panel: 0 3px 14px rgba(0, 0, 0, .08);
+    --shadow-popover: 0 18px 40px rgba(0, 0, 0, .4);
+    --shadow-dialog: 0 24px 80px rgba(0, 0, 0, .45);
+    --focus-ring: 0 0 0 3px rgba(136, 188, 255, .17);
+    --ease: cubic-bezier(.2, 0, 0, 1);
+    --ease-quart: var(--ease);
+    --t-fast: 120ms;
+    --t-mid: 170ms;
+    --t-slow: 220ms;
+    --z-sticky: 2;
+    --z-popover: 20;
+    --z-dialog: 50;
+    --z-toast: 80;
+  }
+}

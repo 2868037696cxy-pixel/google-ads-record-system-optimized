@@ -503,7 +503,7 @@ body.auth-body {
    ============================================================ */
 body.auth-body {
   background:
-    radial-gradient(1150px 640px at 80% 6%, rgba(200, 246, 93, 0.06), transparent 62%),
+    radial-gradient(1150px 640px at 80% 6%, rgba(136, 188, 255, 0.06), transparent 62%),
     radial-gradient(900px 580px at 10% 94%, rgba(109, 179, 250, 0.055), transparent 60%),
     linear-gradient(165deg, #0f141e 0%, #0a0e16 48%, #070a10 100%);
 }
@@ -636,7 +636,7 @@ body.auth-body {
   background: linear-gradient(180deg, var(--accent-strong), var(--accent) 54%, var(--accent-deep));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.5),
-    0 10px 26px -12px rgba(200, 246, 93, 0.5);
+    0 10px 26px -12px rgba(136, 188, 255, 0.5);
   transition: filter var(--t-fast) var(--ease-quart), box-shadow var(--t-fast) var(--ease-quart),
     transform var(--t-fast) var(--ease-quart);
 }
@@ -645,7 +645,7 @@ body.auth-body {
   filter: brightness(1.06);
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.58),
-    0 16px 34px -12px rgba(200, 246, 93, 0.6);
+    0 16px 34px -12px rgba(136, 188, 255, 0.6);
 }
 
 .auth-submit:active:not(:disabled) { transform: translateY(1px) scale(0.994); }

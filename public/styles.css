@@ -1,56 +1,5 @@
-/* ============================================================
-   ADS CONSOLE — 暗色精密作战台设计系统
-   单一荧光绿主色 · 带纹理深色底 · 等宽数字 · 克制的入场编排
-   ============================================================ */
-
-:root {
-  /* 表面层 */
-  --bg: #090c11;
-  --bg-soft: #0d1118;
-  --surface: #10151e;
-  --surface-2: #141a25;
-  --surface-3: #1a2130;
-  --line: rgba(163, 190, 228, 0.09);
-  --line-strong: rgba(163, 190, 228, 0.16);
-
-  /* 文字（带蓝绿倾向的中性色） */
-  --text: #e9eef6;
-  --muted: #98a4b8;
-  --faint: #7a88a0;
-  --ghost: #5c6a80;
-
-  /* 主色：电光荧光绿 */
-  --accent: #c8f65d;
-  --accent-strong: #d8ff77;
-  --accent-deep: #9ccf2e;
-  --accent-ink: #131a04;
-  --accent-dim: rgba(200, 246, 93, 0.14);
-  --accent-line: rgba(200, 246, 93, 0.34);
-
-  /* 语义色 */
-  --green: #4ade80;
-  --blue: #6db3fa;
-  --amber: #fbbf5c;
-  --red: #f87171;
-
-  /* 动效 */
-  --ease: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-quart: cubic-bezier(0.25, 1, 0.5, 1);
-  --t-fast: 120ms;
-  --t-mid: 260ms;
-  --t-slow: 460ms;
-
-  /* 字体 */
-  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
-    "PingFang SC", "HarmonicOS Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
-  --mono: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas,
-    "Liberation Mono", monospace;
-
-  --r-sm: 8px;
-  --r-md: 12px;
-  --r-lg: 16px;
-}
-
+/* Legacy page anatomy. Add new tokens in design-tokens.css and components in ui-components.css. */
+@layer legacy {
 * { box-sizing: border-box; }
 
 html, body {
@@ -63,7 +12,7 @@ body {
   font-family: var(--sans);
   background: var(--bg);
   color: var(--text);
-  font-size: 13.5px;
+  font-size: var(--font-body);
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -1539,3 +1488,5 @@ input[type=checkbox]{min-width:16px;min-height:16px}
 }
 .col-menu-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
 .col-menu-item:hover { background: var(--surface-3); }
+
+}

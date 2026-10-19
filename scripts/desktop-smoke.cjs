@@ -174,11 +174,13 @@ const { certificate } = require('../tests/pdf-fixture');
     await page.locator('#f-proxy').selectOption('1');
     assert.equal(await page.locator('.create-preview span > b').first().innerText(), '1');
     await page.locator('[data-action="create"]').evaluate((button) => { button.click(); button.click(); });
+    await page.locator('#create-confirm').evaluate((button) => { button.click(); button.click(); });
     await page.waitForFunction(() => document.querySelector('#toast-root').innerText.includes('已创建 1 条记录'));
     const stored = await page.evaluate(() => api('/api/bootstrap'));
     assert.equal(stored.records.length, 1);
     assert.equal(stored.pools.licenses[0].status, '已使用');
     console.log('PASS create record assigns imported business license');
+    await page.locator('#modal-root .modal-close').click();
 
     await page.locator('#nav [data-page="records"]').click();
     await page.locator('[data-sensitive="true"]').click();

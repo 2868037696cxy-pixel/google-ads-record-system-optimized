@@ -11,7 +11,11 @@ function wipeSecrets(value) {
 }
 async function lockSensitive() {
   clearTimeout(secretTimer);state.unlockedUntil=0;state.reveal=false;
-  wipeSecrets(state.pools);wipeSecrets(state.records);
+  // Abort in-flight revealed queries as well as clearing already-rendered values.
+  ++refreshRequestSeq;
+  invalidateRecordQuery();
+  state.recordsPhase='ready';state.recordError='';
+  wipeSecrets(state.pools);wipeSecrets(state.records);wipeSecrets(state.recentRecords);
   // 审计 F02：render() 只重绘主区域，弹窗不在其中 —— 锁定后 state.reveal 已是 false、
   // 两个池也已脱敏，但弹窗 input 里仍然是明文，而编辑弹窗恰恰是最集中显示明文的地方。
   // 因此锁定时直接关掉弹窗，并把编辑态表单里的敏感字段一并擦掉。

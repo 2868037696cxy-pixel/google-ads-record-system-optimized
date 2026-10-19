@@ -14,7 +14,8 @@
     "test:round73": "node scripts/round73-ui.cjs",
     "backup:check": "node scripts/backup.cjs verify",
     "test:f15": "node scripts/f15-ui.cjs",
-    "test:design": "node scripts/design-foundations-ui.cjs"
+    "test:design": "node scripts/design-foundations-ui.cjs",
+    "test:ux": "node scripts/workbench-ux-ui.cjs"
   },
   "engines": {
     "node": ">=22.16.0"
