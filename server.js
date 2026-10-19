@@ -468,9 +468,17 @@ function parseCards(text) {
 }
 
 // Bound PDF parser work. Parsing never executes PDF JavaScript.
+// 审计 F17 前置：并发上限原先硬编码为 2，导致"服务器忙"这条分支既不可配置，
+// 也无法在测试里稳定触发（第 71 轮试了两次真并发，闸门一次都没命中）。
+// 改为可配置：默认仍是 2；设 0 表示暂停 PDF 解析（维护期可用），
+// 测试里设 0 就能确定性地走到 429 分支。
+const PDF_PARSE_LIMIT = (() => {
+  const raw = Number(process.env.PDF_PARSE_CONCURRENCY);
+  return Number.isInteger(raw) && raw >= 0 ? raw : 2;
+})();
 let parsingPdfs=0;
 async function extractPdfText(buf) {
-  if(parsingPdfs>=2) {const e=new Error('\u8bc6\u522b\u4efb\u52a1\u8f83\u591a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');e.statusCode=429;throw e;}
+  if(parsingPdfs>=PDF_PARSE_LIMIT) {const e=new Error('\u8bc6\u522b\u4efb\u52a1\u8f83\u591a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');e.statusCode=429;throw e;}
   parsingPdfs++;
   try{return await extractPdfTextInternal(buf);}finally{parsingPdfs--;}
 }
@@ -1389,7 +1397,12 @@ fastify.post('/api/parse/licenses-pdf', async (req) => {
     const enriched = items.map((item) => ({ ...item, ...probeDuplicate(item, req) }));
     return { items: enriched, text };
   } catch (error) {
-    if (error.statusCode === 400) throw error;
+    // 审计 F17：原来只放行 statusCode===400，于是 extractPdfText 抛出的 **429**
+    // （并发解析超限："识别任务较多，请稍后重试"）被这里吞掉，改写成
+    // 400「PDF 解析失败，请选择可读取的 PDF」—— 服务器忙被报成"你的文件坏了"。
+    // 用户于是反复重试一份其实完好的文件，把"等一会儿再来"做成了相反的动作。
+    // 带 statusCode 的失败都有明确语义，应原样交给客户端。
+    if (error.statusCode) throw error;
     fastify.log.warn({ err: error }, 'PDF 解析失败');
     return reply400('PDF 解析失败，请选择可读取的 PDF 或手动填写信息');
   }
