@@ -82,6 +82,11 @@ test('F16: ordinary bootstrap and paged records never decrypt secrets; reveal do
     assert.equal(page.value.items[0].email_pass, PROTECTED);
     assert.equal(opens, 0, '普通分页列表不应先解密记录凭据');
 
+    const csv = await api('POST', '/api/export/csv', { ids: [page.value.items[0].id] });
+    assert.equal(csv.status, 200);
+    assert.equal(opens, 0, '普通 CSV 本来就不输出密码，不应为了导出再解密密码');
+    assert.ok(!csv.value.text.includes('email-secret'));
+
     const unlocked = await api('POST', '/api/security/unlock', { password });
     assert.equal(unlocked.status, 200);
 
