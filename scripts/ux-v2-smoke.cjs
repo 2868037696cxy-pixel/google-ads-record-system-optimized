@@ -90,7 +90,7 @@ function contrast(a,b) {
       };
     });
     assert.ok(recordMetrics.cellHeight>=44,'default rows must be comfortably readable');
-    assert.equal(recordMetrics.cellFont,'13px');
+    assert.equal(recordMetrics.cellFont,'14px');
     assert.equal(recordMetrics.headerFont,'12px');
     assert.ok(recordMetrics.actionHeight>=32);
     assert.equal(recordMetrics.stickyColumn,'sticky');
