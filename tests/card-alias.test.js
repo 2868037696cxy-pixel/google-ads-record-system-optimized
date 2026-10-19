@@ -99,6 +99,20 @@ test('HTTP 导入层面同样拒绝（审计的证据是接口返回 200）', as
     const boot = await fetch(`${origin}/api/bootstrap`, { headers: { cookie, 'x-workbench': '1' } });
     const data = await boot.json();
     assert.equal(data.pools.cards.length, 1, `付款工具数应为 1，实际 ${data.pools.cards.length}`);
+
+    // 编辑路径必须同样拒绝。assertNoCardSecrets 在 PATCH 与 updateRecordColumns
+    // 两个边界上都被调用（server.js:1472、lib/store.js:216），这里把整条链路钉住 ——
+    // 否则将来有人在某个边界上删掉这个校验，导入侧的测试仍然全绿。
+    const patched = await fetch(`${origin}/api/pool/cards/1`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-workbench': '1', cookie },
+      body: JSON.stringify({ number: '4111\t1111\t1111\t1111' }),
+    });
+    assert.equal(patched.status, 400,
+      `编辑路径返回 ${patched.status}，应拒绝夹带完整卡号的别名`);
+    const after = await (await fetch(`${origin}/api/bootstrap`, { headers: { cookie, 'x-workbench': '1' } })).json();
+    assert.equal(after.pools.cards[0].number, 'Amex Business 0007',
+      `别名被改成了 ${JSON.stringify(after.pools.cards[0].number)} —— 编辑路径把完整卡号存了进去`);
   } finally {
     await service.close();
     fs.rmSync(root, { recursive: true, force: true });
