@@ -65,6 +65,14 @@ const { _electron } = require('playwright');
     console.log('PASS desktop form anatomy: readable labels and actionable controls');
 
     await page.locator('#nav [data-page="records"]').click();
+    const density = page.locator('[data-action="toggle-density"]');
+    await density.click();
+    assert.equal(await density.getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.evaluate(() => document.body.classList.contains('table-compact')), true);
+    assert.equal(await page.evaluate(() => localStorage.getItem('wb.tableDensity.' + state.user.username)), 'compact');
+    await density.click();
+    assert.equal(await density.getAttribute('aria-pressed'), 'false');
+    assert.equal(await page.evaluate(() => document.body.classList.contains('table-compact')), false);
     const horizontal = await page.evaluate(() => {
       const wrap = document.querySelector('#recordsPanel .table-wrap');
       return wrap ? { width: wrap.clientWidth, scrollWidth: wrap.scrollWidth, scrollable: getComputedStyle(wrap).overflowX } : null;
