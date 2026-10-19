@@ -104,4 +104,15 @@ test('F12: resource PATCH also requires version, including status-only changes',
   const after = (await api('GET', '/api/bootstrap')).value.pools.emails.find((row) => row.id === before.id);
   assert.equal(after.status, '停用');
   assert.equal(after.version, before.version + 1);
+
+  const combined = await api('PATCH', `/api/pool/emails/${before.id}`, {
+    user: 'f12-renamed@example.test',
+    status: '未使用',
+    version: after.version,
+  });
+  assert.equal(combined.status, 200);
+  const finalRow = (await api('GET', '/api/bootstrap')).value.pools.emails.find((row) => row.id === before.id);
+  assert.equal(finalRow.user, 'f12-renamed@example.test');
+  assert.equal(finalRow.status, '未使用');
+  assert.equal(finalRow.version, after.version + 1, '同一次资源 PATCH 同时改状态和字段也只能递增一次 version');
 });
