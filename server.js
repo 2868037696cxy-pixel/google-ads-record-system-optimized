@@ -1038,9 +1038,27 @@ function requireUnlocked(req) {
 fastify.addHook('onRequest', async (req, reply) => {
   const rawPath=req.url.split('?')[0];
   if(/%2f|%5c|%2e|\\|\/\//i.test(rawPath)) return rejectEarly(reply,400,{error:'Invalid path'});
-  if (!req.url.startsWith('/api/')) return;
+
+  // 只接受 origin-form 请求目标。绝对形式（`GET http://host/api/x HTTP/1.1`）是合法
+  // HTTP/1.1，find-my-way 仍会把它路由到对应 handler，但 req.url 以 "http://" 开头，
+  // 会让下面基于前缀的鉴权判断失效。（本行同时是纵深防御：上面那条 // 拦截虽已覆盖
+  // 绝对形式，但不该依赖「恰好含 //」这个副作用。）
+  if(!req.url.startsWith('/')) return rejectEarly(reply,400,{error:'Invalid path'});
+
+  // 鉴权判断必须建立在「解码后」的路径上，否则会与路由判断产生分歧：
+  // find-my-way 会解码百分号编码，实测 `/%61pi/bootstrap`（%61 = 'a'）被路由到
+  // /api/bootstrap 的 handler，而未解码的 req.url 不以 /api/ 开头 —— 原先这里直接
+  // return，导致桌面令牌、来源校验、CSRF、限速、会话鉴权被整体跳过，onSend 的
+  // Cache-Control: no-store 与敏感字段脱敏也一并失效。实测该路径可在未登录状态下
+  // 拿到 /api/bootstrap 的 200 响应（因 handler 自身无法解析 owner 而返回空数据，
+  // 破坏性写则被敏感操作解锁检查挡下 —— 但那是巧合，不是设计）。
+  // 解码失败（畸形 % 序列）一律 400，避免路由与鉴权再次分歧。
+  let pathname;
+  try { pathname = decodeURIComponent(rawPath); } catch { return rejectEarly(reply,400,{error:'Invalid path'}); }
+
+  if (!pathname.startsWith('/api/')) return;
   if(!SAFE_METHODS.has(req.method.toUpperCase()) && req.headers.origin && PUBLIC_ORIGIN && req.headers.origin!==PUBLIC_ORIGIN) return rejectEarly(reply,403,{error:'Invalid origin'});
-  if(['/api/auth/login','/api/auth/register','/api/security/unlock'].includes(rawPath)) {
+  if(['/api/auth/login','/api/auth/register','/api/security/unlock'].includes(pathname)) {
     if(!networkLimiter.check(clientAddress(req)).allowed) return rejectEarly(reply,429,{error:'Too many attempts. Try later.'});
   }
 
@@ -1055,7 +1073,6 @@ fastify.addHook('onRequest', async (req, reply) => {
     return rejectEarly(reply, 403, { error: '请求缺少来源标记，请刷新页面后重试' });
   }
 
-  const pathname = req.url.split('?')[0];
   if (PUBLIC_PATHS.has(pathname) || isDesktopRequest(req)) return;
 
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
@@ -1072,9 +1089,13 @@ fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
   reply.header('Permissions-Policy','camera=(), microphone=(), geolocation=()');
   if(SESSION_SECURE) reply.header('Strict-Transport-Security','max-age=31536000');
-  if (req.url.startsWith('/api/')) {
+  // 与 onRequest 同理：响应的 no-store 与脱敏也按解码后的路径判断，
+  // 否则编码路径会绕过这两项保护。
+  let sendPath = req.url.split('?')[0];
+  try { sendPath = decodeURIComponent(sendPath); } catch { /* 畸形序列不在此处报错 */ }
+  if (sendPath.startsWith('/api/')) {
     reply.header('Cache-Control', 'no-store');
-    const path=req.url.split('?')[0];
+    const path=sendPath;
     if(typeof payload==='string' && String(reply.getHeader('content-type')).includes('application/json') && !path.startsWith('/api/parse/') && !req.allowSecrets) {
       try { payload=JSON.stringify(redact(JSON.parse(payload))); } catch { /* non-JSON handled by framework */ }
     }

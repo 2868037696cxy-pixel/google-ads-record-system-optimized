@@ -96,3 +96,22 @@ test('vault fails closed on ciphertext context mismatch and wrong key',()=>{
 test('changing password invalidates existing sessions immediately',async()=>{
   const changed=await api('carol','POST','/api/account/password',{current_password:'Secure-Test-1234',new_password:'New-Secure-Test-123'});assert.equal(changed.status,200);assert.equal((await api('carol','GET','/api/bootstrap')).status,401);
 });
+// 原始 socket：只有这样才能构造绝对形式请求行。fetch 发不出绝对形式，且 URL 解析会
+// 改写百分号编码，所以下面这两类绕过用 fetch 写的用例天生测不到。
+function rawGet(requestLine){return new Promise((resolve,reject)=>{const net=require('node:net');const port=new URL(url).port;const s=net.connect(Number(port),'127.0.0.1');let buf='';s.setTimeout(8000);s.on('connect',()=>s.write(requestLine+'\r\nHost: 127.0.0.1:'+port+'\r\nConnection: close\r\n\r\n'));s.on('data',d=>{buf+=d.toString('utf8');});s.on('end',()=>resolve(buf.split('\r\n')[0]||''));s.on('timeout',()=>{s.destroy();reject(new Error('原始请求超时'));});s.on('error',reject);});}
+test('鉴权判断不得与被路由的路径分歧：编码路径与绝对形式都不得跳过整个钩子',async()=>{
+  const port=new URL(url).port;
+  assert.match(await rawGet('GET /api/bootstrap HTTP/1.1'),/401/,'基线：未登录访问受保护接口必须 401');
+  // %61='a'、%69='i'：find-my-way 会解码，把 /%61pi/bootstrap 路由到 /api/bootstrap 的
+  // handler，而未解码的 req.url 不以 /api/ 开头。修复前这里返回 200（钩子被整体跳过，
+  // 桌面令牌、来源校验、CSRF、限速、会话鉴权全部失效）。
+  for(const target of ['/%61pi/bootstrap','/%61p%69/bootstrap','/%61pi/backup','/%61pi/pool/emails']){
+    const line=await rawGet('GET '+target+' HTTP/1.1');
+    assert.match(line,/401|404/,'编码路径 '+target+' 不应绕过鉴权，实际：'+line);
+  }
+  // 绝对形式请求行是合法 HTTP/1.1，会使 req.url 以 http:// 开头
+  const abs=await rawGet('GET http://127.0.0.1:'+port+'/api/bootstrap HTTP/1.1');
+  assert.match(abs,/400|401/,'绝对形式请求目标不应绕过鉴权，实际：'+abs);
+  // 畸形百分号序列必须 400，不能进入路由
+  assert.match(await rawGet('GET /%zz/api/bootstrap HTTP/1.1'),/400/,'畸形编码应 400');
+});
