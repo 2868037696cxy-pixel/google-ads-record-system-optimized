@@ -136,7 +136,7 @@ jobs:
           test "$ACTUAL_HEAD" = "$EXPECTED_HEAD"
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -- server.js public/app.js public/licenses.js
+          git add -- server.js public/app.js public/licenses.js scripts/desktop-smoke.cjs scripts/remote-smoke.cjs
           if ! git diff --cached --quiet; then
             git commit -m 'fix: apply verified round73 parsing, PDF import and UI follow-up'
             git push origin HEAD:refs/heads/fix/round73-followup
