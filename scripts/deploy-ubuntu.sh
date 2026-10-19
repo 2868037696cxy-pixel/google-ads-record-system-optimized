@@ -82,6 +82,13 @@ if [[ -L "$CURRENT" ]]; then CURRENT_EXISTED=1; CURRENT_TARGET=$(readlink "$CURR
 elif [[ -e "$CURRENT" ]]; then echo "$CURRENT exists but is not a symlink; refusing upgrade."; exit 1
 fi
 ROLLBACK=''
+wait_for_health() {
+  for n in $(seq 1 30); do
+    if "$NODE" -e 'fetch("http://127.0.0.1:4317/api/healthz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
 WAS_ACTIVE=0; WAS_ENABLED=0; WAS_TIMER_ACTIVE=0; WAS_TIMER_ENABLED=0
 systemctl is-active --quiet adsworkbench && WAS_ACTIVE=1
 systemctl is-enabled --quiet adsworkbench 2>/dev/null && WAS_ENABLED=1
@@ -109,7 +116,12 @@ rollback() {
   if [[ "$WAS_ENABLED" == 1 ]]; then systemctl enable adsworkbench >/dev/null 2>&1 || true; else systemctl disable adsworkbench >/dev/null 2>&1 || true; fi
   if [[ "$WAS_TIMER_ENABLED" == 1 ]]; then systemctl enable adsworkbench-backup.timer >/dev/null 2>&1 || true; else systemctl disable adsworkbench-backup.timer >/dev/null 2>&1 || true; fi
   if [[ "$WAS_TIMER_ACTIVE" == 1 ]]; then systemctl start adsworkbench-backup.timer || true; else systemctl stop adsworkbench-backup.timer || true; fi
-  if [[ "$WAS_ACTIVE" == 1 ]]; then systemctl start adsworkbench || true; else systemctl stop adsworkbench || true; fi
+  if [[ "$WAS_ACTIVE" == 1 ]]; then
+    systemctl start adsworkbench || true
+    wait_for_health || { echo 'Rollback restored files/data but the previous service did not become healthy; leaving it for operator inspection.'; return 1; }
+  else
+    systemctl stop adsworkbench || true
+  fi
 }
 failpoint() {
   if [[ "${ADS_DEPLOY_TEST_FAILPOINT:-}" == "$1" ]]; then
