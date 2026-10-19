@@ -548,17 +548,19 @@ const LIC_LABELS = {
   apt: '公寓|套房|门牌号|(?:apt|suite|unit)\\b',
   zip: '邮编|(?:postal\\s*code|zip\\s*code|zip)',
   city: '市(?:/区)?|城市|(?:city|town|municipality)',
+  cvr: '公司注册号|企业注册号|商业注册号|注册号|登记号|统一社会信用代码|CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?|(?:company\\s+|business\\s+)?registration\\s*(?:number|no\\.?|nr\\.?)',
   type: '资料类型|(?:entity|business|organization)\\s*type|类型|type',
 };
 const LIC_STOP = Object.values(LIC_LABELS).join('|');
 
 function licGrab(t, labels) {
-  const re = new RegExp(`(?:${labels})\\s*[:：=]\\s*(.*?)(?=[，,;；、\\s]*(?:${LIC_STOP})\\s*[:：=]|$)`, 'i');
+  const re = new RegExp(`(?:^|[，,;；、\\s])(?:${labels})\\s*[:：=]\\s*(.*?)(?=[，,;；、\\s]+(?:${LIC_STOP})\\s*[:：=]|$)`, 'i');
   const m = t.match(re);
   return m ? m[1].trim().replace(/^["'「」『』【】]+|["'「」『』【】]+$/g, '') : '';
 }
 
 function parseLicenses(text) {
+  if (text != null && typeof text !== 'string') return reply400('待解析内容必须为文本');
   const raw = String(text || '').trim();
   if (!raw) return [];
 
@@ -577,6 +579,7 @@ function parseLicenses(text) {
       apt: licGrab(flat, LIC_LABELS.apt),
       zip: licGrab(flat, LIC_LABELS.zip).replace(/^DK-/i, ''),
       city: licGrab(flat, LIC_LABELS.city),
+      cvr: licGrab(flat, LIC_LABELS.cvr),
       type: licGrab(flat, LIC_LABELS.type) || '组织',
     }];
   }
@@ -635,6 +638,11 @@ function batchKeyOf(type, it) {
 function normalizeImport(type, item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return reply400('导入内容格式不正确');
   assertNoCardSecrets(item);
+  for (const key of IMPORT_FIELDS[type]) {
+    const value = item[key];
+    if (value != null && typeof value !== 'string' && !(typeof value === 'number' && Number.isFinite(value))) return reply400('导入字段必须为文本或有限数字');
+    if (String(value ?? '').length > 8192) return reply400('单个导入字段过长');
+  }
   const row = Object.fromEntries(IMPORT_FIELDS[type].map((key) => [key, String(item[key] ?? '').trim()]));
   if (type === 'emails' && !EMAIL_RE.test(row.user)) return reply400('存在无效邮箱，请检查导入内容');
   if (type === 'proxies' && (!row.host || (row.port && (!/^\d+$/.test(row.port) || Number(row.port) < 1 || Number(row.port) > 65535)))) return reply400('代理主机或端口无效');
@@ -683,6 +691,7 @@ function rejectDuplicatePdf() {
  */
 function importItems(ownerId, type, items) {
   if (!Array.isArray(items) || items.length > 5000) return reply400('单次导入最多 5000 条');
+  const submittedItems = items;
   items = items.map((item) => normalizeImport(type, item));
   let added = 0;
   let updated = 0;
@@ -690,7 +699,7 @@ function importItems(ownerId, type, items) {
   const conflicts = [];
   const seen = new Set();
   const label = dupLabel(type);
-  for (const it of items) {
+  for (const [itemIndex, it] of items.entries()) {
     const batchKey = batchKeyOf(type, it);
     if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
     if (type === 'licenses') {
@@ -725,7 +734,8 @@ function importItems(ownerId, type, items) {
           continue;
         }
         try {
-          const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          const updates = Object.fromEntries(Object.entries(it).filter(([key, value]) => Object.hasOwn(submittedItems[itemIndex], key) && value !== ''));
+          const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...updates });
           // 本人只更新组织字段时，已有账号记录中的营业执照快照也要同步。
           syncResource(ownerId, 'licenses', updatedLicense);
           updated++;
@@ -1339,7 +1349,7 @@ fastify.get('/api/records', async (req, reply) => {
   const parsePaging = (raw, { min, max, fallback, name }) => {
     if (raw === undefined || raw === '') return { value: fallback };
     const n = Number(raw);
-    if (!Number.isInteger(n) || n < min || n > max) {
+    if (typeof raw !== 'string' || !/^(?:0|[1-9]\d*)$/.test(raw) || !Number.isSafeInteger(n) || n < min || n > max) {
       return { error: `${name} 必须是 ${min}..${max} 之间的整数` };
     }
     return { value: n };
@@ -1439,6 +1449,13 @@ fastify.post('/api/import/:type', async (req, reply) => {
   if (hasPdf) {
     if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
     const bytes = decodePdf(req.body.pdf);
+    if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
+    try {
+      await extractPdfText(bytes);
+    } catch (error) {
+      if (error.statusCode) throw error;
+      return reply400('PDF 结构无效、已损坏或需要密码，未保存原件');
+    }
     const item = normalizeImport('licenses', items[0]);
     const documentId = checkDuplicatePdf(bytes).sha256;
     const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
@@ -1453,6 +1470,12 @@ fastify.post('/api/import/:type', async (req, reply) => {
         return reply400('该 PDF 已属于另一份资料，名称修改与现有组织冲突，请核对后重试');
       }
       const mineMatched = byDocument[0] || byName || null;
+      // The PDF entry point must enforce the same identity rule as text imports.
+      const previousCvr = mineMatched && dedup.licenseKeys(mineMatched).dup_cvr;
+      const submittedCvr = dedup.licenseKeys(item).dup_cvr;
+      if (previousCvr && submittedCvr && previousCvr !== submittedCvr) {
+        return replyConflict('该公司名称已存在但注册号不同，请核对后再处理', [{name:item.name,field:'cvr',label:'注册号',message:'同名资料的注册号不一致，未保存'}]);
+      }
 
       // 关键一步：跨全体用户判重（自己已有的那条属于「更新」，不算重复）
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
@@ -1462,7 +1485,8 @@ fastify.post('/api/import/:type', async (req, reply) => {
       const added = license ? 0 : 1;
       try {
         if (!license) license = store.insertPoolRow(db, ownerId, 'licenses', item, { createdAt: nowLocal() });
-        const merged = normalizeImport('licenses', { ...store.toPublic(license), ...items[0] });
+        const updates = Object.fromEntries(Object.entries(item).filter(([key, value]) => Object.hasOwn(items[0], key) && value !== ''));
+        const merged = normalizeImport('licenses', { ...store.toPublic(license), ...updates });
         license = store.updatePoolRow(db, ownerId, 'licenses', license.id, merged);
       } catch (error) {
         if (!store.isUniqueViolation(error)) throw error;
@@ -1474,6 +1498,7 @@ fastify.post('/api/import/:type', async (req, reply) => {
       store.putDocument(db, ownerId, { sha256: documentId, filename, bytes, createdAt: nowLocal() });
       license = store.findPoolItem(db, ownerId, 'licenses', license.id);
       syncResource(ownerId, 'licenses', license);
+      audit(db, ownerId, added ? 'pdf.import' : 'pdf.replace', String(license.id));
       store.pruneDocuments(db);
       return {
         added, updated: added ? 0 : 1, skipped: 0, duplicates: [], conflicts: [],
@@ -1500,6 +1525,7 @@ function licenseDocument(id, ownerId = null) {
   const license = owner ? store.findPoolItem(db, owner, 'licenses', Number(id)) : null;
   const document = license && license.document_id ? store.getDocument(db, license.document_id) : null;
   if (!document) throw new Error('这份营业执照尚未保存原 PDF');
+  audit(db, owner, 'pdf.read', String(id));
   return {
     id: license.document_id,
     filename: document.filename,
@@ -1692,19 +1718,21 @@ fastify.post('/api/export/csv', async (req) => {
 fastify.get('/api/backup', async (req, reply) => {
   const ownerId = currentUserId(req);
   const user = store.findUserById(db, ownerId);
+  requireUnlocked(req);
+  const envelope = encryptedSnapshot(ownerId);
   const filename = `账号工作台-${user.username}-${new Date().toISOString().slice(0, 10)}.json`;
   reply.header('Content-Type', 'application/json; charset=utf-8');
   reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
   requireUnlocked(req);
   audit(db,ownerId,'backup.export');
-  return reply.send(JSON.stringify(encryptedSnapshot(ownerId)));
+  return reply.send(JSON.stringify(envelope));
 });
 
 /**
  * 恢复个人备份：只覆盖当前账号的数据，绝不触碰其他成员。
  * 单独放宽请求体上限（附件内嵌 base64 会很大），避免为此抬高全局上限成为攻击面。
  */
-fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
+fastify.post('/api/backup/restore', { bodyLimit: require('./lib/personal-backup-policy').RESTORE_BODY_LIMIT }, async (req, reply) => {
   const ownerId = currentUserId(req);
   const payload = req.body?.snapshot ?? req.body;
   requireUnlocked(req);
@@ -1759,10 +1787,12 @@ function snapshot(ownerId = null) {
 function encryptedSnapshot(ownerId=null) {
   const owner=ownerId??resolveDefaultOwner();
   if(!owner) throw new Error('Login required for backup');
+  const policy = require('./lib/personal-backup-policy');
+  policy.assertDocumentBudget(db, owner);
   const value=snapshot(owner),vault=getVault(db);
-  return {format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),
+  return policy.assertEnvelopeBudget({format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),
     counts:{records:value.records.length,licenses:value.licenses.length},
-    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)};
+    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)});
 }
 function decryptSnapshot(envelope,ownerId=null) {
   const owner=ownerId??resolveDefaultOwner(),vault=getVault(db);

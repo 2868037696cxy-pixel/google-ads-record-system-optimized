@@ -176,11 +176,14 @@ const { certificate } = require('../tests/pdf-fixture');
     assert.equal(stored.pools.licenses[0].status, '已使用');
     console.log('PASS create record assigns imported business license');
 
+    await page.locator('#nav [data-page="records"]').click();
     await page.locator('[data-sensitive="true"]').click();
     await page.getByText('请先显示敏感信息，再复制该字段', { exact: true }).waitFor();
+    await page.locator('#nav [data-page="create"]').click();
     await page.locator('[data-action="open-picker"][data-kind="cards"]').click();
     assert.equal(await page.locator('#picker-list input').first().isDisabled(), true);
     await page.keyboard.press('Escape');
+    await page.locator('#nav [data-page="records"]').click();
     await page.locator('[data-action="edit-record"]').first().click();
     assert.equal(await page.locator('[name="card_id"]').inputValue(), '1');
     await page.locator('[name="country"]').fill('优化验收');

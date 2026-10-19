@@ -33,7 +33,12 @@ async function api(path, opts = {}) {
     location.replace('/login.html');
     throw new Error('登录状态已失效，请重新登录');
   }
-  const data = await res.json().catch(() => { throw new Error('服务响应异常，请重新连接'); });
+  let data;
+  try { data = await res.json(); } catch {
+    const messages = {403:'访问被拦截，可能处于维护期或当前出口 IP 未获放行，请联系管理员',413:'请求过大，请减少文件或批次大小',429:'请求过于频繁，请稍后重试',502:'后台暂时不可用，请稍后重试',503:'服务维护中，请稍后重试',504:'后台响应超时，提交结果待确认，请勿重复新建'};
+    const error = new Error(messages[res.status] || '服务响应格式异常，请重新连接或联系管理员');
+    error.status = res.status; throw error;
+  }
   if (!res.ok) {
     const error = new Error(data.message || data.error || `请求失败 (${res.status})`);
     // 判重被拒绝时携带冲突明细（谁在什么时候导入的），供界面逐条展示
@@ -1059,7 +1064,7 @@ function openAutoImport() {
 
 function openPicker(kind) {
   const conf = KINDS.find((k) => k.key === kind);
-  const picked = state.picked[kind];
+  const picked = new Set(state.picked[kind]);
   const items = [...state.pools[kind]]
     .sort((a, b) => (a.status === '未使用' ? -1 : 1) - (b.status === '未使用' ? -1 : 1) || a.id - b.id);
 
@@ -1116,6 +1121,8 @@ function openPicker(kind) {
     countEl.textContent = 0;
   };
   document.getElementById('picker-ok').onclick = async () => {
+    const available = new Set(state.pools[kind].filter(item => item.status === '未使用').map(item => item.id));
+    state.picked[kind] = new Set([...picked].filter(id => available.has(id)));
     closeModal();
     render();
   };
@@ -1191,7 +1198,7 @@ function openEditRecord(id) {
       await api(`/api/records/${id}`, { method: 'PATCH', body });
       toast('✅ 已保存');
       if (form.isConnected) closeModal();
-      await refresh();
+      await refresh().catch(() => toast('修改已保存，但列表刷新失败；请重新连接，不要重复提交', 'warn'));
     } catch (e) {
       toast(e.message, 'error');
     } finally {
