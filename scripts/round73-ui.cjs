@@ -89,11 +89,15 @@ const {certificate}=require('../tests/pdf-fixture');
     assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?q=round73-status.example&limit=10&offset=0');return r.items[0]?.status;}),'异常');
     console.log('PASS F19 status mutation is not reported as failed when only refresh fails');
 
-    const deleteId=await page.evaluate(async()=>{
+    const deleteId=await page.evaluate(async(statusFixtureId)=>{
+      // 独立建立删除用例：状态用例已占用唯一 PDF，先解除测试关联，
+      // 避免在待测删除之前因库存不足而提前失败；前面的状态持久化断言保留。
+      const previous=(await api('/api/records?q=round73-status.example&limit=10&offset=0')).items.find(record=>record.id===statusFixtureId);
+      if(previous?.license_id) await api(`/api/records/${previous.id}`,{method:'PATCH',body:{license_id:null,version:previous.version}});
       await api('/api/import/emails',{method:'POST',body:{items:[{user:'round73-delete-fixture@example.test'}]}});
       const r=await api('/api/records',{method:'POST',body:{domains:['round73-delete.example'],country:'Delete me',proxy_mode:'none',email_ids:[],card_ids:[],license_ids:[]}});
       await refresh();return r.created[0].id;
-    });
+    },statusId);
     await page.locator('#nav [data-page="records"]').click();
     failRefresh=true;
     await page.locator(`[data-action="del-record"][data-id="${deleteId}"]`).click();
