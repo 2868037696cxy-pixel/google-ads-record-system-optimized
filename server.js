@@ -701,6 +701,19 @@ function conflictDetail(conflict, item) {
   };
 }
 
+function ownLicenseIdentityMismatch(existing, incomingKeys) {
+  if (!existing || !incomingKeys) return null;
+  const current = dedup.licenseKeys(existing);
+  if (current.dup_cvr && incomingKeys.dup_cvr && current.dup_cvr !== incomingKeys.dup_cvr) {
+    return { field: 'cvr', label: '注册号', message: '同名资料的注册号不一致，未保存' };
+  }
+  if (current.registration_scoped && incomingKeys.registration_scoped
+      && current.dup_reg && incomingKeys.dup_reg && current.dup_reg !== incomingKeys.dup_reg) {
+    return { field: 'cvr', label: '注册号国家/类型', message: '同名资料的注册国家或注册号类型不一致，未保存' };
+  }
+  return null;
+}
+
 /** 按 PDF 原始字节查重；更改文件名也无法绕过。 */
 function checkDuplicatePdf(bytes) {
   const sha256 = crypto.createHash('sha256').update(bytes).digest('hex');
@@ -748,17 +761,10 @@ function importItems(ownerId, type, items) {
         // 从任何仪表盘上都看不出来。已知复现：A 的 DK11111111 被 B 的 DK22222222 覆盖。
         // 注册号两边都非空且不相等 → 这是两家不同的公司，判为冲突，不写库，
         // 交给人工核对（迁移与导入都不该替人判断哪条是真实企业）。
-        const mineCvr = mine.dup_cvr || '';
-        const nextCvr = keys.dup_cvr || '';
-        if (mineCvr && nextCvr && mineCvr !== nextCvr) {
+        const identityMismatch = ownLicenseIdentityMismatch(mine, keys);
+        if (identityMismatch) {
           skipped.push(it);
-          conflicts.push({
-            name: it.name,
-            field: 'cvr',
-            label: '注册号',
-            owner: mine.owner_id,
-            message: '该公司名称已存在但注册号不同，请核对后再处理',
-          });
+          conflicts.push({ name: it.name, ...identityMismatch });
           continue;
         }
         try {
@@ -1509,20 +1515,19 @@ fastify.post('/api/import/:type', async (req, reply) => {
       const mine = store.listLicenses(db, ownerId);
       const byDocument = mine.filter((license) => license.document_id === documentId);
       if (byDocument.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
-      const byName = mine.find(DUP_KEYS.licenses(item));
-      if (byDocument[0] && byName && byDocument[0].id !== byName.id) {
-        return reply400('该 PDF 已属于另一份资料，名称修改与现有组织冲突，请核对后重试');
+      const itemKeys = dedup.licenseKeys(item);
+      const byIdentity = mine.find((license) => dedup.rowMatchesKeys(license, itemKeys));
+      if (byDocument[0] && byIdentity && byDocument[0].id !== byIdentity.id) {
+        return reply400('该 PDF 已属于另一份资料，组织身份与现有资料冲突，请核对后重试');
       }
-      const mineMatched = byDocument[0] || byName || null;
-      // The PDF entry point must enforce the same identity rule as text imports.
-      const previousCvr = mineMatched && dedup.licenseKeys(mineMatched).dup_cvr;
-      const submittedCvr = dedup.licenseKeys(item).dup_cvr;
-      if (previousCvr && submittedCvr && previousCvr !== submittedCvr) {
-        return replyConflict('该公司名称已存在但注册号不同，请核对后再处理', [{name:item.name,field:'cvr',label:'注册号',message:'同名资料的注册号不一致，未保存'}]);
+      const mineMatched = byDocument[0] || byIdentity || null;
+      const identityMismatch = ownLicenseIdentityMismatch(mineMatched, itemKeys);
+      if (identityMismatch) {
+        return replyConflict(identityMismatch.message, [{name:item.name,...identityMismatch}]);
       }
 
       // 关键一步：跨全体用户判重（自己已有的那条属于「更新」，不算重复）
-      const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
+      const conflict = dedup.findLicenseConflict(db, itemKeys, { excludeId: mineMatched ? mineMatched.id : null });
       if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, item)]);
 
       let license = mineMatched;
@@ -1639,6 +1644,10 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
         : store.setPoolStatus(db, ownerId, type, id, body.status);
     } catch (error) {
       if (!store.isUniqueViolation(error)) throw error;
+      if (type === 'licenses') {
+        const again = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
+        if (again) return replyConflict(privateConflictMessage(again), [conflictDetail(again, merged)]);
+      }
       return reply400('修改后的资源与资料库中现有资源重复');
     }
     syncResource(ownerId, type, updated);
