@@ -442,3 +442,46 @@ textarea { line-height: 1.6; }
   .sidebar-foot > .foot-note { display: none; }
   .sidebar-foot .ghost-btn { font-size: 11px; }
 }
+
+/* Secondary sidebar actions are discoverable but not always competing with navigation. */
+.sidebar-utilities {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #182330;
+  min-width: 0;
+}
+.sidebar-utilities > summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 39px;
+  padding: 9px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 620;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 9px;
+}
+.sidebar-utilities > summary::-webkit-details-marker { display: none; }
+.sidebar-utilities > summary:hover { background: var(--surface-2); color: var(--text); }
+.sidebar-utilities > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sidebar-utilities[open] > summary { border-bottom: 1px solid var(--line); border-radius: 9px 9px 0 0; }
+.utility-chevron { transition: transform .15s ease; color: var(--faint); }
+.sidebar-utilities[open] .utility-chevron { transform: rotate(180deg); }
+.sidebar-utilities-content {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+.sidebar-utilities-content .desktop-actions { margin-top: 0; }
+.sidebar-utilities-content .foot-note { padding: 0; }
+.sidebar-utilities-content .ghost-btn { min-height: 36px; }
+@media (max-width: 860px) {
+  .sidebar-utilities > summary { padding: 9px; font-size: 12px; }
+  .sidebar-utilities-content { padding: 8px; }
+  .sidebar-utilities-content .ghost-btn { font-size: 12px; }
+}
