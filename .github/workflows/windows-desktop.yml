@@ -30,6 +30,8 @@ jobs:
         run: npm run test:round73
       - name: Server-paged records, cross-page selection and off-page resource occupancy
         run: npm run test:f15
+      - name: Workbench v2 design and interaction checks
+        run: npm run test:ux
       - name: Build preconfigured Windows application without publishing
         run: npm run build:win
         env:
