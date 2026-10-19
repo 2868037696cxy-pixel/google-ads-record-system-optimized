@@ -980,6 +980,7 @@ function renderPoolTableInto() {
   const list = getFilteredPool(state.page);
   panel.querySelectorAll('.table-wrap, .empty, .table-pagination').forEach((element) => element.remove());
   panel.insertAdjacentHTML('beforeend', renderPoolTable(state.page, list));
+  enhanceCopyTargets(panel);
   const count = panel.querySelector('.sel-count');
   if (count) count.textContent = `${list.length} 条`;
 }
