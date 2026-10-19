@@ -13,7 +13,8 @@ function esc(s) {
 
 async function api(path, opts = {}) {
   const hasBody = opts.body !== undefined;
-  const headers = { ...(opts.headers || {}) };
+  // 服务器版要求所有请求带来源标记头（写操作缺它会被拒绝），并靠会话 Cookie 识别账号
+  const headers = { 'x-workbench': '1', ...(opts.headers || {}) };
   if (hasBody) headers['Content-Type'] = 'application/json';
   let res;
   try {
@@ -25,10 +26,21 @@ async function api(path, opts = {}) {
   } catch (error) {
     if (error.name === 'TimeoutError') throw new Error('连接超时，请稍后重试');
     if (error.name === 'AbortError') throw error;
-    throw new Error('无法连接本地服务，请重新连接或重启工作台');
+    throw new Error('无法连接服务，请检查网络后重新连接');
+  }
+  if (res.status === 401) {
+    // 会话失效：直接回登录页，避免在页面上留下半截状态
+    location.replace('/login.html');
+    throw new Error('登录状态已失效，请重新登录');
   }
   const data = await res.json().catch(() => { throw new Error('服务响应异常，请重新连接'); });
-  if (!res.ok) throw new Error(data.message || data.error || `请求失败 (${res.status})`);
+  if (!res.ok) {
+    const error = new Error(data.message || data.error || `请求失败 (${res.status})`);
+    // 判重被拒绝时携带冲突明细（谁在什么时候导入的），供界面逐条展示
+    if (Array.isArray(data.conflicts)) error.conflicts = data.conflicts;
+    error.status = res.status;
+    throw error;
+  }
   return data;
 }
 
@@ -132,6 +144,7 @@ const state = {
   picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
   form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
   loaded: false,
+  user: null,
   creating: false,
   recordPage: 1,
   poolPage: 1,
@@ -227,8 +240,20 @@ function renderNav() {
   document.querySelector('.dot-eye').classList.toggle('on', state.reveal);
 }
 
+/** 侧栏底部的当前账号（服务器版：每个账号只看得到自己的数据）。 */
+function renderAccount() {
+  const name = document.getElementById('accountName');
+  if (!name) return;
+  const user = state.user;
+  const label = user ? (user.display_name || user.username) : '未登录';
+  name.textContent = label;
+  document.getElementById('accountAvatar').textContent = user ? label.slice(0, 1).toUpperCase() : '—';
+  document.getElementById('accountHint').textContent = user && user.display_name ? `@${user.username}` : '数据仅本人可见';
+}
+
 function render() {
   renderNav();
+  renderAccount();
   if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
 }
@@ -240,6 +265,7 @@ async function refresh() {
   }
   state.pools = data.pools;
   state.records = data.records;
+  state.user = data.user || null;
   const recordIds = new Set(data.records.map((record) => record.id));
   state.sel = new Set([...state.sel].filter((id) => recordIds.has(id)));
   for (const kind of Object.keys(state.picked)) {
@@ -253,7 +279,7 @@ async function refresh() {
   render();
   bindLabels();
   const connection = document.getElementById('connectionStatus');
-  if (connection) { connection.textContent = '本地服务已连接'; connection.className = 'connection-status connected'; }
+  if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
 }
 
 /* ============ 工作台 ============ */
@@ -318,27 +344,12 @@ function renderWorkbench() {
       </div>
     </div>
 
-    <div class="hstats">
-      <div class="hstat hi">
-        <span class="v">${state.records.length}</span>
-        <span class="k"><span class="dot lime"></span>记录总数</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${avail.emails}<em>/ ${state.pools.emails.length}</em></span>
-        <span class="k"><span class="dot green"></span>可用邮箱</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${avail.cards}<em>/ ${state.pools.cards.length}</em></span>
-        <span class="k"><span class="dot blue"></span>可用信用卡</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${avail.licenses}<em>/ ${state.pools.licenses.length}</em></span>
-        <span class="k"><span class="dot amber"></span>可用营业执照</span>
-      </div>
-      <div class="hstat">
-        <span class="v">${poolCount('proxies')}<em>/ ${state.pools.proxies.length}</em></span>
-        <span class="k"><span class="dot"></span>可用代理</span>
-      </div>
+    <div class="stat-strip">
+      <div class="strip-item hi"><span class="v">${state.records.length}</span><span class="k">记录总数</span></div>
+      <div class="strip-item"><span class="v">${avail.emails}<em>/${state.pools.emails.length}</em></span><span class="k"><span class="dot green"></span>可用邮箱</span></div>
+      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用信用卡</span></div>
+      <div class="strip-item"><span class="v">${avail.licenses}<em>/${state.pools.licenses.length}</em></span><span class="k"><span class="dot amber"></span>可用营业执照</span></div>
+      <div class="strip-item"><span class="v">${poolCount('proxies')}<em>/${state.pools.proxies.length}</em></span><span class="k"><span class="dot"></span>可用代理</span></div>
     </div>
 
     ${
@@ -352,7 +363,7 @@ function renderWorkbench() {
             ]
               .map(
                 (s) => `<div class="step-card" ${s.k ? `data-action="nav" data-page="${s.k}"` : ''}>
-                  <span class="n">STEP ${s.n}</span><h4>${s.t}</h4><p>${s.d}</p>
+                  <span class="n">STEP ${s.n}</span><h4>${s.t}${s.k ? '<span class="go">→</span>' : ''}</h4><p>${s.d}</p>
                 </div>`
               )
               .join('')}
@@ -387,11 +398,11 @@ function renderWorkbench() {
             <label>身份证 <span class="mini">选填</span></label>
             <input id="f-idcard" value="${esc(f.id_card)}" placeholder="选填">
           </div>
-          <div class="field col-6">
+          <div class="field col-3">
             <label>域名 <span class="mini">一行一个，如 nfjh.shop；名称将自动拼成「国家-产品-域名前缀」</span></label>
             <textarea id="f-domains" class="mono" rows="4" placeholder="nfjh.shop&#10;mkxd.shop&#10;wnfh.shop">${esc(f.domains)}</textarea>
           </div>
-          <div class="field col-6">
+          <div class="field col-3">
             <label>资源分配 <span class="mini">点击「选择」可手动指定，否则自动从未使用中按顺序取用</span></label>
             <div style="display:flex;flex-direction:column;gap:8px">
               <div class="assign-row">
@@ -626,36 +637,31 @@ const POOL_TABLE = {
   },
 };
 
+// 规则与示例分开：原来两者挤在同一个等宽块里，示例又都是像真实凭据的长串
+// （2FA 密钥、代理商主机、真实格式卡号），既难扫读也容易被误认成已有数据。
 const POOL_FORMAT = {
-  emails: `一行一条，分隔符支持 ——、—、–、|、Tab、:、;、,、空格；也支持「标签：值」形式（顺序任意）
-NewkirkCorre.l103@gmail.com——psj5qrajyv——ucyar7gltohvnnxbpxt4vmsdrcaxa5j6
-vanmaih.uynh75@gmail.com|Y2IvBdZRN2|54viszzfxqzxuowp57ma2sw7euael6x5
-demo@gmail.com:pass123:2fakey
-邮箱：demo2@gmail.com 密码：abc12345 2FA：JBSWY3DPEHPK3PXP`,
-  proxies: `代理商文本块（账号/密码/主机/端口/国家等标签行，中英文均可、顺序任意）：
-5750389
-socks5
-55.kookeey.info
-26004
-账号：437d8679
-密码：547be5d2
-修改
-US-美国
-217.20.243.226
-
-也支持一行一条：
-socks5://user:pass@host:port
+  emails: {
+    rule: '一行一条。分隔符支持 ——、—、–、|、Tab、:、;、,、空格；也支持「标签：值」形式，顺序任意。',
+    sample: `example@gmail.com——password——JBSWY3DPEHPK3PXP
+example2@gmail.com|password|JBSWY3DPEHPK3PXP
+邮箱：example3@gmail.com 密码：password 2FA：JBSWY3DPEHPK3PXP`,
+  },
+  proxies: {
+    rule: '粘贴代理商文本块（账号 / 密码 / 主机 / 端口 / 国家等标签行，中英文均可、顺序任意），也可以一行一条。',
+    sample: `socks5://user:pass@host:port
 user:pass@host:port
 host:port:user:pass
-user:pass:host:port
-host,port,user,pass
-host port user pass`,
-  cards: `4367970152619097 06/29 596
-4367970159932238 06/29 364
-4367970169748392 06/29 786`,
-  licenses: `一个 PDF 对应一条营业执照记录。
-选择 PDF 后校对公司名称、法定名称、地址、邮编和城市，再确认保存。
-未识别的字段可手动填写，原 PDF 会与该条资料一起保存。`,
+host,port,user,pass`,
+  },
+  cards: {
+    rule: '一行一张，格式为「卡号 有效期 CVV」。',
+    sample: `4367970152619097 06/29 596
+4367970159932238 06/29 364`,
+  },
+  licenses: {
+    rule: '一个 PDF 对应一条营业执照记录。选择 PDF 后校对公司名称、法定名称、地址、邮编和城市，再确认保存；未识别的字段可手动填写，原 PDF 会与该条资料一起保存。',
+    sample: '',
+  },
 };
 
 function getFilteredPool(kind) {
@@ -672,7 +678,7 @@ function renderPoolTable(kind, list) {
   if (!state.pools[kind].length) return `<div class="empty">
     <div class="empty-ico">⇩</div><h3>还没有${conf.label}数据</h3>
     <p>${kind === 'licenses' ? '点击右上角「导入营业执照」，上传一份 PDF 并校对资料。' : '点击右上角「批量导入」，支持粘贴以下格式（一行一条）：'}</p>
-    <code>${esc(POOL_FORMAT[kind])}</code></div>`;
+    <code>${esc(POOL_FORMAT[kind].sample || POOL_FORMAT[kind].rule)}</code></div>`;
   if (!list.length) return '<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的资源</h3><p>换个关键词或筛选条件试试</p></div>';
   const page = paginate(list, 'pools');
   const reference = { emails: 'email_id', proxies: 'proxy_id', cards: 'card_id', licenses: 'license_id' }[kind];
@@ -694,15 +700,15 @@ function renderPoolTable(kind, list) {
 function renderPool(kind) {
   const conf = KINDS.find((item) => item.key === kind);
   const list = getFilteredPool(kind);
-  const stat = (label, count, dot) => `<div class="stat"><div class="k"><span class="dot ${dot}"></span>${label}</div><div class="v">${count}</div></div>`;
+  // 状态数量直接标在筛选标签上：原来上方另有一排大数字卡片，与这里说的是同一件事，白占一块空间。
+  const counts = { 全部: state.pools[kind].length, 未使用: poolCount(kind), 已使用: poolCount(kind, '已使用'), 停用: poolCount(kind, '停用') };
   document.getElementById('main').innerHTML = `
     <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p></div>
       <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>' : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
-    <div class="stats">${stat('全部', state.pools[kind].length, 'bg')}${stat('未使用', poolCount(kind), 'dot-green-ic')}${stat('已使用', poolCount(kind, '已使用'), 'dot-blue-ic')}${stat('停用', poolCount(kind, '停用'), 'dot-red-ic')}</div>
     <div class="panel"><div class="toolbar">
       <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
-      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}</button>`).join('')}</div>
+      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
       <span class="sel-count">${list.length} 条</span></div>${renderPoolTable(kind, list)}</div>`;
 }
 
@@ -759,7 +765,10 @@ async function openImportModal(kind) {
   openModal(`
     <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
-      <pre class="format-hint">${esc(POOL_FORMAT[kind])}</pre>
+      <div class="format-hint">
+        <p class="format-rule">${esc(POOL_FORMAT[kind].rule)}</p>
+        ${POOL_FORMAT[kind].sample ? `<pre class="format-sample">${esc(POOL_FORMAT[kind].sample)}</pre>` : ''}
+      </div>
       <textarea id="import-text" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
       <div class="parse-result" id="parse-result">等待粘贴内容…</div>
     </div>
@@ -1056,6 +1065,107 @@ function openEditRecord(id) {
   };
 }
 
+/* ============ 全体重复体检 ============ */
+
+function renderAuditReport(report) {
+  const groups = report.groups || [];
+  const shared = report.shared_documents || [];
+  const summary = `<div class="audit-summary">
+    <div><b>${report.scanned}</b><span>扫描营业执照</span></div>
+    <div><b>${report.users}</b><span>参与账号</span></div>
+    <div class="${groups.length ? 'warn' : 'ok'}"><b>${groups.length}</b><span>重复分组</span></div>
+  </div>`;
+  if (!groups.length && !shared.length) {
+    return `${summary}<p class="audit-empty">没有发现重复。全体成员的营业执照在组织名称、法定名称、CVR 注册号与街道地址上都互不冲突。</p>`;
+  }
+  const groupHtml = groups.map((group) => `
+    <section class="audit-group">
+      <header><span class="audit-tag">${esc(group.label)}</span><code>${esc(group.key)}</code></header>
+      <ul>${group.members.map((member) => `<li>
+        <span class="audit-owner" title="所属账号">${esc(member.owner.display_name || member.owner.username)}</span>
+        <span class="grow">${esc(member.name)}${member.cvr ? ` · CVR ${esc(member.cvr)}` : ''}</span>
+        ${member.has_pdf ? '<span class="audit-pdf">PDF</span>' : ''}
+        <span class="faint">${esc(String(member.created_at || '').slice(0, 10))}</span>
+      </li>`).join('')}</ul>
+    </section>`).join('');
+  const sharedHtml = shared.length ? `
+    <section class="audit-group">
+      <header><span class="audit-tag warn">同一份原件</span><span class="faint">多条资料引用了同一个 PDF 文件</span></header>
+      <ul>${shared.flatMap((doc) => doc.members.map((member) => `<li>
+        <span class="audit-owner">${esc(member.owner.display_name || member.owner.username)}</span>
+        <span class="grow">${esc(member.name)}</span>
+        <span class="faint mono">${esc(String(doc.document_id).slice(0, 10))}…</span>
+      </li>`)).join('')}</ul>
+    </section>` : '';
+  return `${summary}${groupHtml}${sharedHtml}`;
+}
+
+/** 扫描全体成员的营业执照，找出任何形式的重复（含「同一份原件被多人引用」）。 */
+async function openDuplicateAudit() {
+  openModal(`
+    <div class="modal-head"><div><span class="license-eyebrow">全体成员</span><h3>营业执照重复体检</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <div class="modal-body" id="audit-body"><p class="audit-empty">正在扫描全体成员的营业执照…</p></div>
+    <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">关闭</button></div>`, { large: true });
+  const body = document.getElementById('audit-body');
+  try {
+    const report = await api('/api/licenses/duplicates');
+    if (body.isConnected) body.innerHTML = renderAuditReport(report);
+  } catch (error) {
+    if (body.isConnected) body.innerHTML = `<p class="audit-empty">读取失败：${esc(error.message)}</p>`;
+  }
+}
+
+/** 从备份文件恢复（只影响当前账号）。 */
+function openRestoreDialog() {
+  openModal(`
+    <div class="modal-head"><div><span class="license-eyebrow">个人数据</span><h3>从备份恢复</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <div class="modal-body">
+      <div class="license-upload">
+        <strong>只恢复你自己的数据</strong>
+        <p>恢复会覆盖当前账号下的资源与记录，不会影响其他成员。请选择本工作台导出的备份文件；恢复前建议先「导出备份」留一份当前数据。</p>
+        <input type="file" id="restore-file" accept=".json,application/json">
+        <span id="restore-status" role="status">尚未选择文件</span>
+      </div>
+    </div>
+    <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-danger" id="restore-go" disabled>确认恢复</button></div>`);
+  const input = document.getElementById('restore-file');
+  const status = document.getElementById('restore-status');
+  const go = document.getElementById('restore-go');
+  let parsed = null;
+  input.onchange = async () => {
+    parsed = null;
+    go.disabled = true;
+    const file = input.files[0];
+    if (!file) { status.textContent = '尚未选择文件'; return; }
+    if (file.size > 64 * 1024 * 1024) { status.textContent = '文件超过 64 MB，无法恢复'; input.value = ''; return; }
+    try {
+      parsed = JSON.parse(await file.text());
+      const records = Array.isArray(parsed.records) ? parsed.records.length : 0;
+      const licenses = Array.isArray(parsed.licenses) ? parsed.licenses.length : 0;
+      status.textContent = `已读取：记录 ${records} 条 · 营业执照 ${licenses} 条，确认后将覆盖当前账号数据`;
+      go.disabled = false;
+    } catch {
+      status.textContent = '这个文件不是有效的备份（JSON 解析失败）';
+      input.value = '';
+    }
+  };
+  go.onclick = async () => {
+    if (!parsed || go.disabled) return;
+    go.disabled = true;
+    go.textContent = '正在恢复…';
+    try {
+      const result = await api('/api/backup/restore', { method: 'POST', body: parsed });
+      toast(`恢复完成：记录 ${result.records} 条、营业执照 ${result.licenses} 条`);
+      if (go.isConnected) closeModal();
+      await refresh();
+    } catch (error) {
+      toast(error.message, 'error');
+      go.disabled = false;
+      go.textContent = '确认恢复';
+    }
+  };
+}
+
 /* ============ 事件 ============ */
 
 document.addEventListener('click', async (e) => {
@@ -1114,6 +1224,24 @@ document.addEventListener('click', async (e) => {
         state.reveal = !state.reveal;
         render();
         break;
+      case 'duplicate-audit':
+        await openDuplicateAudit();
+        break;
+      case 'web-backup':
+        // 走一次同源导航触发下载：Cookie 会自动带上，浏览器停留在当前页面
+        location.href = '/api/backup';
+        toast('正在导出备份…');
+        break;
+      case 'web-restore':
+        openRestoreDialog();
+        break;
+      case 'logout': {
+        if (t.disabled) break;
+        t.disabled = true;
+        try { await api('/api/auth/logout', { method: 'POST' }); } catch { /* 无论成败都回登录页 */ }
+        location.replace('/login.html');
+        break;
+      }
       case 'open-import':
         openImportModal(t.dataset.kind);
         break;
@@ -1414,6 +1542,9 @@ new MutationObserver(bindLabels).observe(document.getElementById('modal-root'), 
 
 if (window.desktop) {
   document.getElementById('desktopTools').hidden = false;
+  // 桌面版用自己的原生备份/恢复（可写文件、可打开数据目录），隐藏网页版入口
+  const webTools = document.getElementById('webTools');
+  if (webTools) webTools.hidden = true;
   window.desktop.info().then((info) => {
     document.getElementById('desktopVersion').textContent = `Windows 桌面版 · v${info.version}`;
   }).catch(() => {});

@@ -1,0 +1,1008 @@
+/* ============================================================
+   账号工作台 · 登录 / 注册页
+   全部颜色、圆角、动效曲线复用 styles.css 的设计令牌；
+   环境氛围层（body::before 噪点 / body::after 顶部辉光）直接沿用。
+   ============================================================ */
+
+body.auth-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+/* 图标精灵容器：不占位、不参与无障碍树 */
+.auth-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
+
+.auth-shell {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: clamp(28px, 4vw, 56px);
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: clamp(26px, 6vh, 68px) clamp(18px, 5vw, 60px);
+}
+
+/* ---------- 左栏：品牌 ---------- */
+.auth-rail {
+  flex: 0 0 auto;
+  align-self: stretch;
+  width: min(340px, 30vw);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 24px;
+  padding-right: clamp(28px, 4vw, 56px);
+  border-right: 1px solid var(--line);
+}
+
+.auth-brand { padding: 0; }
+
+/* styles.css 在 ≤860px 会把侧栏品牌文字折叠（.brand-text{display:none}），
+   登录页的品牌标识需要始终完整 */
+.auth-brand .brand-text { display: flex; }
+.auth-brand .brand-mark { width: 44px; height: 44px; border-radius: 12px; }
+.auth-brand .brand-text strong { font-size: 15px; letter-spacing: 0.01em; }
+
+.auth-pitch h1 {
+  margin: 0 0 10px;
+  font-size: clamp(21px, 2.1vw, 26px);
+  font-weight: 700;
+  line-height: 1.34;
+  letter-spacing: -0.02em;
+}
+
+.auth-pitch h1 em {
+  font-style: normal;
+  color: var(--accent);
+}
+
+.auth-pitch p {
+  margin: 0;
+  max-width: 33ch;
+  color: var(--faint);
+  font-size: 12.5px;
+  line-height: 1.85;
+}
+
+/* 资源台账：等宽字 + 发丝分隔，接近主应用的表格气质 */
+.auth-specs {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--line);
+}
+
+.auth-specs li {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+}
+
+.auth-specs .spec-key {
+  flex: none;
+  min-width: 56px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--faint);
+}
+
+.auth-specs .spec-label { color: var(--muted); }
+
+.auth-specs .spec-idx {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ghost);
+  font-variant-numeric: tabular-nums;
+}
+
+.auth-rail-foot {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0;
+  color: var(--ghost);
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+/* ---------- 右栏：表单卡片 ---------- */
+.auth-main {
+  flex: 0 1 396px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.auth-card {
+  position: relative;
+  width: 100%;
+  max-width: 396px;
+  padding: 26px 26px 24px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 26px 60px -30px rgba(0, 0, 0, 0.85);
+  animation: auth-rise var(--t-slow) var(--ease) both;
+}
+
+/* 顶部荧光绿发丝线：全页唯一的装饰性点缀 */
+.auth-card::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 18%;
+  right: 18%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--accent-line), transparent);
+}
+
+.auth-noscript {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: var(--r-sm);
+  background: rgba(248, 113, 113, 0.07);
+  color: #fca5a5;
+  font-size: 12.5px;
+}
+
+.auth-tabs { margin-bottom: 20px; }
+
+.auth-panel[hidden],
+.auth-switch[hidden],
+.field[hidden],
+.caps-hint[hidden],
+.pw-strength[hidden],
+.auth-alert[hidden],
+.field-err[hidden],
+.tab[hidden] { display: none; }
+
+.auth-title {
+  margin: 0 0 6px;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.auth-sub {
+  margin: 0 0 20px;
+  color: var(--faint);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+
+/* ---------- 表单级提示 ---------- */
+.auth-alert {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 10px 13px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+  animation: auth-fade var(--t-mid) var(--ease) both;
+}
+
+.auth-alert::before {
+  content: "";
+  flex: none;
+  width: 3px;
+  border-radius: 99px;
+  background: currentColor;
+  opacity: 0.75;
+}
+
+.auth-alert[data-kind="error"] {
+  border-color: rgba(248, 113, 113, 0.32);
+  background: rgba(248, 113, 113, 0.07);
+  color: #fca5a5;
+}
+
+.auth-alert[data-kind="info"] {
+  border-color: rgba(109, 179, 250, 0.28);
+  background: rgba(109, 179, 250, 0.07);
+  color: #9ecbff;
+}
+
+.auth-alert[data-kind="success"] {
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
+
+/* ---------- 表单 ---------- */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.auth-form > * { animation: auth-fade var(--t-mid) var(--ease) both; }
+.auth-form > *:nth-child(2) { animation-delay: 30ms; }
+.auth-form > *:nth-child(3) { animation-delay: 60ms; }
+.auth-form > *:nth-child(n + 4) { animation-delay: 90ms; }
+
+.auth-form input.auth-input {
+  padding: 11px 13px;
+  font-size: 14px;
+}
+
+.auth-form input.auth-input.mono { font-size: 13.5px; }
+
+.auth-form input.auth-input::placeholder { font-size: 13px; }
+
+/* styles.css 的基础 input 规则（:not():not()）特异性高于它自己的 input:focus，
+   这里为登录页输入框显式补齐 hover / 聚焦态（聚焦用 --accent-line + --accent 柔光） */
+.auth-form input.auth-input:hover { border-color: var(--line-strong); }
+
+.auth-form input.auth-input:focus {
+  outline: none;
+  border-color: var(--accent-line);
+  background: var(--surface-2);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+/* 错误态：红色描边 + 同色柔光，优先级高于普通聚焦态 */
+.auth-form input.auth-input[aria-invalid="true"] {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.12);
+  background: var(--surface-2);
+}
+
+.auth-form input.auth-input[aria-invalid="true"]:focus {
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.2);
+}
+
+/* 浏览器自动填充：保持暗色底，避免白底闪块 */
+.auth-form input.auth-input:-webkit-autofill,
+.auth-form input.auth-input:-webkit-autofill:hover,
+.auth-form input.auth-input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text);
+  -webkit-box-shadow: 0 0 0 1000px var(--surface-2) inset;
+  caret-color: var(--text);
+  transition: background-color 9999s ease-out;
+}
+
+.input-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+/* 为可见性按钮留出内边距（特异性需高于上面的 .auth-form input.auth-input） */
+.auth-form .input-wrap input.auth-input { padding-right: 42px; }
+
+.pw-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--faint);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-quart), background var(--t-fast) var(--ease-quart),
+    border-color var(--t-fast) var(--ease-quart);
+}
+
+.pw-toggle:hover { color: var(--text); background: rgba(163, 190, 228, 0.08); }
+
+.pw-toggle:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-dim), 0 0 0 1px var(--accent-line);
+}
+
+.pw-toggle .ico { grid-area: 1 / 1; display: block; }
+.pw-toggle .eye-off { display: none; }
+.pw-toggle[aria-pressed="true"] .eye-open { display: none; }
+.pw-toggle[aria-pressed="true"] .eye-off { display: block; }
+
+.field-err {
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  color: var(--red);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.caps-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--amber);
+  font-size: 11px;
+}
+
+.caps-hint::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 99px;
+  background: currentColor;
+  flex: none;
+}
+
+/* 强度条：三段细线，颜色取自语义色令牌 */
+.pw-strength {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 1px;
+}
+
+.pw-strength .bars {
+  display: flex;
+  flex: 1;
+  gap: 4px;
+}
+
+.pw-strength .bars > span {
+  flex: 1;
+  height: 3px;
+  border-radius: 99px;
+  background: rgba(163, 190, 228, 0.14);
+  transition: background var(--t-mid) var(--ease);
+}
+
+.pw-strength .lvl {
+  flex: none;
+  min-width: 4.6em;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+
+.pw-strength[data-level="1"] .bars > span:nth-child(1) { background: var(--red); }
+.pw-strength[data-level="1"] .lvl { color: var(--red); }
+.pw-strength[data-level="2"] .bars > span:nth-child(-n + 2) { background: var(--amber); }
+.pw-strength[data-level="2"] .lvl { color: var(--amber); }
+.pw-strength[data-level="3"] .bars > span { background: var(--green); }
+.pw-strength[data-level="3"] .lvl { color: var(--green); }
+
+.auth-submit {
+  width: 100%;
+  margin-top: 4px;
+  padding: 11px 16px;
+  font-size: 13.5px;
+}
+
+.auth-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 2px 0 0;
+  color: var(--faint);
+  font-size: 12.5px;
+}
+
+.link-btn {
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--accent-line);
+  border-radius: 2px;
+  padding: 0 0 1px;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease-quart), border-color var(--t-fast) var(--ease-quart);
+}
+
+.link-btn:hover { color: var(--accent-strong); border-bottom-color: var(--accent-strong); }
+
+.link-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-dim), 0 0 0 1px var(--accent-line);
+}
+
+/* ---------- 微动效 ---------- */
+@keyframes auth-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes auth-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- 响应式 ---------- */
+@media (max-width: 900px) {
+  .auth-shell {
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0;
+    padding: 34px 18px 44px;
+  }
+
+  .auth-rail {
+    align-self: center;
+    width: 100%;
+    max-width: 400px;
+    gap: 18px;
+    padding: 0 0 20px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .auth-pitch p { max-width: none; }
+  .auth-specs { display: none; }
+
+  .auth-main {
+    flex: none;
+    width: 100%;
+    padding: 22px 0 0;
+  }
+
+  .auth-card {
+    max-width: 400px;
+    margin: 0 auto;
+  }
+}
+
+@media (max-width: 420px) {
+  .auth-shell { padding: 24px 14px 34px; }
+  .auth-card { padding: 20px 18px 18px; border-radius: var(--r-md); }
+  .auth-title { font-size: 16px; }
+  .auth-pitch h1 { font-size: 20px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-card,
+  .auth-form > *,
+  .auth-alert {
+    animation: none;
+  }
+
+  .pw-strength .bars > span,
+  .link-btn,
+  .pw-toggle {
+    transition: none;
+  }
+}
+
+/* ============================================================
+   氛围与分层修正
+   ------------------------------------------------------------
+   原实现整页只有 styles.css 里那层很淡的顶部辉光，左右两栏各自都是大面积
+   纯黑：内容像浮在虚空里，中间只靠一条 1px 竖线分割，两半读不出边界。
+   这里补三层——斜向底色、两团主色微光、中心清晰边缘渐隐的细网格——
+   并给左栏一个很淡的「面」，左右才成为两块有层次的区域。
+   ============================================================ */
+body.auth-body {
+  background:
+    radial-gradient(1150px 640px at 80% 6%, rgba(200, 246, 93, 0.06), transparent 62%),
+    radial-gradient(900px 580px at 10% 94%, rgba(109, 179, 250, 0.055), transparent 60%),
+    linear-gradient(165deg, #0f141e 0%, #0a0e16 48%, #070a10 100%);
+}
+
+/* 细网格：中心清晰、边缘渐隐，整屏不再是一块死黑 */
+.auth-shell::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(rgba(163, 190, 228, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(163, 190, 228, 0.05) 1px, transparent 1px);
+  background-size: 48px 48px;
+  -webkit-mask-image: radial-gradient(125% 95% at 50% 42%, #000 0%, transparent 76%);
+  mask-image: radial-gradient(125% 95% at 50% 42%, #000 0%, transparent 76%);
+}
+
+/* 网格是定位元素，会盖在静态流内的文字之上；两栏各自抬到它上面 */
+.auth-rail,
+.auth-main {
+  position: relative;
+  z-index: 1;
+}
+
+/* 左栏做成一块很淡的面：只在桌面端生效，窄屏的堆叠布局不受影响 */
+@media (min-width: 901px) {
+  .auth-rail {
+    /* 不再拉伸到满高：否则面板比右侧卡片高出一大截，中间空一大段，左右不对称 */
+    align-self: center;
+    padding: clamp(26px, 3vw, 38px);
+    background: linear-gradient(
+      180deg,
+      rgba(163, 190, 228, 0.055),
+      rgba(163, 190, 228, 0.018) 58%,
+      rgba(163, 190, 228, 0)
+    );
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    box-shadow: 0 44px 90px -62px rgba(0, 0, 0, 0.95);
+  }
+}
+
+/* 卡片再抬一层，与背景拉开层次 */
+.auth-card {
+  background: linear-gradient(180deg, var(--surface-2), var(--surface) 72%);
+  border-color: var(--line-strong);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.045) inset,
+    0 44px 90px -44px rgba(0, 0, 0, 0.92);
+}
+
+/* ============================================================
+   铺满式分栏
+   ------------------------------------------------------------
+   上一步只把两栏做成了「两块面」，但整组内容仍然是居中的，1440 宽下只占
+   x≈325–1115，左右各留 300 多像素空白，看上去还是个孤岛。
+   这里改成真正的左右分栏：左栏贴左边缘、占满整屏高度，右侧区域居中放卡片，
+   页面不再有左右外边距。
+   ============================================================ */
+@media (min-width: 901px) {
+  .auth-shell {
+    align-items: stretch;
+    gap: 0;
+    padding: 0;
+  }
+
+  .auth-rail {
+    flex: 0 0 auto;
+    align-self: stretch;
+    width: clamp(420px, 46%, 720px);
+    gap: 30px;
+    padding: clamp(44px, 5vw, 84px) clamp(40px, 4.5vw, 76px);
+    background: linear-gradient(
+      180deg,
+      rgba(163, 190, 228, 0.06),
+      rgba(163, 190, 228, 0.02) 55%,
+      rgba(163, 190, 228, 0)
+    );
+    /* 贴边后不再需要圆角与外投影，改用一条边线做分界 */
+    border: 0;
+    border-right: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .auth-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: clamp(44px, 5vw, 84px) clamp(28px, 3vw, 56px);
+  }
+
+  /* 卡片在更宽的区域里要更有分量，否则又显得空 */
+  .auth-card { max-width: 424px; }
+}
+
+/* ============================================================
+   设计升级
+   ------------------------------------------------------------
+   1) 左栏满高：品牌 / 主张 / 清单 整组垂直居中，脚注钉在底部，
+      不再是「中间一坨、上下各空 200 多像素」
+   2) 宽屏下标题与清单随栏宽放大，视线有落点
+   3) 主按钮做出材质感：渐变 + 内高光 + 悬停辉光 + 按下回弹 + 加载转圈
+   4) 登录失败抖一下，让「被拒绝」有即时反馈而不只是一段静态文字
+   ============================================================ */
+@media (min-width: 901px) {
+  .auth-rail-foot {
+    position: absolute;
+    left: clamp(40px, 4.5vw, 76px);
+    right: clamp(40px, 4.5vw, 76px);
+    bottom: clamp(28px, 3vw, 46px);
+    margin: 0;
+  }
+
+  .auth-pitch h1 { font-size: clamp(30px, 2.7vw, 42px); line-height: 1.24; }
+  .auth-pitch p { font-size: 14px; line-height: 1.85; max-width: 38ch; }
+  .auth-specs li { padding: 12px 2px; }
+  .auth-specs .spec-key { font-size: 10.5px; letter-spacing: 0.16em; }
+  .auth-specs .spec-label { font-size: 13.5px; }
+  .auth-brand .brand-text strong { font-size: 16px; }
+}
+
+/* ---- 主按钮：渐变与内高光，做出被压出来的材质 ---- */
+.auth-submit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  background: linear-gradient(180deg, var(--accent-strong), var(--accent) 54%, var(--accent-deep));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.5),
+    0 10px 26px -12px rgba(200, 246, 93, 0.5);
+  transition: filter var(--t-fast) var(--ease-quart), box-shadow var(--t-fast) var(--ease-quart),
+    transform var(--t-fast) var(--ease-quart);
+}
+
+.auth-submit:hover:not(:disabled) {
+  filter: brightness(1.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    0 16px 34px -12px rgba(200, 246, 93, 0.6);
+}
+
+.auth-submit:active:not(:disabled) { transform: translateY(1px) scale(0.994); }
+.auth-submit:disabled { filter: saturate(0.55) brightness(0.92); cursor: progress; }
+
+/* 加载转圈必须是伪元素：setBusy() 用 btn.textContent 覆写文案，
+   真实子元素会被整个抹掉，伪元素不受影响。 */
+.auth-submit.btn-loading::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(19, 26, 4, 0.3);
+  border-top-color: var(--accent-ink);
+  animation: auth-spin 620ms linear infinite;
+}
+
+@keyframes auth-spin { to { transform: rotate(360deg); } }
+
+/* ---- 登录失败：卡片抖一下 ---- */
+@keyframes auth-shake {
+  10%, 90% { transform: translateX(-2px); }
+  20%, 80% { transform: translateX(4px); }
+  30%, 50%, 70% { transform: translateX(-7px); }
+  40%, 60% { transform: translateX(7px); }
+}
+
+.auth-card.is-shaking { animation: auth-shake 420ms var(--ease-quart) both; }
+
+/* ---- 输入框聚焦：主色描边 + 柔光，鼠标与键盘都能看清焦点 ---- */
+.auth-form input.auth-input:focus {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+
+/* 放在最后，才能覆盖上面新加的动效 */
+@media (prefers-reduced-motion: reduce) {
+  .auth-card.is-shaking,
+  .auth-submit.btn-loading::before,
+  body.auth-body::after { animation: none; }
+  .auth-submit { transition: none; }
+}
+
+/* ---- 右下角脚注：与左栏底部的说明形成对称，补上构图重心 ---- */
+.auth-main-foot {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: clamp(28px, 3vw, 46px);
+  margin: 0;
+  text-align: center;
+  font-size: 11.5px;
+  letter-spacing: 0.03em;
+  color: var(--ghost);
+}
+
+/* 窄屏是上下堆叠布局，绝对定位会压到卡片上，直接不显示 */
+@media (max-width: 900px) {
+  .auth-main-foot { display: none; }
+}
+
+/* ============================================================
+   Apple 式重做
+   ------------------------------------------------------------
+   上一版是「终端 / 赛博」那一套：荧光绿、等宽标签、01–05 编号、网格底。
+   Apple 的做法正好相反——近乎无彩、靠字重与字号建立层级、一个蓝色只留给
+   主操作、界面靠毛玻璃与大圆角分层。
+   实现上先整组替换设计令牌（下面 body.auth-body 里的变量），所有引用
+   var(--accent) / var(--line) / var(--muted) 的既有规则会一起换色，
+   再逐处调排版、形状与交互细节，避免逐条硬改颜色留下不一致。
+   ============================================================ */
+body.auth-body {
+  /* 色板：Liquid Glass 需要「有东西可折射」，所以表面色改成半透明白，
+     文字用纯白 + 高比例白灰，压住下方彩底。 */
+  --bg: #101a3e;
+  --surface: rgba(255, 255, 255, 0.14);
+  --surface-2: rgba(255, 255, 255, 0.2);
+  --surface-3: rgba(255, 255, 255, 0.26);
+  --line: rgba(255, 255, 255, 0.2);
+  --line-strong: rgba(255, 255, 255, 0.32);
+
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, 0.78);
+  --faint: rgba(255, 255, 255, 0.62);
+  --ghost: rgba(255, 255, 255, 0.46);
+
+  --accent: #0a84ff;
+  --accent-strong: #409cff;
+  --accent-deep: #0066d6;
+  --accent-ink: #ffffff;
+  --accent-dim: rgba(10, 132, 255, 0.18);
+  --accent-line: rgba(10, 132, 255, 0.55);
+
+  /* Apple 深色模式的系统语义色 */
+  --green: #30d158;
+  --blue: #0a84ff;
+  --amber: #ff9f0a;
+  --red: #ff453a;
+
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Helvetica Neue", "PingFang SC", "Microsoft YaHei UI", sans-serif;
+
+  /* 背景不再是黑的：一层高饱和色彩网格，玻璃面板浮在上面才有折射 */
+  background:
+    radial-gradient(1200px 820px at 12% 6%, rgba(88, 120, 255, 0.62), transparent 60%),
+    radial-gradient(1040px 800px at 90% 12%, rgba(178, 76, 255, 0.5), transparent 62%),
+    radial-gradient(1020px 740px at 76% 94%, rgba(0, 200, 255, 0.42), transparent 62%),
+    radial-gradient(920px 720px at 6% 90%, rgba(255, 76, 156, 0.36), transparent 62%),
+    linear-gradient(160deg, #1b2559 0%, #251a58 46%, #101c40 100%);
+}
+
+/* 去掉上一版的细网格，换成一片大范围柔光——Apple 的背景是氛围而不是纹理 */
+.auth-shell::before { display: none; }
+
+/* 流动层：两团大柔光缓慢漂移，制造「液态」而不是一张静止的渐变图 */
+body.auth-body::after {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(closest-side at 32% 32%, rgba(255, 255, 255, 0.2), transparent),
+    radial-gradient(closest-side at 68% 66%, rgba(130, 205, 255, 0.26), transparent);
+  filter: blur(64px);
+  animation: liquid-drift 24s var(--ease) infinite alternate;
+}
+
+@keyframes liquid-drift {
+  from { transform: translate3d(-3%, -2%, 0) scale(1); }
+  to { transform: translate3d(4%, 3%, 0) scale(1.12); }
+}
+
+/* ---- 左栏当英雄区：大字号、紧字距，去掉等宽标签与编号 ---- */
+@media (min-width: 901px) {
+  .auth-rail {
+    background: none;
+    border-right: 1px solid var(--line);
+  }
+
+  .auth-pitch h1 {
+    font-size: clamp(38px, 3.6vw, 58px);
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1.09;
+  }
+
+  /* Apple 不做双色标题，整句一个白 */
+  .auth-pitch h1 em { color: var(--text); font-style: normal; }
+
+  .auth-pitch p {
+    font-size: 17px;
+    line-height: 1.62;
+    letter-spacing: -0.01em;
+    color: var(--muted);
+    max-width: 34ch;
+  }
+
+  .auth-specs { margin-top: 34px; }
+
+  .auth-specs li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 0;
+    border-bottom: 0;
+  }
+
+  .auth-specs .spec-key,
+  .auth-specs .spec-idx { display: none; }
+
+  .auth-specs li::before {
+    content: "";
+    flex: 0 0 auto;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    /* 亮蓝而不是 --accent：深蓝小点压在蓝紫彩底上会糊掉 */
+    background: #9fcaff;
+  }
+
+  .auth-specs .spec-label {
+    font-size: 17px;
+    letter-spacing: -0.012em;
+    color: var(--text);
+  }
+
+  /* 品牌标识做成单色，像 Apple 在深色底上的处理 */
+  .auth-brand .brand-mark { background: #f5f5f7; color: #000; box-shadow: none; }
+  .auth-brand .brand-text strong { font-size: 17px; letter-spacing: -0.01em; }
+  .auth-brand .brand-text span { color: var(--ghost); letter-spacing: 0.06em; }
+}
+
+/* ---- 卡片：Liquid Glass ----
+   半透明白渐变（模拟光线从左上折进玻璃）+ 强模糊与高饱和（玻璃折射）
+   + 顶部镜面高光 + 一圈亮边。 */
+.auth-card {
+  max-width: 400px;
+  padding: 34px 32px 30px;
+  background:
+    linear-gradient(
+      143deg,
+      rgba(255, 255, 255, 0.24),
+      rgba(255, 255, 255, 0.08) 44%,
+      rgba(255, 255, 255, 0.14) 100%
+    ),
+    /* 深色底层：彩底玻璃偏亮时白字会发飘，垫一层深色把对比度稳住 */
+    rgba(10, 22, 60, 0.3);
+  -webkit-backdrop-filter: blur(46px) saturate(190%);
+  backdrop-filter: blur(46px) saturate(190%);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 32px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.16),
+    inset 0 0 40px rgba(255, 255, 255, 0.06),
+    0 30px 70px -22px rgba(8, 14, 40, 0.6);
+}
+
+.auth-card::before { display: none; }
+
+/* ---- 登录 / 注册 → 玻璃胶囊分段控件 ---- */
+.auth-tabs .tabs {
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+}
+
+.auth-tabs .tab {
+  padding: 7px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: rgba(255, 255, 255, 0.72);
+  background: none;
+  box-shadow: none;
+}
+
+.auth-tabs .tab.active {
+  background: rgba(255, 255, 255, 0.26);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 2px 8px rgba(8, 14, 40, 0.28);
+}
+
+/* ---- 标题与说明 ---- */
+.auth-title { font-size: 26px; font-weight: 600; letter-spacing: -0.022em; }
+.auth-sub { font-size: 15px; letter-spacing: -0.008em; }
+
+/* ---- 输入框：48px 高、12px 圆角、聚焦蓝色柔光 ---- */
+.auth-form .field > label {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  color: var(--muted);
+}
+
+.auth-form input.auth-input {
+  height: 48px;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.14);
+  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  backdrop-filter: blur(14px) saturate(160%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.auth-form input.auth-input::placeholder { color: rgba(255, 255, 255, 0.34); }
+.auth-form input.auth-input:hover { border-color: rgba(255, 255, 255, 0.18); }
+
+.auth-form input.auth-input:focus {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: 0 0 0 4px var(--accent-dim);
+}
+
+/* ---- 主按钮：Liquid Glass 用胶囊形，顶亮底暗做出玻璃的湿润高光 ---- */
+.auth-submit {
+  height: 50px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #5aabff 0%, #0a84ff 52%, #0a6ee0 100%);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.62),
+    inset 0 -2px 8px rgba(4, 32, 74, 0.32),
+    0 14px 30px -12px rgba(10, 132, 255, 0.75);
+}
+
+.auth-submit:hover:not(:disabled) {
+  background: linear-gradient(180deg, #74bbff 0%, #1e90ff 52%, #0a78ee 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.68),
+    inset 0 -2px 8px rgba(4, 32, 74, 0.32),
+    0 18px 38px -12px rgba(10, 132, 255, 0.85);
+}
+
+.auth-submit:active:not(:disabled) {
+  background: linear-gradient(180deg, #2f8ce8 0%, #0a6ee0 52%, #095cc0 100%);
+  transform: scale(0.985);
+}
+.auth-submit:disabled { opacity: 0.7; filter: none; cursor: progress; }
+
+.auth-submit.btn-loading::before {
+  border-color: rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+}
+
+/* ---- 底部切换与脚注 ---- */
+.auth-switch { font-size: 14px; color: var(--muted); }
+/* 链接用白字加下划线：原来的蓝色 #0a84ff 压在蓝紫玻璃上几乎看不见 */
+.link-btn { color: #fff; border-bottom-color: rgba(255, 255, 255, 0.45); }
+.link-btn:hover { color: #fff; border-bottom-color: #fff; }
+.auth-main-foot { font-size: 12px; color: var(--ghost); }
+
+/* ---- 窄屏：大内边距在小屏上会挤，收一收 ---- */
+@media (max-width: 480px) {
+  .auth-card { padding: 26px 20px 24px; border-radius: 20px; }
+  .auth-title { font-size: 22px; }
+  .auth-pitch h1 { letter-spacing: -0.028em; }
+}
+
+/* ---- 卡片背后的柔光 ----
+   卡片背后原本是纯黑，backdrop-filter 没有东西可折射，毛玻璃就看不出来。
+   这里垫一团蓝色柔光，卡片才会「浮」起来。放在卡片之下的层里。 */
+.auth-main::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: min(780px, 108%);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(10, 132, 255, 0.17), transparent 64%);
+  filter: blur(44px);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* ---- 窄屏修正 ----
+   上面「不做双色标题」与「白色品牌标」原本只写在 @media (min-width: 901px) 分支里，
+   窄屏走不到：<em>集中管控</em> 于是拿回 --accent，而 --accent 这一版已从荧光绿改成
+   蓝色，压在蓝紫彩底上几乎看不见。这两条必须在所有宽度都生效，所以不套媒体查询。 */
+.auth-pitch h1 em { color: var(--text); font-style: normal; }
+.auth-brand .brand-mark { background: #f5f5f7; color: #000; }

@@ -1,75 +1,115 @@
+'use strict';
+
+/**
+ * 账号工作台 · 服务器版
+ *
+ * 与旧版的区别：数据存在 SQLite 里，支持多用户账号，各人的资源与记录互相隔离，
+ * 而营业执照的判重是跨全体用户的（谁先导入谁占住）。
+ *
+ * 文件结构：
+ *   1. 依赖、配置、数据库连接、通用工具
+ *   2. 解析器（邮箱 / 代理 / 信用卡 / 营业执照 / PDF，与旧版逐字一致）
+ *   3. 业务逻辑与路由
+ */
+
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
-const fastify = require('fastify')({ logger: true, bodyLimit: 16 * 1024 * 1024 });
+
+const fastify = require('fastify')({
+  logger: process.env.LOG_LEVEL === 'silent' ? false : { level: process.env.LOG_LEVEL || 'info' },
+  bodyLimit: 16 * 1024 * 1024,
+  // 反向代理后必须信任转发头，否则所有请求会被当成同一个来源 IP（限速会误伤全员）。
+  trustProxy: true,
+});
 const fastifyStatic = require('@fastify/static');
-const { createStorage, validateSnapshot } = require('./lib/storage');
+
+const { openDatabase, transaction } = require('./lib/db');
+const store = require('./lib/store');
+const auth = require('./lib/auth');
+const dedup = require('./lib/dedup');
 
 const ROOT = __dirname;
-const DATA_FILE = process.env.DATA_FILE || path.join(ROOT, 'data.json');
-const storage = createStorage(DATA_FILE);
 const PUBLIC_DIR = path.join(ROOT, 'public');
 
-const POOL_TYPES = ['emails', 'proxies', 'cards', 'licenses'];
-const POOL_PREFIX = { emails: 'email', proxies: 'proxy', cards: 'card', licenses: 'license' };
-const STATUSES = ['未使用', '已使用', '停用'];
-const RECORD_STATUSES = ['正常', '异常', '停用'];
+// 旧版单机数据文件（桌面版通过 DATA_FILE 指向它）；数据库落在同一目录，便于整体迁移。
+const LEGACY_FILE = process.env.DATA_FILE || path.join(ROOT, 'data.json');
+const DATA_DIR = process.env.DATA_DIR
+  || (process.env.DATA_FILE ? path.dirname(process.env.DATA_FILE) : path.join(ROOT, 'data'));
+const DB_FILE = process.env.DB_FILE || path.join(DATA_DIR, 'workbench.sqlite');
 
-let db = {
-  documents: {},
-  counters: { emails: 0, proxies: 0, cards: 0, licenses: 0, records: 0 },
-  emails: [],
-  proxies: [],
-  cards: [],
-  licenses: [],
-  records: [],
-};
+// 注册策略：open（任何人可注册）/ invite（需要邀请码）/ closed（关闭注册）
+const REGISTRATION = ['open', 'invite', 'closed'].includes(process.env.REGISTRATION)
+  ? process.env.REGISTRATION
+  : 'open';
+const INVITE_CODE = String(process.env.INVITE_CODE || '');
+const SESSION_SECURE = process.env.SESSION_SECURE === '1';
 
-function loadDb() {
-  db = storage.load(db);
+const POOL_TYPES = store.POOL_TYPES;
+const POOL_PREFIX = store.POOL_PREFIX;
+const STATUSES = store.STATUSES;
+const RECORD_STATUSES = store.RECORD_STATUSES;
+
+const db = openDatabase(DB_FILE);
+
+/** 抛出带 400 状态的错误；Fastify 会据此返回 400 与中文提示。 */
+function reply400(msg) {
+  const err = new Error(msg);
+  err.statusCode = 400;
+  throw err;
 }
 
-function mutate(operation) {
-  const previous = structuredClone(db);
-  try {
-    const result = operation();
-    if (result?.error) return reply400(result.error);
-    storage.save(db);
-    return result;
-  } catch (error) {
-    db = previous;
-    throw error;
-  }
-}
-
+/** 北京时间字符串，格式与旧版一致，避免前端与导出格式变化。 */
 function nowLocal() {
-  const d = new Date();
   const p = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
     hour12: false,
-  }).formatToParts(d).reduce((a, x) => (a[x.type] = x.value, a), {});
+  }).formatToParts(new Date()).reduce((a, x) => (a[x.type] = x.value, a), {});
   return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
-}
-
-function nextId(coll) {
-  db.counters[coll] = (db.counters[coll] || 0) + 1;
-  return db.counters[coll];
 }
 
 function todayKey() {
   const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone: 'Asia/Shanghai', month: 'numeric', day: 'numeric',
   }).formatToParts(new Date());
-  const m = parts.find((p) => p.type === 'month').value;
-  const d = parts.find((p) => p.type === 'day').value;
-  return `${m}.${d}`;
+  return `${parts.find((p) => p.type === 'month').value}.${parts.find((p) => p.type === 'day').value}`;
 }
 
-function nextSeq() {
-  return db.records.reduce((m, r) => Math.max(m, r.seq || 0), 0) + 1;
+/** 所有写操作统一走这里：SQLite 事务保证要么全成、要么全不动。 */
+function mutate(operation) {
+  return transaction(db, operation);
 }
+
+/* ---------------- 身份 ---------------- */
+
+const LOCAL_USERNAME = 'local';
+let desktopToken = '';
+let desktopUserId = null;
+
+/** 桌面版不需要登录：本机令牌等价于一个固定的本机账号。 */
+function ensureDesktopUser() {
+  if (desktopUserId) return desktopUserId;
+  let user = store.findUserByUsername(db, LOCAL_USERNAME);
+  if (!user) {
+    user = store.insertUser(db, {
+      username: LOCAL_USERNAME,
+      displayName: '本机用户',
+      passwordHash: 'desktop$disabled', // 不是合法的 scrypt 串，无法用密码登录
+      createdAt: nowLocal(),
+    });
+  }
+  desktopUserId = user.id;
+  return desktopUserId;
+}
+
+/** 会话或桌面令牌解析出的当前用户 id（未登录返回 null）。 */
+function currentUserId(req) {
+  if (desktopToken && req.headers['x-desktop-token'] === desktopToken) return ensureDesktopUser();
+  return req.userId ?? null;
+}
+
 
 /* ---------------- 解析器 ---------------- */
 
@@ -437,7 +477,10 @@ function parseCards(text) {
 /* ---------------- PDF 文本提取 ---------------- */
 async function extractPdfText(buf) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+  // pdfjs 用 workerSrc 做动态 import()，ESM 加载器只接受 URL。
+  // Windows 绝对路径（C:\...）会以协议 'c:' 被拒绝，必须先转成 file:// URL。
+  pdfjsLib.GlobalWorkerOptions.workerSrc = require('node:url')
+    .pathToFileURL(require.resolve('pdfjs-dist/legacy/build/pdf.worker.min.mjs')).href;
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buf), useSystemFonts: true });
   try {
     const pdf = await loadingTask.promise;
@@ -536,6 +579,14 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 
 /* ---------------- 资源库导入 ---------------- */
 
+const IMPORT_FIELDS = {
+  emails: ['user', 'pass', 'fakey'],
+  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
+  cards: ['number', 'expiry', 'cvv'],
+  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
+};
+
+// 同一账号内的重复判定（营业执照另外走跨用户全局判重）
 const DUP_KEYS = {
   emails: (it) => (x) => x.user.toLowerCase() === it.user.toLowerCase(),
   proxies: (it) => (x) => x.host.toLowerCase() === it.host.toLowerCase() && x.port === it.port && x.user === it.user,
@@ -543,7 +594,7 @@ const DUP_KEYS = {
   licenses: (it) => (x) => x.name.toLowerCase() === it.name.toLowerCase(),
 };
 
-// 重复项展示用的标识（提示用户具体哪些被跳过）
+/** 重复项展示用的标识（提示用户具体哪些被跳过）。 */
 function dupLabel(type) {
   return (it) => {
     if (type === 'emails') return it.user;
@@ -554,12 +605,14 @@ function dupLabel(type) {
   };
 }
 
-const IMPORT_FIELDS = {
-  emails: ['user', 'pass', 'fakey'],
-  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
-  cards: ['number', 'expiry', 'cvv'],
-  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
-};
+/** 同批次内去重用的键。营业执照用归一化后的名称与 CVR，避免大小写/后缀差异漏判。 */
+function batchKeyOf(type, it) {
+  if (type === 'emails') return String(it.user || '').toLowerCase();
+  if (type === 'cards') return String(it.number || '');
+  if (type === 'proxies') return `${String(it.host || '').toLowerCase()}|${it.port}|${it.user}`;
+  const keys = dedup.licenseKeys(it);
+  return [keys.dup_name, keys.dup_cvr].filter(Boolean).join('|');
+}
 
 function normalizeImport(type, item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return reply400('导入内容格式不正确');
@@ -578,25 +631,82 @@ function normalizeImport(type, item) {
   return row;
 }
 
-function importItems(type, items) {
+/** 冲突的结构化描述，供接口返回给前端展示「被谁、何时、依据什么字段」判重。 */
+function conflictDetail(conflict, item) {
+  return {
+    name: String(item?.name || conflict.license.name || ''),
+    field: conflict.field,
+    label: conflict.label,
+    license_name: conflict.license.name,
+    cvr: conflict.license.cvr || '',
+    owner: { username: conflict.owner.username, display_name: conflict.owner.display_name },
+    created_at: conflict.license.created_at,
+    weak: !!conflict.weak,
+    message: dedup.conflictMessage(conflict),
+  };
+}
+
+/**
+ * 批量导入到指定账号名下。
+ * 营业执照会跨全体用户查重：命中的条目被跳过，并在 conflicts 里带上「已被谁导入」的说明。
+ */
+function importItems(ownerId, type, items) {
   if (!Array.isArray(items) || items.length > 5000) return reply400('单次导入最多 5000 条');
   items = items.map((item) => normalizeImport(type, item));
   let added = 0;
+  let updated = 0;
   const skipped = [];
+  const conflicts = [];
   const seen = new Set();
   const label = dupLabel(type);
   for (const it of items) {
-    // 同批次内也去重：以 dupLabel 作为本次批次的键
-    const batchKey = type === 'emails' || type === 'licenses' ? label(it).toLowerCase() : label(it);
+    const batchKey = batchKeyOf(type, it);
     if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
-    const isDup = db[type].some(DUP_KEYS[type](it));
-    if (isDup) { skipped.push(it); continue; }
+    if (type === 'licenses') {
+      const keys = dedup.licenseKeys(it);
+      // 自己已经导入过的同一家公司属于「更新」，只有别人的才算重复
+      const mine = store.listLicenses(db, ownerId).find((row) => dedup.rowMatchesKeys(row, keys));
+      const conflict = dedup.findLicenseConflict(db, keys, { excludeId: mine ? mine.id : null });
+      if (conflict) {
+        skipped.push(it);
+        conflicts.push(conflictDetail(conflict, it));
+        continue;
+      }
+      if (mine) {
+        try {
+          store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          updated++;
+        } catch (error) {
+          if (!store.isUniqueViolation(error)) throw error;
+          skipped.push(it);
+          conflicts.push({ name: it.name, field: 'name', label: '组织名称', owner: null, message: '该营业执照与资料库中现有资料重复' });
+        }
+        continue;
+      }
+    } else {
+      const predicate = store.poolDuplicatePredicate(type, it);
+      const dup = predicate && db.prepare(`SELECT 1 AS x FROM ${type} WHERE owner_id = ? AND ${predicate.sql}`)
+        .get(ownerId, ...predicate.params);
+      if (dup) { skipped.push(it); continue; }
+    }
     if (batchKey) seen.add(batchKey);
-    const row = { ...normalizeImport(type, it), id: nextId(type), status: '未使用', created_at: nowLocal() };
-    db[type].push(row);
+    try {
+      store.insertPoolRow(db, ownerId, type, it, { createdAt: nowLocal() });
+    } catch (error) {
+      // 数据库唯一索引是最后一道防线（并发或归一化遗漏）
+      if (!store.isUniqueViolation(error)) throw error;
+      skipped.push(it);
+      if (type === 'licenses') {
+        const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(it));
+        conflicts.push(conflict
+          ? conflictDetail(conflict, it)
+          : { name: it.name, field: 'name', label: '组织名称', owner: null, message: '该营业执照已存在' });
+      }
+      continue;
+    }
     added++;
   }
-  return { added, skipped: skipped.length, duplicates: skipped.map(label) };
+  return { added, updated, skipped: skipped.length, duplicates: skipped.map(label), conflicts };
 }
 
 /* ---------------- 记录创建 ---------------- */
@@ -635,7 +745,7 @@ function pickPool(pool, ids, count, label) {
   return { items: chosen };
 }
 
-function createRecords(body) {
+function createRecords(ownerId, body) {
   const country = String(body.country || '').trim();
   const product = String(body.product || '').trim();
   const rawDomains = Array.isArray(body.domains)
@@ -649,22 +759,26 @@ function createRecords(body) {
   const dateKey = String(body.date_key || '').trim() || todayKey();
   const fpPrefix = String(body.fp_prefix || '').trim() || `${dateKey}ads`;
   const seqInput = body.start_seq;
-  let seq = seqInput === undefined || seqInput === '' ? nextSeq() : Number(seqInput);
+  let seq = seqInput === undefined || seqInput === '' ? store.nextSeq(db, ownerId) : Number(seqInput);
 
   if (!domains.length && (typeof body.count === 'boolean' || !Number.isSafeInteger(count) || count < 1)) return { error: '创建数量必须为 1 到 500 的整数' };
   if (count > 500) return { error: '单次最多创建 500 条记录' };
   if (typeof seqInput === 'boolean' || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(seq + count)) return { error: '指纹编号无效' };
   if (new Set(domains).size !== domains.length) return { error: '域名列表存在重复，请检查后再创建' };
-  const fingerprints = new Set(db.records.map((r) => r.fingerprint));
   for (let i = 0; i < count; i++) {
-    if (fingerprints.has(`${fpPrefix}${seq + i}`)) return { error: '指纹名称已存在，请调整起始编号' };
+    if (store.fingerprintExists(db, ownerId, `${fpPrefix}${seq + i}`)) return { error: '指纹名称已存在，请调整起始编号' };
   }
 
-  const pickedEmails = pickPool(db.emails, body.email_ids, count, '可用邮箱');
+  const emails = store.listPool(db, ownerId, 'emails');
+  const cards = store.listPool(db, ownerId, 'cards');
+  const licenses = store.listPool(db, ownerId, 'licenses');
+  const proxies = store.listPool(db, ownerId, 'proxies');
+
+  const pickedEmails = pickPool(emails, body.email_ids, count, '可用邮箱');
   if (pickedEmails.error) return { error: pickedEmails.error };
-  const pickedCards = pickPool(db.cards, body.card_ids, count, '可用信用卡');
+  const pickedCards = pickPool(cards, body.card_ids, count, '可用信用卡');
   if (pickedCards.error) return { error: pickedCards.error };
-  const pickedLic = pickPool(db.licenses, body.license_ids, count, '可用营业执照');
+  const pickedLic = pickPool(licenses, body.license_ids, count, '可用营业执照');
   if (pickedLic.error) return { error: pickedLic.error };
 
   const proxyMode = ['shared', 'auto', 'none'].includes(body.proxy_mode) ? body.proxy_mode : 'shared';
@@ -672,17 +786,17 @@ function createRecords(body) {
   if (proxyMode === 'shared') {
     if (body.proxy_id !== undefined && body.proxy_id !== null) {
       if (!Number.isSafeInteger(body.proxy_id) || body.proxy_id < 1) return { error: '所选代理编号无效' };
-      sharedProxy = db.proxies.find((p) => p.id === Number(body.proxy_id) && p.status !== '停用') || null;
+      sharedProxy = proxies.find((p) => p.id === Number(body.proxy_id) && p.status !== '停用') || null;
       if (!sharedProxy) return { error: '所选代理不存在或已停用' };
     }
     if (!sharedProxy) {
-      const last = db.records[db.records.length - 1];
-      if (last && last.proxy_id != null) sharedProxy = db.proxies.find((p) => p.id === last.proxy_id && p.status !== '停用') || null;
+      const last = store.latestRecord(db, ownerId);
+      if (last && last.proxy_id != null) sharedProxy = proxies.find((p) => p.id === last.proxy_id && p.status !== '停用') || null;
     }
   }
   let autoProxies = [];
   if (proxyMode === 'auto') {
-    const pickedProxies = pickPool(db.proxies, body.proxy_ids, count, '可用代理');
+    const pickedProxies = pickPool(proxies, body.proxy_ids, count, '可用代理');
     if (pickedProxies.error) return { error: pickedProxies.error };
     autoProxies = pickedProxies.items;
   }
@@ -695,7 +809,6 @@ function createRecords(body) {
     const proxy = proxyMode === 'auto' ? autoProxies[i] || null : sharedProxy;
     const domain = domains[i] || '';
     const rec = {
-      id: nextId('records'),
       seq,
       fingerprint: `${fpPrefix}${seq}`,
       country, product, domain,
@@ -724,12 +837,13 @@ function createRecords(body) {
       status: '正常',
       created_at: nowLocal(),
     };
-    db.records.push(rec);
-    if (email) email.status = '已使用';
-    if (proxy) proxy.status = '已使用';
-    if (card) card.status = '已使用';
-    if (lic) lic.status = '已使用';
-    created.push(rec);
+    const id = store.insertRecord(db, ownerId, rec);
+    rec.id = id;
+    if (email) store.setPoolStatus(db, ownerId, 'emails', email.id, '已使用');
+    if (proxy) store.setPoolStatus(db, ownerId, 'proxies', proxy.id, '已使用');
+    if (card) store.setPoolStatus(db, ownerId, 'cards', card.id, '已使用');
+    if (lic) store.setPoolStatus(db, ownerId, 'licenses', lic.id, '已使用');
+    created.push(store.toPublic(store.getRecord(db, ownerId, id)));
     seq++;
   }
   return { created };
@@ -747,65 +861,58 @@ const SNAP = {
   license: (l) => ({ license_name: l.name }),
 };
 
-function syncResource(type, resource) {
+/** 资源被改名/改值后，同步到引用它的记录快照里（导出用的是快照字段）。 */
+function syncResource(ownerId, type, resource) {
   const prefix = POOL_PREFIX[type];
   const snapshot = SNAP[prefix](resource);
-  for (const record of db.records) {
-    if (record[`${prefix}_id`] === resource.id) Object.assign(record, snapshot);
-  }
+  const rows = db.prepare(`SELECT id FROM records WHERE owner_id = ? AND ${prefix}_id = ?`).all(ownerId, resource.id);
+  for (const row of rows) store.updateRecordColumns(db, ownerId, row.id, snapshot);
 }
 
-function pruneDocuments() {
-  const referenced = new Set(db.licenses.map((license) => license.document_id).filter(Boolean));
-  for (const id of Object.keys(db.documents)) {
-    if (!referenced.has(id)) delete db.documents[id];
-  }
-}
-
-function releaseIfUnused(prefix, oldId, excludeRecId) {
+/** 资源解除关联后，如果没有任何记录再用它，就回到「未使用」。 */
+function releaseIfUnused(ownerId, prefix, oldId, excludeRecId) {
   if (oldId == null) return;
-  const stillUsed = db.records.some((r) => r.id !== excludeRecId && r[`${prefix}_id`] === oldId);
-  if (stillUsed) return;
-  const coll = { email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' }[prefix];
-  const it = db[coll].find((x) => x.id === oldId);
-  if (it && it.status === '已使用') it.status = '未使用';
+  if (store.recordsUsingResource(db, ownerId, prefix, oldId, excludeRecId).length) return;
+  const kind = { email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' }[prefix];
+  const item = store.findPoolItem(db, ownerId, kind, oldId);
+  if (item && item.status === '已使用') store.setPoolStatus(db, ownerId, kind, oldId, '未使用');
 }
 
-function updateRecord(id, body) {
-  const rec = db.records.find((r) => r.id === id);
+function updateRecord(ownerId, id, body) {
+  const rec = store.getRecord(db, ownerId, id);
   if (!rec) return { error: '记录不存在' };
 
-  for (const [prefix, coll] of Object.entries({ email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' })) {
+  for (const [prefix, kind] of Object.entries({ email: 'emails', proxy: 'proxies', card: 'cards', license: 'licenses' })) {
     const value = body[`${prefix}_id`];
     if (value === undefined || value === null) continue;
     if (!Number.isSafeInteger(value) || value < 1) return { error: '所选资源编号无效' };
     if (value === rec[`${prefix}_id`]) continue;
-    const target = db[coll].find((item) => item.id === value);
+    const target = store.findPoolItem(db, ownerId, kind, value);
     if (!target || target.status === '停用') return { error: '所选资源不存在或已停用' };
-    if (prefix !== 'proxy' && (target.status !== '未使用' || db.records.some((r) => r.id !== rec.id && r[`${prefix}_id`] === target.id))) {
+    if (prefix !== 'proxy' && (target.status !== '未使用' || store.recordsUsingResource(db, ownerId, prefix, target.id, rec.id).length)) {
       return { error: '所选资源已被其他记录使用' };
     }
   }
 
+  const patch = {};
   for (const k of ['country', 'product', 'domain', 'ip_reg_time', 'id_card', 'status']) {
-    if (k in body) rec[k] = String(body[k] ?? '').trim();
+    if (k in body) patch[k] = String(body[k] ?? '').trim();
   }
-  if ('status' in body && !RECORD_STATUSES.includes(rec.status)) rec.status = '正常';
+  if ('status' in patch && !RECORD_STATUSES.includes(patch.status)) patch.status = '正常';
 
-  const reassign = (prefix, coll, newId) => {
+  const reassign = (prefix, kind, newId) => {
     if (newId === undefined) return;
     const targetId = newId === null ? null : Number(newId);
     if (rec[`${prefix}_id`] === targetId) return;
-    releaseIfUnused(prefix, rec[`${prefix}_id`], rec.id);
-    const nu = targetId == null ? null : db[coll].find((x) => x.id === targetId);
+    releaseIfUnused(ownerId, prefix, rec[`${prefix}_id`], rec.id);
+    const nu = targetId == null ? null : store.findPoolItem(db, ownerId, kind, targetId);
     if (targetId != null && !nu) return;
     rec[`${prefix}_id`] = nu ? nu.id : null;
-    // 清空旧快照字段，再填入新关联资源的快照
-    for (const key of Object.keys(SNAP[prefix]({}))) rec[key] = '';
+    for (const key of Object.keys(SNAP[prefix]({}))) patch[key] = '';
     if (nu) {
       const snaps = SNAP[prefix](nu);
-      for (const key of Object.keys(snaps)) rec[key] = snaps[key] ?? '';
-      nu.status = '已使用';
+      for (const key of Object.keys(snaps)) patch[key] = snaps[key] ?? '';
+      store.setPoolStatus(db, ownerId, kind, nu.id, '已使用');
     }
   };
 
@@ -814,17 +921,21 @@ function updateRecord(id, body) {
   reassign('card', 'cards', body.card_id);
   reassign('license', 'licenses', body.license_id);
 
-  rec.name = buildName(rec.country, rec.product, rec.domain);
-  return { record: rec };
+  const nextCountry = 'country' in patch ? patch.country : rec.country;
+  const nextProduct = 'product' in patch ? patch.product : rec.product;
+  const nextDomain = 'domain' in patch ? patch.domain : rec.domain;
+  patch.name = buildName(nextCountry, nextProduct, nextDomain);
+
+  store.updateRecordColumns(db, ownerId, id, patch);
+  return { record: store.toPublic(store.getRecord(db, ownerId, id)) };
 }
 
-function deleteRecords(ids) {
-  const idSet = new Set(ids.map(Number));
-  const removed = db.records.filter((r) => idSet.has(r.id));
-  db.records = db.records.filter((r) => !idSet.has(r.id));
+function deleteRecords(ownerId, ids) {
+  const removed = store.deleteRecordRows(db, ownerId, ids);
   for (const prefix of ['email', 'proxy', 'card', 'license']) {
-    for (const r of removed) releaseIfUnused(prefix, r[`${prefix}_id`], r.id);
+    for (const r of removed) releaseIfUnused(ownerId, prefix, r[`${prefix}_id`], r.id);
   }
+  store.pruneDocuments(db);
   return { deleted: removed.length };
 }
 
@@ -880,36 +991,230 @@ function buildCsv(records) {
   return '\uFEFF' + lines.join('\r\n');
 }
 
-/* ---------------- 路由 ---------------- */
+const { validateSnapshot } = require('./lib/storage');
 
-fastify.addHook('preValidation', async (req) => {
-  if (!req.url.startsWith('/api/') || !['POST', 'PATCH'].includes(req.method)) return;
-  if (req.body !== undefined && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return reply400('请求内容必须为对象');
-  if (req.body?.ids !== undefined && (!Array.isArray(req.body.ids) || req.body.ids.some((id) => !Number.isSafeInteger(id) || id < 1))) return reply400('记录编号格式不正确');
+/* ---------------- 请求钩子：CSRF、鉴权、安全头 ---------------- */
+
+const PUBLIC_PATHS = new Set([
+  '/api/auth/config', '/api/auth/login', '/api/auth/register', '/api/auth/logout', '/api/healthz',
+]);
+
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** 只在单机桌面模式下才允许用令牌免登录。 */
+function isDesktopRequest(req) {
+  return !!desktopToken && req.headers['x-desktop-token'] === desktopToken;
+}
+
+/**
+ * 在 onRequest 阶段拒绝请求时，请求体通常还没有被读取。
+ * 此时必须关闭这条连接：否则 keep-alive 连接上会残留未读完的请求体，
+ * 下一个请求的内容就会被错位解析（多用户下等同于数据串号）。
+ */
+function rejectEarly(reply, code, payload) {
+  reply.header('Connection', 'close');
+  return reply.code(code).send(payload);
+}
+
+fastify.addHook('onRequest', async (req, reply) => {
+  // 只接受 origin-form 请求目标（以 / 开头）。
+  //
+  // 绝对形式（`GET http://host/api/bootstrap HTTP/1.1`）是合法 HTTP/1.1，
+  // find-my-way 仍会把它路由到对应的 handler，但此时 req.url 以 "http://" 开头，
+  // 下面那句 startsWith('/api/') 会判假并直接 return —— 桌面令牌、CSRF、
+  // 会话鉴权会被整体跳过，req.userId 保持 undefined。
+  // 实测后果：不带任何凭据、不带 x-workbench 头即可调用
+  // POST /api/backup/restore 覆盖账号数据（origin-form 同一请求被正确挡在 403）。
+  // 所以必须在钩子最前面挡掉，不能依赖后续任何一环。
+  if (!req.url.startsWith('/')) {
+    return rejectEarly(reply, 400, { error: '不支持的请求目标形式' });
+  }
+
+  // 鉴权判断必须建立在「解码后」的路径上，否则会与路由判断分歧：find-my-way 会解码
+  // 百分号编码后再路由，实测 `GET /%61pi/bootstrap`（%61='a'）被交给 /api/bootstrap
+  // 的 handler，而未解码的 req.url 不以 /api/ 开头 —— 原先这里直接 return，导致桌面
+  // 令牌、CSRF、会话鉴权、限速被整体跳过，onSend 的 Cache-Control: no-store 也一并
+  // 失效（实测该路径返回 200 且响应头里确实没有 no-store）。解码失败一律 400。
+  let pathname;
+  try {
+    pathname = decodeURIComponent(req.url.split('?')[0]);
+  } catch {
+    return rejectEarly(reply, 400, { error: '不支持的请求目标形式' });
+  }
+
+  if (!pathname.startsWith('/api/')) return;
+
+  // 桌面版仍要求携带本机令牌；网页版没有令牌，这一层自动跳过
+  if (desktopToken && !isDesktopRequest(req)) {
+    return rejectEarly(reply, 401, { error: '仅允许桌面应用访问' });
+  }
+
+  // CSRF：写操作必须带自定义头。跨站请求无法在不触发预检的情况下设置它，
+  // 配合 SameSite=Lax 的会话 Cookie 即可挡住表单型 CSRF。
+  if (!SAFE_METHODS.has(req.method.toUpperCase()) && req.headers['x-workbench'] !== '1') {
+    return rejectEarly(reply, 403, { error: '请求缺少来源标记，请刷新页面后重试' });
+  }
+
+  if (PUBLIC_PATHS.has(pathname) || isDesktopRequest(req)) return;
+
+  const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
+  const userId = auth.resolveSession(db, token);
+  const user = userId ? store.findUserById(db, userId) : null;
+  if (!user) return rejectEarly(reply, 401, { error: '未登录', authRequired: true });
+  req.userId = userId;
+  req.sessionToken = token;
 });
 
 fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('X-Content-Type-Options', 'nosniff');
+  reply.header('Referrer-Policy', 'same-origin');
   reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
-  if (req.url.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
+  // 与 onRequest 同理：响应的 no-store 也按解码后的路径判断，否则编码路径会绕过它。
+  let sendPath = req.url.split('?')[0];
+  try { sendPath = decodeURIComponent(sendPath); } catch { /* 畸形序列不在此处报错 */ }
+  if (sendPath.startsWith('/api/')) reply.header('Cache-Control', 'no-store');
   return payload;
 });
 
-fastify.get('/api/bootstrap', async () => {
-  const pools = {};
-  for (const t of POOL_TYPES) pools[t] = db[t];
+fastify.setErrorHandler((error, req, reply) => {
+  const status = Number(error.statusCode) >= 400 && Number(error.statusCode) < 600 ? Number(error.statusCode) : 500;
+  if (status >= 500) req.log.error({ err: error }, '请求处理失败');
+  const body = { error: status >= 500 ? '服务器内部错误，请稍后重试' : error.message };
+  if (Array.isArray(error.conflicts)) body.conflicts = error.conflicts;
+  reply.code(status).send(body);
+});
+
+function replyConflict(message, conflicts) {
+  const err = new Error(message);
+  err.statusCode = 409;
+  err.conflicts = conflicts;
+  throw err;
+}
+
+/* ---------------- 认证路由 ---------------- */
+
+fastify.get('/api/healthz', async () => ({ ok: true }));
+
+fastify.get('/api/auth/config', async () => ({
+  registration: REGISTRATION,
+  inviteRequired: REGISTRATION === 'invite',
+  minPasswordLength: auth.MIN_PASSWORD,
+  minUsernameLength: 3,
+  maxUsernameLength: 32,
+  siteName: '账号工作台',
+}));
+
+fastify.get('/api/auth/me', async (req, reply) => {
+  const ownerId = currentUserId(req);
+  if (!ownerId) return reply.code(401).send({ error: '未登录' });
+  const user = store.findUserById(db, ownerId);
+  if (!user) return reply.code(401).send({ error: '未登录' });
+  return { user: auth.publicUser(user) };
+});
+
+const loginLimiter = new auth.RateLimiter({ limit: 10, windowMs: 60_000 });
+
+fastify.post('/api/auth/login', { bodyLimit: 4 * 1024 }, async (req, reply) => {
+  const { username, password } = req.body || {};
+  const key = `${req.ip}|${String(username || '').toLowerCase()}`;
+  const gate = loginLimiter.check(key);
+  if (!gate.allowed) {
+    return reply.code(429).header('Retry-After', String(gate.retryAfter))
+      .send({ error: `尝试过于频繁，请 ${gate.retryAfter} 秒后再试` });
+  }
+  const user = store.findUserByUsername(db, username);
+  // 用户不存在与密码错误返回同一句话，避免暴露账号是否存在
+  if (!user || !auth.verifyPassword(password, user.password_hash)) {
+    return reply.code(401).send({ error: '用户名或密码不正确' });
+  }
+  loginLimiter.reset(key);
+  const token = auth.createSession(db, user.id);
+  store.touchLogin(db, user.id, nowLocal());
+  reply.header('Set-Cookie', auth.sessionCookie(token, { secure: SESSION_SECURE }));
+  return { user: auth.publicUser(user) };
+});
+
+// 未登录即可访问的路由只接受很小的请求体，避免成为放大的攻击面（全局上限是 16 MB）。
+fastify.post('/api/auth/register', { bodyLimit: 4 * 1024 }, async (req, reply) => {
+  if (REGISTRATION === 'closed') return reply400('已关闭注册，请联系管理员开通账号');
+  const body = req.body || {};
+  if (REGISTRATION === 'invite' && String(body.invite_code || '') !== INVITE_CODE) {
+    return reply400('邀请码不正确');
+  }
+  const checked = auth.validateCredentials(body);
+  if (checked.error) return reply400(checked.error);
+  const displayName = String(body.display_name || '').trim().slice(0, 40);
+  return mutate(() => {
+    if (store.findUserByUsername(db, checked.username)) return reply400('该用户名已被注册');
+    const user = store.insertUser(db, {
+      username: checked.username,
+      displayName,
+      passwordHash: auth.hashPassword(checked.password),
+      createdAt: nowLocal(),
+    });
+    // 第一个账号接管旧版单机数据
+    const adopted = adoptPendingLegacy(user.id);
+    const token = auth.createSession(db, user.id);
+    store.touchLogin(db, user.id, nowLocal());
+    reply.code(201).header('Set-Cookie', auth.sessionCookie(token, { secure: SESSION_SECURE }));
+    return { user: auth.publicUser(user), adopted: adopted ? { records: adopted.records, licenses: adopted.licenses } : null };
+  });
+});
+
+fastify.post('/api/auth/logout', async (req, reply) => {
+  const token = req.sessionToken || auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
+  if (token) auth.destroySession(db, token);
+  reply.header('Set-Cookie', auth.clearCookie());
+  return { ok: true };
+});
+
+/* ---------------- 旧版数据迁移 ---------------- */
+
+let pendingLegacy = null;
+
+function loadLegacySnapshot() {
+  if (pendingLegacy !== null) return pendingLegacy || null;
+  pendingLegacy = false;
+  try {
+    if (!fs.existsSync(LEGACY_FILE)) return null;
+    pendingLegacy = validateSnapshot(JSON.parse(fs.readFileSync(LEGACY_FILE, 'utf8')));
+    console.log(`[迁移] 发现旧版数据文件：${LEGACY_FILE}`);
+  } catch (error) {
+    console.warn(`[迁移] 旧版数据文件无法读取，已跳过：${error.message}`);
+  }
+  return pendingLegacy || null;
+}
+
+/** 把旧版单机数据整体交给某个账号；完成后把原文件改名，避免重复迁移。 */
+function adoptPendingLegacy(ownerId) {
+  const snapshot = loadLegacySnapshot();
+  if (!snapshot) return null;
+  const stats = store.adoptLegacySnapshot(db, ownerId, snapshot, { createdAt: nowLocal() });
+  pendingLegacy = false;
+  try { fs.renameSync(LEGACY_FILE, `${LEGACY_FILE}.migrated`); } catch { /* 改名失败不影响数据已导入 */ }
+  console.log(`[迁移] 已导入：邮箱 ${stats.emails}、代理 ${stats.proxies}、信用卡 ${stats.cards}、`
+    + `营业执照 ${stats.licenses}、记录 ${stats.records}、附件 ${stats.documents}`);
+  return stats;
+}
+
+/* ---------------- 业务路由 ---------------- */
+
+fastify.get('/api/bootstrap', async (req) => {
+  const ownerId = currentUserId(req);
+  const seq = store.nextSeq(db, ownerId);
   return {
-    pools,
-    records: [...db.records].sort((a, b) => b.id - a.id),
-    next: { fingerprint: `${todayKey()}ads${nextSeq()}`, seq: nextSeq(), date_key: todayKey() },
+    user: auth.publicUser(store.findUserById(db, ownerId)),
+    pools: store.listAllPools(db, ownerId),
+    records: store.listRecords(db, ownerId),
+    counts: store.countPoolByStatus(db, ownerId),
+    next: { fingerprint: `${todayKey()}ads${seq}`, seq, date_key: todayKey() },
   };
 });
 
-fastify.post('/api/parse/auto', async (req) => {
-  return parseAuto(req.body?.text);
-});
+fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
 
 fastify.post('/api/import/auto', async (req) => {
+  const ownerId = currentUserId(req);
   let emails = Array.isArray(req.body?.emails)
     ? req.body.emails.filter((e) => e && e.user).map((x) => ({ user: String(x.user).trim(), pass: String(x.pass || ''), fakey: String(x.fakey || '') }))
     : null;
@@ -924,34 +1229,58 @@ fastify.post('/api/import/auto', async (req) => {
     emails = r.emails;
     proxies = r.proxies;
   }
-  return mutate(() => ({ emails: importItems('emails', emails), proxies: importItems('proxies', proxies) }));
+  return mutate(() => ({ emails: importItems(ownerId, 'emails', emails), proxies: importItems(ownerId, 'proxies', proxies) }));
 });
 
 fastify.post('/api/parse/:type', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
-  const items = PARSERS[type](req.body?.text);
-  return { items };
+  return { items: PARSERS[type](req.body?.text) };
 });
 
-// Parse without saving. Only confirmed imports retain the original PDF.
+// 只解析不保存；只有确认导入后才会保存原件。
 fastify.post('/api/parse/licenses-pdf', async (req) => {
   const bytes = decodePdf(req.body?.pdf);
   try {
     const text = await extractPdfText(bytes);
-    return { items: parseCertificate(text), text };
+    const items = parseCertificate(text);
+    const enriched = items.map((item) => ({ ...item, ...probeDuplicate(item, req) }));
+    return { items: enriched, text };
   } catch (error) {
-    fastify.log.warn({ err: error }, 'PDF extraction failed');
+    if (error.statusCode === 400) throw error;
+    fastify.log.warn({ err: error }, 'PDF 解析失败');
     return reply400('PDF 解析失败，请选择可读取的 PDF 或手动填写信息');
   }
 });
 
-fastify.post('/api/import/:type', async (req) => {
+/**
+ * 识别阶段就把重复情况告诉用户（导入前预警），避免填完一堆字段才被拒。
+ * 这里只读不写。
+ */
+function probeDuplicate(item, req) {
+  const ownerId = currentUserId(req);
+  const keys = dedup.licenseKeys(item);
+  // 自己已有的同一条属于「更新」，识别阶段不当作重复提醒
+  const mine = ownerId ? store.listLicenses(db, ownerId).find((l) => dedup.rowMatchesKeys(l, keys)) : null;
+  const conflict = dedup.findLicenseConflict(db, keys, { excludeId: mine ? mine.id : null });
+  if (!conflict) return {};
+  return {
+    duplicate: {
+      ...conflictDetail(conflict, item),
+      message: dedup.conflictMessage(conflict, { includePdf: true }),
+      self: false,
+    },
+  };
+}
+
+fastify.post('/api/import/:type', async (req, reply) => {
+  const ownerId = currentUserId(req);
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
   const hasPdf = Object.hasOwn(req.body || {}, 'pdf');
   if (hasPdf && type !== 'licenses') return reply400('PDF 只能导入到营业执照资料库');
+
   if (hasPdf) {
     if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
     const bytes = decodePdf(req.body.pdf);
@@ -959,135 +1288,261 @@ fastify.post('/api/import/:type', async (req) => {
     const documentId = crypto.createHash('sha256').update(bytes).digest('hex');
     const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
     return mutate(() => {
-      const matches = db.licenses.filter((license) => license.document_id === documentId);
-      if (matches.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
-      const byName = db.licenses.find(DUP_KEYS.licenses(item));
-      if (matches[0] && byName && matches[0].id !== byName.id) return reply400('该 PDF 已属于另一份资料，名称修改与现有组织冲突，请核对后重试');
-      let license = matches[0] || byName;
-      const added = license ? 0 : 1;
-      if (!license) {
-        importItems('licenses', [item]);
-        license = db.licenses.find(DUP_KEYS.licenses(item));
+      const mine = store.listLicenses(db, ownerId);
+      const byDocument = mine.filter((license) => license.document_id === documentId);
+      if (byDocument.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
+      const byName = mine.find(DUP_KEYS.licenses(item));
+      if (byDocument[0] && byName && byDocument[0].id !== byName.id) {
+        return reply400('该 PDF 已属于另一份资料，名称修改与现有组织冲突，请核对后重试');
       }
-      Object.assign(license, normalizeImport('licenses', { ...license, ...items[0] }), {
-        document_id: documentId, document_name: filename, document_size: bytes.length,
-      });
-      db.documents[documentId] = { filename, base64: bytes.toString('base64') };
-      syncResource('licenses', license);
-      pruneDocuments();
-      return { added, updated: added ? 0 : 1, skipped: 0, duplicates: [], attached: 1, license_id: license.id };
+      const mineMatched = byDocument[0] || byName || null;
+
+      // 关键一步：跨全体用户判重（自己已有的那条属于「更新」，不算重复）
+      const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
+      if (conflict) return replyConflict(dedup.conflictMessage(conflict, { includePdf: true }), [conflictDetail(conflict, item)]);
+
+      let license = mineMatched;
+      const added = license ? 0 : 1;
+      try {
+        if (!license) license = store.insertPoolRow(db, ownerId, 'licenses', item, { createdAt: nowLocal() });
+        const merged = normalizeImport('licenses', { ...store.toPublic(license), ...items[0] });
+        license = store.updatePoolRow(db, ownerId, 'licenses', license.id, merged);
+      } catch (error) {
+        if (!store.isUniqueViolation(error)) throw error;
+        const again = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
+        return replyConflict(again ? dedup.conflictMessage(again, { includePdf: true }) : '该营业执照与现有资料重复', again ? [conflictDetail(again, item)] : []);
+      }
+      db.prepare('UPDATE licenses SET document_id = ?, document_name = ?, document_size = ? WHERE owner_id = ? AND id = ?')
+        .run(documentId, filename, bytes.length, ownerId, license.id);
+      store.putDocument(db, ownerId, { sha256: documentId, filename, bytes, createdAt: nowLocal() });
+      license = store.findPoolItem(db, ownerId, 'licenses', license.id);
+      syncResource(ownerId, 'licenses', license);
+      store.pruneDocuments(db);
+      return {
+        added, updated: added ? 0 : 1, skipped: 0, duplicates: [], conflicts: [],
+        attached: 1, license_id: license.id, license: store.toPublic(license),
+      };
     });
   }
+
   return mutate(() => {
-    const result = importItems(type, items);
-    if (type === 'licenses') {
-      let updated = 0;
-      for (const item of items) {
-        const license = db.licenses.find(DUP_KEYS.licenses(normalizeImport('licenses', item)));
-        if (license && Object.keys(item).some((key) => key !== 'name' && IMPORT_FIELDS.licenses.includes(key))) {
-          const supplied = Object.fromEntries(IMPORT_FIELDS.licenses.filter((key) => key in item).map((key) => [key, item[key]]));
-          Object.assign(license, normalizeImport('licenses', { ...license, ...supplied }));
-          syncResource('licenses', license);
-          updated++;
-        }
-      }
-      result.updated = updated;
+    const result = importItems(ownerId, type, items);
+    // 营业执照出现全局重复时，整批拒绝，避免「悄悄少导一条」
+    if (type === 'licenses' && result.conflicts.length) {
+      const names = result.conflicts.slice(0, 3).map((c) => c.message).join('；');
+      const more = result.conflicts.length > 3 ? `（另有 ${result.conflicts.length - 3} 条同类冲突）` : '';
+      return replyConflict(`导入已取消，发现 ${result.conflicts.length} 条重复：${names}${more}`, result.conflicts);
     }
     return result;
   });
 });
 
-function licenseDocument(id) {
-  const license = db.licenses.find((item) => item.id === Number(id));
-  const document = license && db.documents[license.document_id];
+/** 营业执照原件的读取（按账号隔离）。 */
+function licenseDocument(id, ownerId = null) {
+  const owner = ownerId ?? (desktopToken ? ensureDesktopUser() : null);
+  const license = owner ? store.findPoolItem(db, owner, 'licenses', Number(id)) : null;
+  const document = license && license.document_id ? store.getDocument(db, license.document_id) : null;
   if (!document) throw new Error('这份营业执照尚未保存原 PDF');
-  return { ...document, id: license.document_id };
+  return {
+    id: license.document_id,
+    filename: document.filename,
+    base64: Buffer.from(document.bytes).toString('base64'),
+  };
 }
 
 fastify.get('/api/licenses/:id/pdf', async (req, reply) => {
   let document;
-  try { document = licenseDocument(req.params.id); }
-  catch { return reply.code(404).send({ error: '未保存原 PDF' }); }
+  try {
+    document = licenseDocument(req.params.id, currentUserId(req));
+  } catch {
+    return reply.code(404).send({ error: '未保存原 PDF' });
+  }
   reply.header('Content-Type', 'application/pdf');
   reply.header('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(document.filename)}`);
   reply.header('Cache-Control', 'no-store');
   return reply.send(Buffer.from(document.base64, 'base64'));
 });
 
-fastify.patch('/api/pool/:type/:id', async (req) => mutate(() => {
+/** 全体成员重复体检：跨用户扫描，找出任何形式的重复。 */
+fastify.get('/api/licenses/duplicates', async () => {
+  const report = dedup.auditLicenses(db);
+  return { ...report, scope: 'global', address_mode: dedup.ADDRESS_MODE };
+});
+
+fastify.patch('/api/pool/:type/:id', async (req) => {
+  const ownerId = currentUserId(req);
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
-  const it = db[type].find((x) => x.id === Number(req.params.id));
-  if (!it) return reply400('资源不存在');
-  if ('status' in (req.body || {})) {
-    if (!STATUSES.includes(req.body.status)) return reply400('无效状态');
-    const prefix = { emails: 'email', proxies: 'proxy', cards: 'card', licenses: 'license' }[type];
-    if (req.body.status === '未使用' && db.records.some((r) => r[`${prefix}_id`] === it.id)) return reply400('资源仍关联记录，不能标记为未使用');
-    it.status = req.body.status;
-  }
-  const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in (req.body || {})).map((key) => [key, req.body[key]]));
-  const normalized = normalizeImport(type, { ...it, ...changed });
-  if (db[type].some((row) => row.id !== it.id && DUP_KEYS[type](normalized)(row))) return reply400('修改后的资源与资料库中现有资源重复');
-  Object.assign(it, normalized);
-  syncResource(type, it);
-  return { item: it };
-}));
+  return mutate(() => {
+    const id = Number(req.params.id);
+    const current = store.findPoolItem(db, ownerId, type, id);
+    if (!current) return reply400('资源不存在');
+    const body = req.body || {};
+    if ('status' in body) {
+      if (!STATUSES.includes(body.status)) return reply400('无效状态');
+      const prefix = POOL_PREFIX[type];
+      if (body.status === '未使用' && store.recordsUsingResource(db, ownerId, prefix, id).length) {
+        return reply400('资源仍关联记录，不能标记为未使用');
+      }
+      store.setPoolStatus(db, ownerId, type, id, body.status);
+    }
+    const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in body).map((key) => [key, body[key]]));
+    const merged = normalizeImport(type, { ...store.toPublic(current), ...changed });
+    if (type === 'licenses') {
+      const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
+      if (conflict) return replyConflict(dedup.conflictMessage(conflict), [conflictDetail(conflict, merged)]);
+    } else {
+      const predicate = store.poolDuplicatePredicate(type, merged);
+      const dup = predicate && db.prepare(`SELECT id FROM ${type} WHERE owner_id = ? AND ${predicate.sql} AND id <> ?`)
+        .get(ownerId, ...predicate.params, id);
+      if (dup) return reply400('修改后的资源与资料库中现有资源重复');
+    }
+    let updated;
+    try {
+      updated = store.updatePoolRow(db, ownerId, type, id, merged);
+    } catch (error) {
+      if (!store.isUniqueViolation(error)) throw error;
+      return reply400('修改后的资源与资料库中现有资源重复');
+    }
+    syncResource(ownerId, type, updated);
+    return { item: store.toPublic(updated) };
+  });
+});
 
-fastify.delete('/api/pool/:type/:id', async (req) => mutate(() => {
+fastify.delete('/api/pool/:type/:id', async (req) => {
+  const ownerId = currentUserId(req);
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const id = Number(req.params.id);
-  const prefix = { emails: 'email', proxies: 'proxy', cards: 'card', licenses: 'license' }[type];
-  if (db.records.some((r) => r[`${prefix}_id`] === id)) return reply400('资源仍关联记录，请先解除关联');
-  const before = db[type].length;
-  db[type] = db[type].filter((x) => x.id !== id);
-  if (type === 'licenses') pruneDocuments();
-  return { deleted: before - db[type].length };
-}));
+  return mutate(() => {
+    if (store.recordsUsingResource(db, ownerId, POOL_PREFIX[type], id).length) {
+      return reply400('资源仍关联记录，请先解除关联');
+    }
+    const deleted = store.deletePoolRow(db, ownerId, type, id);
+    if (type === 'licenses') store.pruneDocuments(db);
+    return { deleted };
+  });
+});
 
 fastify.post('/api/records', async (req) => {
-  const res = mutate(() => createRecords(req.body || {}));
+  const ownerId = currentUserId(req);
+  const res = mutate(() => createRecords(ownerId, req.body || {}));
   if (res.error) return reply400(res.error);
   return res;
 });
 
-function reply400(msg) {
-  const err = new Error(msg);
-  err.statusCode = 400;
-  throw err;
-}
-
 fastify.patch('/api/records/:id', async (req) => {
-  const res = mutate(() => updateRecord(Number(req.params.id), req.body || {}));
+  const ownerId = currentUserId(req);
+  const res = mutate(() => updateRecord(ownerId, Number(req.params.id), req.body || {}));
   if (res.error) return reply400(res.error);
   return res;
 });
 
 fastify.post('/api/records/batch-delete', async (req) => {
+  const ownerId = currentUserId(req);
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return { deleted: 0 };
-  return mutate(() => deleteRecords(ids));
+  return mutate(() => deleteRecords(ownerId, ids));
 });
 
 fastify.delete('/api/records/:id', async (req) => {
-  return mutate(() => deleteRecords([Number(req.params.id)]));
+  const ownerId = currentUserId(req);
+  return mutate(() => deleteRecords(ownerId, [Number(req.params.id)]));
 });
 
 fastify.post('/api/export/adspower', async (req) => {
+  const ownerId = currentUserId(req);
   const ids = new Set((req.body?.ids || []).map(Number));
-  const list = db.records.filter((r) => !ids.size || ids.has(r.id));
+  const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildAdspower(list), count: list.length };
 });
 
 fastify.post('/api/export/csv', async (req) => {
+  const ownerId = currentUserId(req);
   const ids = new Set((req.body?.ids || []).map(Number));
-  const list = db.records.filter((r) => !ids.size || ids.has(r.id));
+  const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildCsv(list), count: list.length };
 });
 
-/* ---------------- 静态资源 & 启动 ---------------- */
+/* ---------------- 个人备份与恢复（服务器版） ---------------- */
+
+/** 导出当前账号的资源、记录与原件。附件以 base64 内嵌，形状与旧版 data.json 一致，可互相导入。 */
+fastify.get('/api/backup', async (req, reply) => {
+  const ownerId = currentUserId(req);
+  const user = store.findUserById(db, ownerId);
+  const filename = `账号工作台-${user.username}-${new Date().toISOString().slice(0, 10)}.json`;
+  reply.header('Content-Type', 'application/json; charset=utf-8');
+  reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+  return reply.send(JSON.stringify({ ...snapshot(ownerId), account: user.username, exported_at: nowLocal() }, null, 2));
+});
+
+/**
+ * 恢复个人备份：只覆盖当前账号的数据，绝不触碰其他成员。
+ * 单独放宽请求体上限（附件内嵌 base64 会很大），避免为此抬高全局上限成为攻击面。
+ */
+fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
+  const ownerId = currentUserId(req);
+  const payload = req.body?.snapshot ?? req.body;
+  try {
+    restore(payload, ownerId);
+  } catch (error) {
+    // 备份内容不对是「你给的文件有问题」，属于 400，不该报成服务器内部错误。
+    // 校验在写库之前完成，因此被拒绝时现有数据不会被改动。
+    if (!error.statusCode) return reply400(`备份文件无法恢复：${error.message}`);
+    throw error;
+  }
+  return {
+    restored: true,
+    records: store.listRecords(db, ownerId).length,
+    licenses: store.listPool(db, ownerId, 'licenses').length,
+  };
+});
+
+/* ---------------- 备份与恢复（桌面版接口，语义保持不变） ---------------- */
+
+function resolveDefaultOwner() {
+  if (desktopToken) return ensureDesktopUser();
+  const row = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
+  return row ? row.id : null;
+}
+
+function snapshot(ownerId = null) {
+  const owner = ownerId ?? resolveDefaultOwner();
+  const empty = { counters: {}, documents: {}, emails: [], proxies: [], cards: [], licenses: [], records: [] };
+  if (!owner) return empty;
+  const docs = db.prepare(`
+    SELECT d.sha256, d.filename, d.bytes FROM documents d
+     WHERE d.sha256 IN (SELECT document_id FROM licenses WHERE owner_id = ? AND document_id IS NOT NULL)
+  `).all(owner);
+  return {
+    counters: {},
+    documents: Object.fromEntries(docs.map((d) => [d.sha256, { filename: d.filename, base64: Buffer.from(d.bytes).toString('base64') }])),
+    emails: store.listPool(db, owner, 'emails'),
+    proxies: store.listPool(db, owner, 'proxies'),
+    cards: store.listPool(db, owner, 'cards'),
+    licenses: store.listPool(db, owner, 'licenses'),
+    records: store.listRecords(db, owner).slice().reverse(),
+  };
+}
+
+function restore(data, ownerId = null) {
+  const owner = ownerId ?? resolveDefaultOwner();
+  if (!owner) throw new Error('恢复备份需要先创建账号');
+  const value = validateSnapshot(data);
+  return mutate(() => {
+    db.prepare('DELETE FROM records WHERE owner_id = ?').run(owner);
+    for (const kind of POOL_TYPES) db.prepare(`DELETE FROM ${kind} WHERE owner_id = ?`).run(owner);
+    store.adoptLegacySnapshot(db, owner, value, { createdAt: nowLocal() });
+    store.pruneDocuments(db);
+    return { restored: true };
+  });
+}
+
+/* ---------------- 静态资源与启动 ---------------- */
+
+fastify.get('/login', (req, reply) => reply.sendFile('login.html'));
 
 fastify.register(fastifyStatic, { root: PUBLIC_DIR });
 
@@ -1096,12 +1551,10 @@ fastify.setNotFoundHandler((req, reply) => {
   return reply.sendFile('index.html');
 });
 
-loadDb();
-
 const start = async ({ port = Number(process.env.PORT) || 3000, host = process.env.HOST || '127.0.0.1', token = '' } = {}) => {
-  if (token) fastify.addHook('onRequest', async (req, reply) => {
-    if (req.url.startsWith('/api/') && req.headers['x-desktop-token'] !== token) return reply.code(401).send({ error: '仅允许桌面应用访问' });
-  });
+  if (token) desktopToken = token;
+  auth.pruneSessions(db);
+  if (store.countUsers(db) === 0) loadLegacySnapshot();
   try {
     const address = await fastify.listen({ port, host });
     console.log('工作台已启动: ' + address);
@@ -1112,5 +1565,20 @@ const start = async ({ port = Number(process.env.PORT) || 3000, host = process.e
   }
 };
 
-module.exports = { licenseDocument, start, close: () => fastify.close(), snapshot: () => structuredClone(db), restore: (data) => mutate(() => { db = validateSnapshot(data); return { restored: true }; }) };
+/** 关闭服务：先停掉 HTTP，再关数据库句柄（Windows 上句柄不关会导致数据文件无法删除/替换）。 */
+const close = async () => {
+  await fastify.close();
+  try { db.close(); } catch { /* 已关闭 */ }
+};
+
+module.exports = {
+  start,
+  close,
+  snapshot,
+  restore,
+  licenseDocument,
+  fastify,
+  db,
+  store,
+};
 if (require.main === module) start().catch(() => { process.exitCode = 1; });
