@@ -57,7 +57,8 @@ test('修改与删除都必须留下审计记录', async () => {
   const idB = b.value.created[0].id;
 
   // 三种改动路径各自走一遍：修改、单条删除、批量删除
-  assert.equal((await api('PATCH', `/api/records/${idA}`, { product: '审计测试产品' })).status, 200, '前提：修改应成功');
+  const beforeEdit = (await api('GET', '/api/bootstrap')).value.records.find((row) => row.id === idA);
+  assert.equal((await api('PATCH', `/api/records/${idA}`, { product: '审计测试产品', version: beforeEdit.version })).status, 200, '前提：修改应成功');
   assert.equal((await api('DELETE', `/api/records/${idA}`)).status, 200, '前提：删除应成功');
   assert.equal((await api('POST', '/api/records/batch-delete', { ids: [idB] })).status, 200, '前提：批量删除应成功');
 
