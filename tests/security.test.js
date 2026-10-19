@@ -45,6 +45,36 @@ test('same PDF concurrent uploads produce one winner and preserve encrypted orig
   await api(owner,'DELETE',`/api/pool/licenses/${pdfLicense}`);
   assert.equal((await api('carol','POST','/api/import/licenses',{pdf:bytes.toString('base64'),items:[{name:'Rename To Evade'}]})).status,409,'Deleting records must not release global fingerprint');
 });
+test('同一幂等键换内容必须冲突，而不是重放旧结果或重复创建',async()=>{
+  // 方案 WP07 验收标准「重复点击都有确定结果」。既有用例只覆盖了同键同内容的重放，
+  // 而「按键复用但表单已改」是重复点击里最危险的一种：既不能重放旧结果，
+  // 也不能把新内容当新请求落库。
+  //
+  // 本用例自带账号与资源，不借 alice 做实验：备份用例会对 alice 的记录做精确断言，
+  // 幂等用例会消耗 alice 的资源池。实测中这两条先后被我撞坏过 —— 只加断言、
+  // 共用夹具就会产生这种顺序耦合。
+  const who='idem';
+  const reg=await fetch(url+'/api/auth/register',{method:'POST',headers:{'content-type':'application/json','x-workbench':'1'},body:JSON.stringify({username:who,password:'Secure-Test-1234'})});
+  assert.equal(reg.status,201);
+  cookie[who]=reg.headers.get('set-cookie').split(';')[0];
+  await api(who,'POST','/api/import/emails',{items:[{user:'idem@example.test',pass:'Idem-Pass-1234'}]});
+  await api(who,'POST','/api/import/cards',{items:[{number:'idem-card',last4:'4242',expiry:'12/29'}]});
+  const headers={'idempotency-key':'request-abcdefghijklmnop'};
+  const body={domains:['idem-one.shop'],proxy_mode:'none'};
+  const first=await api(who,'POST','/api/records',body,headers);
+  assert.equal(first.status,200);
+  const replay=await api(who,'POST','/api/records',body,headers);
+  assert.equal(replay.status,200);
+  assert.equal(replay.value.replayed,true);
+  assert.equal(replay.value.created[0].id,first.value.created[0].id);
+  const changed=await api(who,'POST','/api/records',{...body,domains:['idem-two.shop']},headers);
+  assert.equal(changed.status,409);
+  const list=await api(who,'GET','/api/records?limit=200');
+  const domains=list.value.items.map((r)=>r.domain);
+  assert.equal(domains.filter((d)=>d==='idem-one.shop').length,1,'同键重放不得重复创建');
+  assert.equal(domains.filter((d)=>d==='idem-two.shop').length,0,'换内容后必须拒绝，不得落库');
+});
+
 test('API idempotency prevents network retries creating extra records',async()=>{
   const body={domains:['secure-operation.example'],proxy_mode:'none'};
   const headers={'idempotency-key':'request-1234567890123456'};
