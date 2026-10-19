@@ -90,6 +90,7 @@ const {certificate}=require('../tests/pdf-fixture');
     console.log('PASS F19 status mutation is not reported as failed when only refresh fails');
 
     const deleteId=await page.evaluate(async()=>{
+      await api('/api/import/emails',{method:'POST',body:{items:[{user:'round73-delete-fixture@example.test'}]}});
       const r=await api('/api/records',{method:'POST',body:{domains:['round73-delete.example'],country:'Delete me',proxy_mode:'none',email_ids:[],card_ids:[],license_ids:[]}});
       await refresh();return r.created[0].id;
     });
