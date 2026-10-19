@@ -20,4 +20,25 @@ replace("fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 },", 
 replace("  const value=snapshot(owner),vault=getVault(db);\n  return {format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),\n    counts:{records:value.records.length,licenses:value.licenses.length},\n    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)};", "  const policy = require('./lib/personal-backup-policy');\n  policy.assertDocumentBudget(db, owner);\n  const value=snapshot(owner),vault=getVault(db);\n  return policy.assertEnvelopeBudget({format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),\n    counts:{records:value.records.length,licenses:value.licenses.length},\n    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)});");
 fs.writeFileSync('server.js',source);
 cp.execFileSync(process.execPath,['--check','server.js'],{stdio:'inherit'});
-console.log('round73 import preservation and backup size boundary: applied');
+function patchFile(file,before,after){
+  const text=fs.readFileSync(file,'utf8').replace(/\r\n/g,'\n');
+  if(text.includes(after)&&!text.includes(before))return;
+  if(text.split(before).length!==2)throw new Error('Unexpected test source: '+file+' '+before.slice(0,60));
+  fs.writeFileSync(file,text.replace(before,after));
+}
+// F30: creation and record interactions no longer share a single page.
+// Keep the assertions; navigate to the actual UI that owns each action.
+patchFile('scripts/desktop-smoke.cjs',
+  "    await page.locator('[data-sensitive=\"true\"]').click();",
+  "    await page.locator('#nav [data-page=\"records\"]').click();\n    await page.locator('[data-sensitive=\"true\"]').click();");
+patchFile('scripts/desktop-smoke.cjs',
+  "    await page.locator('[data-action=\"open-picker\"][data-kind=\"cards\"]').click();",
+  "    await page.locator('#nav [data-page=\"create\"]').click();\n    await page.locator('[data-action=\"open-picker\"][data-kind=\"cards\"]').click();");
+patchFile('scripts/desktop-smoke.cjs',
+  "    await page.locator('[data-action=\"edit-record\"]').first().click();",
+  "    await page.locator('#nav [data-page=\"records\"]').click();\n    await page.locator('[data-action=\"edit-record\"]').first().click();");
+patchFile('scripts/remote-smoke.cjs',
+  "  await page.screenshot({path:path.join(shots,'records.png'),animations:'disabled'});",
+  "  await page.locator('#nav [data-page=\"records\"]').click();\n  await page.locator('.rec-table').waitFor();\n  await page.screenshot({path:path.join(shots,'records.png'),animations:'disabled'});");
+for(const file of ['scripts/desktop-smoke.cjs','scripts/remote-smoke.cjs'])cp.execFileSync(process.execPath,['--check',file],{stdio:'inherit'});
+console.log('round73 sparse import, backup boundary and split-page regression fixes: applied');
