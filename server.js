@@ -1596,9 +1596,14 @@ fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 }, async (req,
 /* ---------------- 备份与恢复（桌面版接口，语义保持不变） ---------------- */
 
 function resolveDefaultOwner() {
+  // 桌面版没有会话，用本机固定的 local 账号（desktop/main.js 里有若干不带 owner 的调用）。
   if (desktopToken) return ensureDesktopUser();
-  const row = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
-  return row ? row.id : null;
+  // 网页版不存在「默认账号」。HTTP 路由始终从会话取 ownerId（server.js 的 currentUserId），
+  // 因此能走到这里只可能是上游鉴权出了问题；此时回退到「数据库里第一个用户」会把
+  // 破坏性写（restore 会先 DELETE 该账号的 records 与全部资源池）指到某个真实账号上，
+  // 把一次鉴权缺陷放大成数据事故。宁可硬失败，也不允许在没有账号上下文时推断归属。
+  // 这是文档工作包 02「每个接口均验证会话及所属人，不信任客户端传入的 owner_id」的直接落实。
+  throw new Error('未登录：缺少账号上下文，拒绝推断数据归属');
 }
 
 function snapshot(ownerId = null) {
