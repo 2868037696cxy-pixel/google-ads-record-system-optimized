@@ -35,12 +35,50 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.22.2'
-      - name: Verify real systemd install and repeatable upgrade on disposable runner
+      - name: Verify install, rollback fault injection and maintenance exclusion on disposable runner
         run: |
+          set -Eeuo pipefail
           sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh
           sleep 2
           sudo systemctl is-active adsworkbench
           curl --fail http://127.0.0.1:4317/api/healthz
+
+          current_before="$(readlink -f /opt/adsworkbench-current)"
+          unit_before="$(sudo sha256sum /etc/systemd/system/adsworkbench.service | awk '{print $1}')"
+          backup_unit_before="$(sudo sha256sum /etc/systemd/system/adsworkbench-backup.service | awk '{print $1}')"
+          backup_timer_before="$(sudo sha256sum /etc/systemd/system/adsworkbench-backup.timer | awk '{print $1}')"
+          env_before="$(sudo sha256sum /etc/adsworkbench.env | awk '{print $1}')"
+          sudo systemctl is-enabled adsworkbench
+          sudo systemctl is-enabled adsworkbench-backup.timer
+
+          sleep 1
+          if sudo env PATH="$PATH" ADS_DEPLOY_TEST_FAILPOINT=after-backup-units bash scripts/deploy-ubuntu.sh; then
+            echo 'Fault injection unexpectedly succeeded'
+            exit 1
+          fi
+          test "$(readlink -f /opt/adsworkbench-current)" = "$current_before"
+          test "$(sudo sha256sum /etc/systemd/system/adsworkbench.service | awk '{print $1}')" = "$unit_before"
+          test "$(sudo sha256sum /etc/systemd/system/adsworkbench-backup.service | awk '{print $1}')" = "$backup_unit_before"
+          test "$(sudo sha256sum /etc/systemd/system/adsworkbench-backup.timer | awk '{print $1}')" = "$backup_timer_before"
+          test "$(sudo sha256sum /etc/adsworkbench.env | awk '{print $1}')" = "$env_before"
+          sudo systemctl is-active adsworkbench
+          sudo systemctl is-enabled adsworkbench
+          sudo systemctl is-active adsworkbench-backup.timer
+          sudo systemctl is-enabled adsworkbench-backup.timer
+          curl --fail http://127.0.0.1:4317/api/healthz
+
+          sudo bash -c 'exec 8>/var/lib/adsworkbench/.maintenance.lock; flock 8; sleep 6' &
+          lock_pid=$!
+          sleep 1
+          if sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh; then
+            echo 'Concurrent deployment unexpectedly bypassed the maintenance lock'
+            kill "$lock_pid" || true
+            exit 1
+          fi
+          wait "$lock_pid"
+          test "$(readlink -f /opt/adsworkbench-current)" = "$current_before"
+          grep -F 'ExecStart=/usr/bin/flock -w 300 /var/lib/adsworkbench/.maintenance.lock' /etc/systemd/system/adsworkbench-backup.service
+
           sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh
           sudo systemctl is-active adsworkbench
           sudo systemctl start adsworkbench-backup.service
