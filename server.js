@@ -578,7 +578,7 @@ function parseLicenses(text) {
     const cvr = licGrab(flat, LIC_LABELS.cvr);
     let jurisdiction = licGrab(flat, LIC_LABELS.jurisdiction);
     let registrationType = licGrab(flat, LIC_LABELS.regtype);
-    const explicitCvrLabel = /(?:^|[，,;；、\\s])CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?\\s*[:：=]/i.test(flat);
+    const explicitCvrLabel = /(?:^|[，,;；、\s])CVR(?:[\s.-]*(?:number|nr\.?|no\.?|注册号))?\s*[:：=]/i.test(flat);
     if (cvr && !registrationType && explicitCvrLabel) registrationType = 'CVR';
     if (registrationType && dedup.normalizeRegistrationType(registrationType) === 'CVR' && !jurisdiction) jurisdiction = 'DK';
     return [{
