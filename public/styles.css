@@ -1524,3 +1524,18 @@ input[type=checkbox]{min-width:16px;min-height:16px}
 #recordsPanel .table-wrap thead th:nth-child(-n+2) { z-index: 3; background: var(--surface-2); }
 #recordsPanel .table-wrap tbody tr:hover td:nth-child(-n+2) { background: #161c26; }
 #recordsPanel .table-wrap tbody tr.selected td:nth-child(-n+2) { background: #1b2322; }
+
+/* ---- 记录表列显隐菜单（方案工作包 06「列宽、列显隐」）----
+   用原生 <details> 而不是自绘弹层：键盘可达（Enter/Space 展开）与 Esc 收起都免费拿到，
+   方案验收标准要求「键盘可完成关键操作」。 */
+.col-menu { position: relative; }
+.col-menu > summary { list-style: none; cursor: pointer; }
+.col-menu > summary::-webkit-details-marker { display: none; }
+.col-menu-body {
+  position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; min-width: 190px;
+  display: flex; flex-direction: column; gap: 2px; padding: 10px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface-2); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+.col-menu-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+.col-menu-item:hover { background: var(--surface-3); }

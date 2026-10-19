@@ -16,7 +16,7 @@ const OUT = path.join(__dirname, '..', '.shots');
 fs.mkdirSync(OUT, { recursive: true });
 service_placeholder: {
   // 只清理本轮要覆盖的文件
-  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-我的记录.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png', 'r11-新建记录.png', 'r12-我的记录-横向滚动到最右.png']) {
+  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-我的记录.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png', 'r11-新建记录.png', 'r12-我的记录-横向滚动到最右.png', 'r13-我的记录-隐藏身份证列.png']) {
     const file = path.join(OUT, name);
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
@@ -166,6 +166,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   await sleep(300);
   await shot('r12-我的记录-横向滚动到最右.png', 1440, 1000);
   await evaluate(`document.querySelector('#recordsPanel .table-wrap').scrollLeft = 0`);
+
+  // 列显隐：勾掉「身份证」后可见列数应减少，且偏好要落到按账号保存的本地存储里
+  const cols = await evaluate(`(() => {
+    const visible = () => [...document.querySelectorAll('#recordsPanel .rec-table thead th')]
+      .filter((th) => getComputedStyle(th).display !== 'none').length;
+    const before = visible();
+    const box = document.querySelector('[data-action="toggle-col"][data-col="idcard"]');
+    if (!box) return 'missing';
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    return { before, after: visible(), stored: JSON.parse(localStorage.getItem('wb.hiddenCols.render') || 'null'), menuStillOpen: !!document.querySelector('.col-menu') };
+  })()`);
+  console.log('   列显隐:', JSON.stringify(cols));
+  if (cols === 'missing' || cols.after !== cols.before - 1) throw new Error('列显隐失效：隐藏身份证列后可见列数未减少');
+  if (!Array.isArray(cols.stored) || !cols.stored.includes('idcard')) throw new Error('列偏好未写入按账号保存的本地存储');
+  await shot('r13-我的记录-隐藏身份证列.png', 1440, 1000);
+  // 清掉偏好，避免残留影响后续轮次的截图
+  await evaluate(`localStorage.removeItem('wb.hiddenCols.render'); location.reload()`);
+  await sleep(1500);
 
   // 新建记录页：创建表单在、记录表格不在；吸底操作条必须落在视口内（不能滚到底才看得到）
   await evaluate(`document.querySelector('#nav [data-page="create"]')?.click()`);
