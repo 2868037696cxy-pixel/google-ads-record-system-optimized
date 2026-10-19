@@ -662,3 +662,99 @@ body[data-table-density="compact"] .pool-table tbody td { height: 39px; padding-
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+
+/* The incumbent auth.css had a high-specificity Apple glass experiment.
+   Explicitly close those layers so login and console truly share one system. */
+body.auth-body {
+  --bg: #f5f7f9;
+  --bg-soft: #f8fafb;
+  --surface: #ffffff;
+  --surface-2: #f8fafb;
+  --surface-3: #edf2f5;
+  --line: #e5e9ed;
+  --line-strong: #ccd5dc;
+  --text: #192632;
+  --muted: #516171;
+  --faint: #63717f;
+  --ghost: #667586;
+  --accent: #126f69;
+  --accent-strong: #0b625d;
+  --accent-deep: #095852;
+  --accent-ink: #ffffff;
+  --accent-dim: #e5f3f0;
+  --accent-line: #94c8bf;
+  --green: #216d49;
+  --blue: #286495;
+  --amber: #8e620c;
+  --red: #af2e3c;
+  --sans: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  background: #f5f7f9;
+  color: #192632;
+}
+body.auth-body::after { display: none; animation: none; filter: none; }
+.auth-main::before { display: none; }
+.auth-card { -webkit-backdrop-filter: none; backdrop-filter: none; }
+.auth-tabs .tabs {
+  padding: 3px;
+  border: 1px solid #d9e1e6;
+  border-radius: 8px;
+  background: #f2f5f6;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.auth-tabs .tab {
+  min-height: 34px;
+  padding: 6px 16px;
+  border-radius: 6px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 13px;
+  font-weight: 550;
+}
+.auth-tabs .tab.active {
+  background: #ffffff;
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(20, 34, 44, .09);
+}
+.auth-brand .brand-mark { background: #126f69; color: white; box-shadow: none; }
+.auth-form input.auth-input {
+  height: 44px;
+  border-radius: 8px;
+  border-color: #cdd6dd;
+  background: #ffffff;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+.auth-form input.auth-input:hover { border-color: #9caeb9; }
+.auth-form input.auth-input:focus { border-color: var(--accent); background: #ffffff; box-shadow: 0 0 0 3px #d7ebe6; }
+.auth-submit.btn-primary,
+.auth-submit.btn-primary:hover:not(:disabled),
+.auth-submit.btn-primary:active:not(:disabled) {
+  height: 44px;
+  min-height: 44px;
+  border-radius: 8px;
+  background: #126f69;
+  border: 1px solid #126f69;
+  box-shadow: none;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 600;
+  transform: none;
+}
+.auth-submit.btn-primary:hover:not(:disabled) { background: #0b625d; border-color: #0b625d; }
+.auth-body .link-btn { color: var(--accent-strong); border-color: #a4d5cb; }
+.auth-body .link-btn:hover { color: var(--accent-deep); border-color: var(--accent); }
+@media (min-width: 901px) {
+  .auth-pitch h1 { font-size: clamp(26px, 2.5vw, 35px); font-weight: 680; line-height: 1.27; letter-spacing: -.02em; }
+  .auth-pitch h1 em { color: var(--accent-strong); }
+  .auth-pitch p { font-size: 14px; }
+  .auth-specs { margin-top: 12px; }
+  .auth-specs .spec-key, .auth-specs .spec-idx { display: inline; }
+  .auth-specs li { padding: 11px 2px; border-bottom: 1px solid var(--line); }
+  .auth-specs li::before { display: none; }
+  .auth-specs .spec-label { font-size: 13px; letter-spacing: 0; color: var(--text); }
+}
