@@ -863,14 +863,12 @@ function renderPoolTable(kind, list) {
     <code>${esc(POOL_FORMAT[kind].sample || POOL_FORMAT[kind].rule)}</code></div>`;
   if (!list.length) return '<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的资源</h3><p>换个关键词或筛选条件试试</p></div>';
   const page = paginate(list, 'pools');
-  const reference = { emails: 'email_id', proxies: 'proxy_id', cards: 'card_id', licenses: 'license_id' }[kind];
-  const linkedIds = new Set(state.records.map((record) => record[reference]));
   return `<div class="table-wrap"><table class="pool-table">
     <colgroup>${(table.widths || []).map((width) => `<col${width ? ` style="width:${width}"` : ''}>`).join('')}</colgroup>
     <thead><tr>${table.cols.map((column) => `<th>${column}</th>`).join('')}</tr></thead><tbody>
     ${page.items.map((item, index) => {
       const statusIndex = table.cols.indexOf('状态');
-      const linked = linkedIds.has(item.id);
+      const linked = Number(item.linked_record_count || 0) > 0;
       const status = `<select aria-label="资源 ${item.id} 状态" class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
         ${['未使用', '已使用', '停用'].map((value) => `<option ${item.status === value ? 'selected' : ''} ${value === '未使用' && linked ? 'disabled' : ''}>${value}</option>`).join('')}</select>`;
       const cells = table.row(item).slice(0, statusIndex).map((cell) => `<td>${cell}</td>`);
