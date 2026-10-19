@@ -80,3 +80,52 @@ test('F15/F16: resources stay marked linked even when the owning record is outsi
   assert.ok(indexes.includes('idx_records_owner_card'));
   assert.ok(indexes.includes('idx_records_owner_license'));
 });
+
+
+test('F15: PATCH reassigning a resource updates the foreign key, snapshots and usage count atomically',async()=>{
+  const imported=await fetch(origin+'/api/import/emails',{
+    method:'POST',
+    headers:{'content-type':'application/json','x-workbench':'1',cookie},
+    body:JSON.stringify({items:[{user:'newly-assigned@example.test',pass:'synthetic-secret'}]}),
+  });
+  assert.equal(imported.status,200);
+  const before=await api('/api/bootstrap?summary=1');
+  const email=before.data.pools.emails.find(x=>x.user==='newly-assigned@example.test');
+  assert.ok(email);
+
+  const page=await api('/api/records?limit=1&offset=0');
+  const record=page.data.items[0];
+  assert.equal(record.email_id,null,'fixture starts without an email association');
+
+  const patch=await fetch(origin+`/api/records/${record.id}`,{
+    method:'PATCH',
+    headers:{'content-type':'application/json','x-workbench':'1',cookie},
+    body:JSON.stringify({email_id:email.id,version:record.version}),
+  });
+  assert.equal(patch.status,200);
+  const stored=service.db.prepare('SELECT email_id,email_user,version FROM records WHERE owner_id=? AND id=?').get(ownerId,record.id);
+  assert.equal(stored.email_id,email.id,'real records foreign key must be persisted, not just the snapshot');
+  assert.equal(stored.email_user,'newly-assigned@example.test');
+  assert.equal(stored.version,record.version+1);
+
+  const linked=await api('/api/bootstrap?summary=1');
+  const occupied=linked.data.pools.emails.find(x=>x.id===email.id);
+  assert.equal(occupied.status,'已使用');
+  assert.equal(occupied.linked_record_count,1);
+
+  const unassign=await fetch(origin+`/api/records/${record.id}`,{
+    method:'PATCH',
+    headers:{'content-type':'application/json','x-workbench':'1',cookie},
+    body:JSON.stringify({email_id:null,version:stored.version}),
+  });
+  assert.equal(unassign.status,200);
+  const cleared=service.db.prepare('SELECT email_id,email_user,version FROM records WHERE owner_id=? AND id=?').get(ownerId,record.id);
+  assert.equal(cleared.email_id,null,'explicit unassignment must persist NULL');
+  assert.equal(cleared.email_user,'');
+  assert.equal(cleared.version,stored.version+1);
+
+  const released=await api('/api/bootstrap?summary=1');
+  const free=released.data.pools.emails.find(x=>x.id===email.id);
+  assert.equal(free.status,'未使用');
+  assert.equal(free.linked_record_count,0);
+});
