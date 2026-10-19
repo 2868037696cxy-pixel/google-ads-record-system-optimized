@@ -26,7 +26,9 @@ jobs:
       - run: npm test
       - run: npm run test:desktop
       - run: npm run test:desktop:remote
-      - name: Build preconfigured Windows application
+      - name: Picker cancellation, maintenance response and saved-refresh regression
+        run: npm run test:round73
+      - name: Build preconfigured Windows application without publishing
         run: npm run build:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'

@@ -7,10 +7,11 @@
     "start": "node server.js",
     "desktop": "electron .",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
-    "build:win": "electron-builder --win --x64",
-    "build:dir": "electron-builder --win --x64 --dir",
+    "build:win": "electron-builder --win --x64 --publish never",
+    "build:dir": "electron-builder --win --x64 --dir --publish never",
     "test:desktop": "node scripts/desktop-smoke.cjs",
     "test:desktop:remote": "node scripts/remote-smoke.cjs",
+    "test:round73": "node scripts/round73-ui.cjs",
     "backup:check": "node scripts/backup.cjs verify"
   },
   "engines": {
