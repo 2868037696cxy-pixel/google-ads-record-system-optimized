@@ -43,11 +43,24 @@ try { fs.accessSync(dir, fs.constants.W_OK); add('OK', 'DATA_DIR 可写', dir); 
 catch { add('FAIL', 'DATA_DIR', `不可写或不存在：${dir}`); }
 
 // 5. 数据库
-const dbFile = process.env.DB_FILE || path.join(dir, 'ads-workbench.sqlite');
+// 审计 F37：原先缺省读 ads-workbench.sqlite，而应用缺省用 workbench.sqlite；
+// 库不存在或读取失败又只记 WARN，最后可能打印「自动检查全部通过」并退出 0。
+// 一个指向错误目录的自检比没有自检更危险 —— 它给出的是绿灯。
+// 现在：与应用同名优先（兼容旧名）、并且「找不到库」默认算 FAIL。
+const appDbName = 'workbench.sqlite';
+const legacyDbName = 'ads-workbench.sqlite';
+const dbFile = process.env.DB_FILE
+  || [path.join(dir, appDbName), path.join(dir, legacyDbName)].find(fs.existsSync)
+  || path.join(dir, appDbName);
 if (!fs.existsSync(dbFile)) {
-  add('WARN', '数据库文件不在预期位置', `${dbFile} 不存在。若指向了错误目录，会连到一个空库，看起来像「数据丢了」；若这是首次部署可忽略`);
+  if (process.env.PREFLIGHT_ALLOW_EMPTY_DB === '1') {
+    add('WARN', '数据库文件不存在（已按首次部署放行）', `${dbFile} 不存在；因显式设置了 PREFLIGHT_ALLOW_EMPTY_DB=1 才放行。首次部署完成后请去掉该变量`);
+  } else {
+    add('FAIL', '数据库文件不存在', `${dbFile} 不存在。应用缺省用 ${appDbName}；若库在别处请显式设置 DB_FILE。确认确实是首次部署，再设 PREFLIGHT_ALLOW_EMPTY_DB=1 重跑`);
+  }
 } else {
-  add('OK', '数据库文件存在', dbFile);
+  add('OK', '数据库文件存在', dbFile
+    + (path.basename(dbFile) === legacyDbName ? `（旧名 ${legacyDbName}；应用缺省是 ${appDbName}，请确认启动脚本用的是同一个文件）` : ''));
   try {
     const { DatabaseSync } = require('node:sqlite');
     const db = new DatabaseSync(dbFile, { readOnly: true });
@@ -56,7 +69,7 @@ if (!fs.existsSync(dbFile)) {
     const docs = db.prepare('SELECT COUNT(*) AS n FROM documents').get().n;
     add('OK', '数据库可读', `账号 ${users} 个、记录 ${records} 条、PDF 原文 ${docs} 份`);
     db.close();
-  } catch (error) { add('WARN', '数据库读取', `无法读取（${error.message}）`); }
+  } catch (error) { add('FAIL', '数据库读取', `无法读取（${error.message}）。读不出内容就不能宣称自检通过`); }
 }
 
 // 6. 运行时
