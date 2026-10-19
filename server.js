@@ -65,6 +65,21 @@ function reply400(msg) {
   throw err;
 }
 
+function strictIdList(raw, { field = 'ids', max = 5000 } = {}) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return reply400(`${field} 必须是数组`);
+  if (raw.length > max) return reply400(`${field} 单次最多 ${max} 个`);
+  if (raw.some((id) => !Number.isSafeInteger(id) || id < 1)) return reply400(`${field} 只能包含正整数编号`);
+  return [...new Set(raw)];
+}
+
+function strictIdParam(raw, label = '记录编号') {
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) return reply400(`${label}无效`);
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id)) return reply400(`${label}无效`);
+  return id;
+}
+
 /** 北京时间字符串，格式与旧版一致，避免前端与导出格式变化。 */
 function nowLocal() {
   const p = new Intl.DateTimeFormat('zh-CN', {
@@ -1724,7 +1739,7 @@ fastify.patch('/api/records/:id', async (req) => {
 
 fastify.post('/api/records/batch-delete', async (req) => {
   const ownerId = currentUserId(req);
-  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = strictIdList(req.body?.ids);
   if (!ids.length) return { deleted: 0 };
   return mutate(() => {
     const result = deleteRecords(ownerId, ids);
@@ -1737,9 +1752,10 @@ fastify.post('/api/records/batch-delete', async (req) => {
 
 fastify.delete('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
+  const id = strictIdParam(req.params.id);
   return mutate(() => {
-    const result = deleteRecords(ownerId, [Number(req.params.id)]);
-    if (result?.deleted) audit(db, ownerId, 'records.delete', String(req.params.id));
+    const result = deleteRecords(ownerId, [id]);
+    if (result?.deleted) audit(db, ownerId, 'records.delete', String(id));
     return result;
   });
 });
@@ -1753,8 +1769,7 @@ fastify.post('/api/export/adspower', async (req) => {
   // 直接把邮箱密码、2FA 与代理密码以 text 字符串返回（JSON 脱敏洗不到它）。
   // 此刻已经在 handler 内部，路径比较本身就没有存在理由，删掉即可。
   requireUnlocked(req);
-  if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
-  const ids = [...new Set((req.body?.ids || []).map(Number))];
+  const ids = strictIdList(req.body?.ids);
   const list = store.listRecordsForExport(db, ownerId, ids, { revealSecrets: true });
   if (!list.length) return reply400('没有可导出的记录');
   audit(db,ownerId,'export.credentials',String(list.length));
@@ -1768,8 +1783,7 @@ fastify.post('/api/export/csv', async (req) => {
   // （审计 F01 修改动作 2）。已删除。
   // CSV 不需要二次解锁：buildCsv 在映射阶段就把 email_pass / email_fakey /
   // proxy_pass / id_card 清空（见 server.js:981），输出里本来就不含凭据。
-  if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
-  const ids = [...new Set((req.body?.ids || []).map(Number))];
+  const ids = strictIdList(req.body?.ids);
   const list = store.listRecordsForExport(db, ownerId, ids, { revealSecrets: false });
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildCsv(list), count: list.length };
