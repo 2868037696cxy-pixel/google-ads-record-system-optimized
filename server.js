@@ -1457,11 +1457,14 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
   const ownerId = currentUserId(req);
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
+  // `'status' in body` 的右操作数必须是对象，字符串会直接抛 TypeError → 500。
+  // 因此在进入 mutate 之前就把非对象体拒掉，而不是靠 `req.body || {}` 兜底。
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
   return mutate(() => {
     const id = Number(req.params.id);
     const current = store.findPoolItem(db, ownerId, type, id);
     if (!current) return reply400('资源不存在');
-    const body = req.body || {};
     if(body.version !== undefined && body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
     assertNoCardSecrets(body);
     if ('status' in body) {
@@ -1543,10 +1546,14 @@ fastify.post('/api/records', async (req) => {
 
 fastify.patch('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
+  // 非对象体（字符串/数字/数组）会被 updateRecord 当成字段集合去拼 SQL：字符串的
+  // Object.entries 是「下标 → 字符」，于是拼出非法列名，把「请求有问题」报成 500。
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
   const current=store.getRecord(db,ownerId,Number(req.params.id));
   if(!current) return reply400('Record not found');
-  if(req.body?.version!==undefined && req.body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
-  const res = mutate(() => updateRecord(ownerId, Number(req.params.id), req.body || {}));
+  if(body.version!==undefined && body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+  const res = mutate(() => updateRecord(ownerId, Number(req.params.id), body));
   if (res.error) return reply400(res.error);
   return res;
 });

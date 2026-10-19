@@ -34,3 +34,28 @@ test('数组体不得被当成单条记录写入空壳',async()=>{
   const after=await boot();
   assert.ok(after.records.every((r)=>String(r.fingerprint||'').length>0),'不应存在没有指纹的空壳记录');
 });
+
+test('其余写入与鉴权类接口收到畸形请求体也不得 5xx',async()=>{
+  // 上一版只扫了 6 个路由。鉴权与安全类接口同样直接读 body 字段，一处疏漏就是 500。
+  const routes=['/api/security/unlock','/api/account/password','/api/backup/restore','/api/import/auto','/api/parse/auto','/api/auth/login','/api/auth/register'];
+  for(const route of routes){
+    for(const raw of BODIES){
+      const status=await post(route,raw);
+      assert.ok(status<500,`${route} 收到畸形体 ${raw} 返回 ${status}，应给 4xx（5xx 会把「请求有问题」误报成「服务器坏了」）`);
+    }
+  }
+});
+
+test('缺少参数的写入接口收到畸形请求体也不得 5xx',async()=>{
+  // 带路径参数的路由：先拿真实 id，再故意传畸形体。id 不存在时也应 4xx 而不是 500。
+  await post('/api/import/emails',JSON.stringify({items:[{user:'shape@test.com',pass:'Shape-Pass-1'}]}));
+  const created=await (await fetch(origin+'/api/records',{method:'POST',headers:{'content-type':'application/json','x-workbench':'1',cookie},body:JSON.stringify({domains:['shape-test.shop']})})).json();
+  const recordId=created?.created?.[0]?.id;
+  assert.ok(recordId,'前提：应能创建一条记录用于 PATCH 探测');
+  for(const raw of BODIES){
+    for(const route of [`/api/records/${recordId}`,'/api/pool/emails/1']){
+      const r=await fetch(origin+route,{method:'PATCH',headers:{'content-type':'application/json','x-workbench':'1',cookie},body:raw});
+      assert.ok(r.status<500,`PATCH ${route} 收到 ${raw} 返回 ${r.status}，应给 4xx`);
+    }
+  }
+});
