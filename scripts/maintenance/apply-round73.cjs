@@ -10,7 +10,7 @@ if (!fs.existsSync('.git')) throw new Error('A disposable git checkout is requir
 cp.execFileSync('git', ['merge-base', '--is-ancestor', 'b2f5e98f5a5bb2bc2121290f334b459277993e48', 'HEAD']);
 const staged = new Map();
 function replace(file, before, after) {
-  let text = staged.has(file) ? staged.get(file) : fs.readFileSync(file, 'utf8');
+  let text = staged.has(file) ? staged.get(file) : fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n');
   if (text.includes(after) && !text.includes(before)) return;
   if (text.split(before).length !== 2) throw new Error(`Patch precondition failed for ${file}: ${before.slice(0,90)}`);
   staged.set(file, text.replace(before, after));
