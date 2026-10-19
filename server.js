@@ -684,6 +684,26 @@ function importItems(ownerId, type, items) {
         continue;
       }
       if (mine) {
+        // 审计 F04：命中既有行的判据只有「名称归一化相同」，但同一名称可能对应两家
+        // 注册号不同的公司（Example Orchid ApS / Example Orchid Ltd 剥掉尾缀后同名）。
+        // 若照旧按「更新」处理，{ ...toPublic(mine), ...it } 会让 it 的 cvr 覆盖既有行
+        // —— 等于静默销毁原公司的注册号，而且行数不变、added/updated 计数正常，
+        // 从任何仪表盘上都看不出来。已知复现：A 的 DK11111111 被 B 的 DK22222222 覆盖。
+        // 注册号两边都非空且不相等 → 这是两家不同的公司，判为冲突，不写库，
+        // 交给人工核对（迁移与导入都不该替人判断哪条是真实企业）。
+        const mineCvr = mine.dup_cvr || '';
+        const nextCvr = keys.dup_cvr || '';
+        if (mineCvr && nextCvr && mineCvr !== nextCvr) {
+          skipped.push(it);
+          conflicts.push({
+            name: it.name,
+            field: 'cvr',
+            label: '注册号',
+            owner: mine.owner_id,
+            message: '该公司名称已存在但注册号不同，请核对后再处理',
+          });
+          continue;
+        }
         try {
           const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
           // 本人只更新组织字段时，已有账号记录中的营业执照快照也要同步。
