@@ -85,8 +85,8 @@ jobs:
       - run: npm run test:desktop:remote
       - name: Additional real UI regression
         run: node scripts/round73-ui.cjs
-      - name: Build Windows candidate
-        run: npm run build:win
+      - name: Build Windows candidate without publishing
+        run: npm run build:win -- --publish never
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Hash artifacts
