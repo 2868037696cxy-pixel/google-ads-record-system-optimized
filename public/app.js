@@ -69,7 +69,6 @@ async function refreshAfterCommit(warning) {
   } catch {
     state.syncError = warning;
     renderSyncNotice();
-    toast(warning, 'warn');
     return false;
   }
 }
