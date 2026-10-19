@@ -91,6 +91,8 @@ rollback() {
   trap - ERR
   set +e
   echo 'Upgrade failed; retaining release and restoring the previous service/data when available.'
+  systemctl stop adsworkbench-backup.timer || true
+  systemctl stop adsworkbench-backup.service || true
   systemctl stop adsworkbench || true
   if [[ -n "$ROLLBACK" && -f "$ROLLBACK" ]]; then
     "$NODE" "$RELEASE/scripts/backup.cjs" restore "$ROLLBACK" "$DATA/rollback-$STAMP.sqlite" || { echo "Automatic data restoration failed; service remains stopped. Preserve original database and key."; return 1; }
