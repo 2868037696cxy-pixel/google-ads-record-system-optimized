@@ -1330,11 +1330,18 @@ fastify.get('/api/bootstrap', async (req) => {
   if(req.query?.reveal === '1') {requireUnlocked(req);req.allowSecrets=true;}
   const ownerId = currentUserId(req);
   const seq = store.nextSeq(db, ownerId);
+  const summaryOnly = req.query?.summary === '1';
+  const recordStats = store.countRecordsByStatus(db, ownerId);
+  const recentRecords = summaryOnly
+    ? store.listRecordsPage(db, ownerId, { limit: 6, offset: 0, sort: 'id_desc' }).items
+    : undefined;
   return {
     user: auth.publicUser(store.findUserById(db, ownerId)),
     pools: store.listAllPools(db, ownerId),
-    records: store.listRecords(db, ownerId),
+    ...(summaryOnly ? {} : { records: store.listRecords(db, ownerId) }),
     counts: store.countPoolByStatus(db, ownerId),
+    record_stats: recordStats,
+    ...(summaryOnly ? { recent_records: recentRecords } : {}),
     next: { fingerprint: `${todayKey()}ads${seq}`, seq, date_key: todayKey() },
   };
 });
@@ -1347,6 +1354,7 @@ fastify.get('/api/bootstrap', async (req) => {
  * 敏感字段的脱敏由 onSend 的 redact() 统一处理，与本服务其他 /api/ 响应同一套规则。
  */
 fastify.get('/api/records', async (req, reply) => {
+  if(req.query?.reveal === '1') {requireUnlocked(req);req.allowSecrets=true;}
   const ownerId = currentUserId(req);
   const requestedSort = String(req.query?.sort || 'id_desc');
   // 审计 F13：分页参数此前用 `Number(x) || 默认值` 兜底 —— limit=abc 会被静默当成
