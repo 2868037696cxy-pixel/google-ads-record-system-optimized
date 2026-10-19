@@ -140,8 +140,8 @@
   #toast-root { pointer-events: none; max-width: min(420px, calc(100vw - 32px)); }
   .toast { max-width: 100%; font-size: var(--font-label); }
   .sidebar-connection { display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-2); }
-  .sidebar-connection .connection-status { margin: 0; padding: 0; min-width: 0; }
-  .sidebar-connection .ghost-btn { min-height: var(--ui-control-sm); padding: 6px 10px; font-size: var(--font-caption); }
+  .sidebar-connection .connection-status { margin: 0; padding: 0; min-width: 0; flex: 1; white-space: nowrap; }
+  .sidebar-connection .ghost-btn { flex: 0 0 auto; width: auto; min-height: var(--ui-control-sm); padding: 6px 10px; font-size: var(--font-caption); }
   .account-box { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--ui-space-2); padding-top: var(--ui-space-3); }
   .account-box > .ghost-btn { min-height: var(--ui-control-sm); padding: 7px 10px; }
   .account-who { min-width: 0; padding: 0; }

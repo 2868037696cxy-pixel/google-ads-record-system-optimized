@@ -221,6 +221,8 @@ const { _electron } = require('playwright');
         await nav(key);
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 || document.getElementById('main').scrollWidth > document.getElementById('main').clientWidth + 1);
         assert.equal(overflow, false, `${key} must not overflow the viewport at ${viewport.width}`);
+        const connectionFits = await page.locator('#connectionStatus').evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().height <= 24);
+        assert.equal(connectionFits, true, 'connection status must remain readable on one line beside reconnect');
         const unlabeled = await page.evaluate(() => [...document.querySelectorAll('input, select, textarea')].filter(element => element.getClientRects().length && !element.labels?.length && !element.getAttribute('aria-label') && !element.getAttribute('aria-labelledby')).map(element => element.id || element.name));
         assert.deepEqual(unlabeled, [], `${key} inputs must have an accessible label`);
         if (viewport.width === 1440 || key === 'records') await shot(`${key}-${viewport.width}`);
