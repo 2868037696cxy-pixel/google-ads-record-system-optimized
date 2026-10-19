@@ -1,0 +1,153 @@
+name: Round73 verified follow-up
+on:
+  push:
+    branches: [fix/round73-followup]
+    paths:
+      - '.github/workflows/round73-followup.yml'
+      - 'scripts/maintenance/**'
+      - 'scripts/round73-*.cjs'
+      - 'tests/round73-*.test.js'
+permissions:
+  contents: read
+concurrency:
+  group: round73-followup
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.22.2', '24']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: mkdir -p .ci-reports
+      - run: npm ci --omit=dev --ignore-scripts
+      - name: Confirm original defects before applying changes
+        if: matrix.node == '24'
+        run: |
+          node <<'JS'
+          const cp=require('node:child_process'),fs=require('node:fs');
+          const probes=['F08: CVR after city','F04-PDF: direct PDF upload','F09-STRUCTURE: forged header','F13: structured field objects','F23: successful PDF'];
+          for(let i=0;i<probes.length;i++){
+            const r=cp.spawnSync(process.execPath,['--test','--test-reporter=tap','--test-name-pattern',probes[i],'tests/round73-regressions.test.js'],{encoding:'utf8',timeout:120000});
+            const text=(r.stdout||'')+(r.stderr||'');fs.writeFileSync(`.ci-reports/baseline-${i}.txt`,text);
+            if(r.status!==1 || !text.includes('ERR_ASSERTION'))throw new Error(`Baseline ${probes[i]} did not fail with an assertion; do not claim a verified fix.\n${text.slice(-5000)}`);
+            console.log('CONFIRMED unpatched failure:',probes[i]);
+          }
+          JS
+      - name: Apply deterministic source fixes
+        run: |
+          node scripts/maintenance/apply-round73.cjs
+          node scripts/maintenance/apply-round73-extra.cjs
+          git diff --check
+          git diff > .ci-reports/source.patch
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Full backend regression suite
+        run: set -o pipefail; npm test 2>&1 | tee .ci-reports/backend.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Round73-backend-${{ matrix.node }}
+          path: .ci-reports/
+          retention-days: 14
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      UI_SCREENSHOT_DIR: ${{ github.workspace }}/.ci-reports/ui
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: New-Item -ItemType Directory -Force .ci-reports | Out-Null
+      - run: npm ci
+      - name: Confirm picker defect in the original real UI
+        run: |
+          node scripts/round73-ui.cjs *> .ci-reports/picker-before.txt
+          $result = $LASTEXITCODE
+          $text = Get-Content .ci-reports/picker-before.txt -Raw
+          if ($result -ne 1 -or $text -notmatch 'F18: changing an unconfirmed picker') { Write-Output $text; throw 'Baseline failed for an unrelated reason, or did not reproduce F18' }
+          $global:LASTEXITCODE = 0
+          Write-Output 'CONFIRMED F18 unpatched real picker failure'
+      - name: Apply deterministic source fixes
+        run: |
+          node scripts/maintenance/apply-round73.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/maintenance/apply-round73-extra.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --check
+      - run: npm test
+      - run: npm run test:desktop
+      - run: npm run test:desktop:remote
+      - name: Additional real UI regression
+        run: node scripts/round73-ui.cjs
+      - name: Build Windows candidate
+        run: npm run build:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Hash artifacts
+        run: |
+          Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe','.zip' } | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Round73-UI-Evidence
+          path: .ci-reports/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Round73-Windows-candidate
+          path: |
+            dist/AdsWorkbench-*-x64.exe
+            dist/AdsWorkbench-*-x64.zip
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+  commit-verified-source:
+    needs: [backend, desktop]
+    if: github.repository == '2868037696cxy-pixel/google-ads-record-system-optimized' && github.ref == 'refs/heads/fix/round73-followup'
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Commit exactly the verified transformation to the isolated branch
+        env:
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -eu
+          node scripts/maintenance/apply-round73.cjs
+          node scripts/maintenance/apply-round73-extra.cjs
+          git diff --check
+          ACTUAL_HEAD=$(git ls-remote origin refs/heads/fix/round73-followup | cut -f1)
+          test "$ACTUAL_HEAD" = "$EXPECTED_HEAD"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- server.js public/app.js public/licenses.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'fix: apply verified round73 parsing, PDF import and UI follow-up'
+            git push origin HEAD:refs/heads/fix/round73-followup
+          fi
+          printf 'Verified source commit: `%s`\n' "$(git rev-parse HEAD)" >> "$GITHUB_STEP_SUMMARY"
