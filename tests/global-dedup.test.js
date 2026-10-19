@@ -79,3 +79,30 @@ test('不同账号、不同文件字节、同一 CVR 必须跨账号判重', asy
   assert.equal(licences.length, 2,
     `全局应只有 2 条营业执照（Alpha 一条 + Beta 一条），实际 ${licences.length} 条 —— 说明重复的 Alpha 入库了`);
 });
+
+test('判重维度与地址模式：名称相同一律硬拒，仅地址相同在 warn 模式下放行', async () => {
+  // 契约取自 lib/dedup.js:53 的 chosen 链：
+  //   (dup_cvr && m_cvr) || (dup_name && m_name) || (dup_legal && m_legal)
+  //   || (addressMode === 'reject' && dup_addr && m_addr) || null
+  // 即 CVR / 组织名称 / 法定名称在任何模式下都硬拒；地址只在 reject 模式下硬拒。
+  // 本文件设的是 warn，因此「仅地址相同」应当放行，由巡检事后标出，而不是硬拒。
+  const nameSameA = await upload('firm-a',
+    ['CERTIFICATE OF REGISTRATION', 'Omega Holdings ApS', 'CVR 11110000'],
+    'omega.pdf', { name: 'Omega Holdings ApS', cvr: '11110000' });
+  assert.equal(nameSameA.status, 200, '前提：第一个 Omega 应能导入');
+  const nameSameB = await upload('firm-b',
+    ['CERTIFICATE OF REGISTRATION', 'Omega Holdings ApS', 'CVR 22220000'],
+    'omega-resaved.pdf', { name: 'Omega Holdings ApS', cvr: '22220000' });
+  assert.equal(nameSameB.status, 409,
+    `组织名称相同但 CVR 不同，返回 ${nameSameB.status}，应为 409（名称维度在任何模式下都硬拒）`);
+
+  const addrA = await upload('firm-a',
+    ['CERTIFICATE OF REGISTRATION', 'Sigma Holdings ApS', 'CVR 33330000'],
+    'sigma.pdf', { name: 'Sigma Holdings ApS', cvr: '33330000', address: 'Same Street 1' });
+  assert.equal(addrA.status, 200, '前提：第一个 Sigma 应能导入');
+  const addrB = await upload('firm-b',
+    ['CERTIFICATE OF REGISTRATION', 'Tau Holdings ApS', 'CVR 44440000'],
+    'tau.pdf', { name: 'Tau Holdings ApS', cvr: '44440000', address: 'Same Street 1' });
+  assert.equal(addrB.status, 200,
+    `仅地址相同、名称与 CVR 都不同，在 warn 模式下返回 ${addrB.status}，应为 200（放行并由巡检事后标出，而不是硬拒）`);
+});
