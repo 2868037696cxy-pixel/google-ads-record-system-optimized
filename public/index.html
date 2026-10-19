@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#090c11">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f5f7f9">
   <title>账号工作台 · Ads Operations Console</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23C8F65D'/%3E%3Cpath d='M10 23V9h6.5a4.5 4.5 0 0 1 0 9H10' fill='none' stroke='%23131A04' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/styles.css?v=20261019r4">
+  <link rel="stylesheet" href="/workbench-ui.css?v=20261020v2">
 </head>
 <body class="boot">
   <div class="app">
@@ -27,25 +28,39 @@
       <nav class="nav" id="nav" aria-label="主导航"></nav>
       <div class="sidebar-foot">
         <button class="ghost-btn w-full" id="revealBtn" data-action="toggle-reveal">
-          <span class="dot dot-eye"></span><span id="revealLabel">敏感信息：已隐藏</span>
+          <span class="dot dot-eye" aria-hidden="true"></span><span id="revealLabel">敏感信息：已隐藏</span>
         </button>
-        <div id="desktopTools" hidden>
-          <div class="desktop-actions">
-            <button class="ghost-btn" data-action="desktop-backup" title="导出全部记录和资源">备份</button>
-            <button class="ghost-btn" data-action="desktop-restore" title="从完整备份恢复">恢复</button>
-            <button class="ghost-btn" data-action="desktop-data" title="打开本地数据文件夹">数据目录</button>
+        <div class="connection-row">
+          <p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
+          <button class="ghost-btn connection-retry" data-action="retry-load" title="重新读取当前数据">刷新</button>
+        </div>
+        <details class="utility-menu" id="utilityMenu">
+          <summary class="utility-menu-trigger" aria-label="展开备份与账号管理工具">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16"/><circle cx="9" cy="7" r="2" fill="var(--surface)" /><circle cx="15" cy="12" r="2" fill="var(--surface)" />
+            </svg>
+            <span>备份与账号工具</span><span class="utility-chevron" aria-hidden="true">⌄</span>
+          </summary>
+          <div class="utility-menu-content">
+            <p class="utility-menu-label">备份与数据</p>
+            <div id="desktopTools" hidden>
+              <div class="desktop-actions">
+                <button class="ghost-btn" data-action="desktop-backup" title="导出全部记录和资源">备份</button>
+                <button class="ghost-btn" data-action="desktop-restore" title="从完整备份恢复">恢复</button>
+                <button class="ghost-btn" data-action="desktop-data" title="打开本地数据文件夹">数据目录</button>
+              </div>
+              <p class="foot-note" id="desktopVersion">Windows 桌面版</p>
+            </div>
+            <div class="desktop-actions" id="webTools">
+              <button class="ghost-btn" data-action="web-backup" title="导出本人全部资源、记录与原件">导出备份</button>
+              <button class="ghost-btn" data-action="web-restore" title="从备份文件恢复本人数据">恢复备份</button>
+            </div>
+            <p class="utility-menu-label">账户与安全</p>
+            <button class="ghost-btn w-full" data-action="my-audit">我的操作记录</button>
+            <button class="ghost-btn w-full" data-action="change-password">修改登录密码</button>
+            <p class="utility-menu-note">资源和记录仅本人可见；营业执照原件跨用户查重。</p>
           </div>
-          <p class="foot-note" id="desktopVersion">Windows 桌面版</p>
-        </div>
-        <p class="foot-note">全员证书查重已启用 · 其他成员的记录不可见</p>
-        <p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
-        <button class="ghost-btn w-full" data-action="retry-load" title="重新读取数据（Ctrl+R）">重新连接</button>
-        <div class="desktop-actions" id="webTools">
-          <button class="ghost-btn" data-action="web-backup" title="导出本人全部资源、记录与原件">导出备份</button>
-          <button class="ghost-btn" data-action="web-restore" title="从备份文件恢复本人数据">恢复备份</button>
-        </div>
-        <button class="ghost-btn w-full" data-action="my-audit">我的操作记录</button>
-        <button class="ghost-btn w-full" data-action="change-password">修改登录密码</button>
+        </details>
         <div class="account-box">
           <div class="account-who">
             <span class="account-avatar" id="accountAvatar" aria-hidden="true">—</span>
@@ -53,7 +68,6 @@
           </div>
           <button class="ghost-btn w-full" data-action="logout" title="退出当前账号">退出登录</button>
         </div>
-        <p class="foot-note">资源与记录按账号隔离<br>其他成员看不到，也不会互相覆盖</p>
       </div>
     </aside>
     <main class="main" id="main"><section class="connection-panel" role="status"><h1>正在打开工作台</h1><p>正在加载界面…</p><noscript>请启用 JavaScript 后重试。</noscript></section></main>

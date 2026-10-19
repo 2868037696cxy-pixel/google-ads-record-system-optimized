@@ -88,11 +88,46 @@ async function copyText(t) {
     ta.value = t;
     document.body.appendChild(ta);
     ta.select();
-    document.execCommand('copy');
+    const copied = document.execCommand('copy');
     ta.remove();
+    if (!copied) { toast('复制失败，请手动选择文本后复制', 'error'); return; }
   }
   toast('已复制到剪贴板');
 }
+
+/* Explicitly copyable values are keyboard reachable; ordinary cells are not
+   turned into hundreds of extra Tab stops. Never use their contents as labels. */
+function enhanceCopyTargets(root = document) {
+  for (const el of root.querySelectorAll('span[data-copy], div[data-copy]')) {
+    if (el.hasAttribute('data-action')) continue;
+    el.setAttribute('role', 'button');
+    el.setAttribute('tabindex', '0');
+    el.setAttribute('aria-label', '复制字段内容');
+    if (!el.title) el.title = '点击或按 Enter 复制';
+  }
+}
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || document.querySelector('#modal-root .modal')) return;
+  const open = document.querySelector('.utility-menu[open], .col-menu[open]');
+  if (open) {
+    event.preventDefault();
+    open.open = false;
+    open.querySelector('summary')?.focus();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const target = event.target.closest('span[data-copy], div[data-copy]');
+  if (!target || target.hasAttribute('data-action')) return;
+  event.preventDefault();
+  if (!state.reveal && (target.dataset.sensitive === 'true' || target.querySelector('.masked'))) {
+    toast('请先显示敏感信息，再复制该字段', 'warn');
+    return;
+  }
+  copyText(target.dataset.copy || '');
+});
 
 function download(filename, text, type = 'text/plain;charset=utf-8') {
   const blob = new Blob([text], { type });
@@ -145,8 +180,14 @@ const KINDS = [
   { key: 'licenses', label: '营业执照', ico: '§' },
 ];
 
+function readTableDensity() {
+  try { return localStorage.getItem('ads-workbench-table-density') === 'compact' ? 'compact' : 'standard'; }
+  catch { return 'standard'; }
+}
+
 const state = {
   page: 'records',
+  tableDensity: readTableDensity(),
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
   // records 只保存当前服务端分页，不再缓存当前账号的全部记录。
   records: [],
@@ -289,6 +330,21 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
   };
 }
 
+/* ============ Shared outline icons (no external runtime or icon fonts) ============ */
+const UI_ICONS = Object.freeze({
+  records: '<rect x="4" y="3.5" width="16" height="17" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  create: '<path d="M12 5v14M5 12h14"/>',
+  overview: '<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><rect x="13.5" y="13.5" width="7" height="7" rx="1"/>',
+  emails: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3.8 6.5 8.2 6 8.2-6"/>',
+  proxies: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a16 16 0 0 1 0 18M12 3a16 16 0 0 0 0 18"/>',
+  cards: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/>',
+  licenses: '<path d="M7 3h7l5 5v13H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z"/><path d="M14 3v6h5M9 13h6M9 17h6"/>',
+});
+function uiIcon(name) {
+  const paths = UI_ICONS[name] || UI_ICONS.records;
+  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths}</svg>`;
+}
+
 /* ============ 骨架渲染 ============ */
 
 function renderNav() {
@@ -299,7 +355,7 @@ function renderNav() {
   ];
   const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
   const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}" ${state.page === it.key ? 'aria-current="page"' : ''}>
-        <span class="ico">${it.ico}</span>${it.label}
+        <span class="ico" aria-hidden="true">${uiIcon(it.key)}</span>${it.label}
         ${it.count !== '' ? `<span class="count">${it.count}</span>` : ''}
       </button>`;
   document.getElementById('nav').innerHTML = `
@@ -324,6 +380,7 @@ function renderAccount() {
 }
 
 function render() {
+  document.body.dataset.tableDensity = state.tableDensity;
   const main = document.getElementById('main');
   // 页面键写到 main 上：「我的记录」与「新建记录」共用同一份渲染与统计条，
   // 由 CSS 决定露出哪一块面板，避免把资源统计复制成两份、后续改漏一边。
@@ -333,6 +390,7 @@ function render() {
   if (state.page === 'overview') renderOverview();
   else if (state.page === 'records' || state.page === 'create') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
+  enhanceCopyTargets(main);
   // 列偏好是全局样式规则，与记录表是否刚被重建无关
   applyColumnVisibility();
 }
@@ -426,7 +484,7 @@ function renderOverview() {
   ];
   const resourceRows = resources.map(({kind,label,ico}) => `
     <button type="button" class="overview-resource" data-action="nav" data-page="${kind}">
-      <span class="overview-resource-icon" aria-hidden="true">${ico}</span>
+      <span class="overview-resource-icon" aria-hidden="true">${uiIcon(kind)}</span>
       <span class="overview-resource-name">${label}<small>管理和导入资源</small></span>
       <b class="overview-resource-count ${poolCount(kind) === 0 ? 'overview-danger' : ''}">${poolCount(kind)}<small>可用</small></b>
       <span class="overview-arrow" aria-hidden="true">↗</span>
@@ -459,7 +517,7 @@ function renderOverview() {
     <section class="panel overview-recent">
       <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="records">查看全部 →</button></div>
       ${recent.length ? recent.map(r => `<div class="overview-recent-row">
-        <span class="overview-recent-icon" aria-hidden="true">◧</span>
+        <span class="overview-recent-icon" aria-hidden="true">${uiIcon('records')}</span>
         <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
         <span class="overview-status">${esc(r.status)}</span>
         <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>
@@ -640,11 +698,15 @@ function renderWorkbench() {
         </div>
         <span class="sel-count">已选 <b>${state.sel.size}</b> 条</span>
         <button class="btn btn-ghost btn-sm" data-action="clear-record-filter" ${!state.q && state.rstatus === '全部' ? 'disabled' : ''}>清除筛选</button>
+         <button class="btn btn-ghost btn-sm table-density-toggle" data-action="toggle-density" aria-label="紧凑表格行距" aria-pressed="${state.tableDensity === 'compact'}" title="仅调整行距，保留当前筛选">${state.tableDensity === 'compact' ? '行距：紧凑' : '行距：标准'}</button>
         <details class="col-menu">
           <summary class="btn btn-ghost btn-sm" aria-label="选择显示的列">列 <span class="dim">${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}</span></summary>
           <div class="col-menu-body">
+            <div class="col-preset-actions" role="group" aria-label="列显示预设">
+              <button class="btn btn-ghost btn-sm" data-action="preset-cols" data-preset="core">常用列</button>
+              <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>全部列</button>
+            </div>
             ${RECORD_COLUMNS.map((column) => `<label class="col-menu-item"><input type="checkbox" data-action="toggle-col" data-col="${column.key}" ${state.hiddenCols.includes(column.key) ? '' : 'checked'}> ${column.label}</label>`).join('')}
-            <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>恢复默认列</button>
           </div>
         </details>
         <span class="toolbar-spacer"></span>
@@ -906,7 +968,8 @@ function renderPool(kind) {
       <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
       <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
       <span class="sel-count">${list.length} 条</span>
-      <button class="btn btn-ghost btn-sm" data-action="clear-pool-filter" ${!state.poolQ && state.poolStatus === '全部' ? 'disabled' : ''}>清除筛选</button></div>${renderPoolTable(kind, list)}</div>`;
+      <button class="btn btn-ghost btn-sm" data-action="clear-pool-filter" ${!state.poolQ && state.poolStatus === '全部' ? 'disabled' : ''}>清除筛选</button>
+      <button class="btn btn-ghost btn-sm table-density-toggle" data-action="toggle-density" aria-label="紧凑表格行距" aria-pressed="${state.tableDensity === 'compact'}" title="仅调整行距，保留当前筛选">${state.tableDensity === 'compact' ? '行距：紧凑' : '行距：标准'}</button></div>${renderPoolTable(kind, list)}</div>`;
 }
 
 function renderPoolTableInto() {
@@ -917,6 +980,7 @@ function renderPoolTableInto() {
   const list = getFilteredPool(state.page);
   panel.querySelectorAll('.table-wrap, .empty, .table-pagination').forEach((element) => element.remove());
   panel.insertAdjacentHTML('beforeend', renderPoolTable(state.page, list));
+  enhanceCopyTargets(panel);
   const count = panel.querySelector('.sel-count');
   if (count) count.textContent = `${list.length} 条`;
 }
@@ -1372,6 +1436,8 @@ function openRestoreDialog() {
 /* ============ 事件 ============ */
 
 document.addEventListener('click', async (e) => {
+  const utilityMenu = document.getElementById('utilityMenu');
+  if (utilityMenu?.open && !utilityMenu.contains(e.target)) utilityMenu.open = false;
   const t = e.target.closest('[data-action]');
 
   // 复制：优先用 data-copy 属性，否则兜底复制非交互单元格的文本
@@ -1501,6 +1567,23 @@ document.addEventListener('click', async (e) => {
         state.recordPage = 1;
         await loadRecordsPage();
         render();
+        break;
+      case 'toggle-density': {
+        state.tableDensity = state.tableDensity === 'compact' ? 'standard' : 'compact';
+        try { localStorage.setItem('ads-workbench-table-density', state.tableDensity); } catch { /* optional preference */ }
+        document.body.dataset.tableDensity = state.tableDensity;
+        for (const button of document.querySelectorAll('[data-action="toggle-density"]')) {
+          button.setAttribute('aria-pressed', String(state.tableDensity === 'compact'));
+          button.textContent = state.tableDensity === 'compact' ? '行距：紧凑' : '行距：标准';
+        }
+        break;
+      }
+      case 'preset-cols':
+        if (t.dataset.preset === 'core') {
+          state.hiddenCols = ['emailPass','fakey','ipreg','idcard'];
+          saveHiddenCols();
+          render();
+        }
         break;
       case 'reset-cols':
         state.hiddenCols = [];
@@ -1708,6 +1791,7 @@ function renderRecordsTableInto(input) {
   if (old) old.remove();
   tablePanel.querySelector('.table-pagination')?.remove();
   tablePanel.insertAdjacentHTML('beforeend', renderRecordsTable(getFilteredRecords()));
+  enhanceCopyTargets(tablePanel);
   const count = tablePanel.querySelector('.overview-title-count');
   if (count) count.textContent = `${state.recordFilteredTotal} / ${state.recordStats.total} 条`;
   const selCount = tablePanel.querySelector('.sel-count');

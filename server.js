@@ -1046,6 +1046,9 @@ function updateRecord(ownerId, id, body) {
     const nu = targetId == null ? null : store.findPoolItem(db, ownerId, kind, targetId);
     if (targetId != null && !nu) return;
     rec[`${prefix}_id`] = nu ? nu.id : null;
+    // Resource snapshots alone are not a relationship: persist the foreign key
+    // together with its snapshot in the same transaction.
+    patch[`${prefix}_id`] = nu ? nu.id : null;
     for (const key of Object.keys(SNAP[prefix]({}))) patch[key] = '';
     if (nu) {
       const snaps = SNAP[prefix](nu);

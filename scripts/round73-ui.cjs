@@ -14,7 +14,7 @@ const {certificate}=require('../tests/pdf-fixture');
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.getByText('已连接',{exact:true}).waitFor();
     await page.evaluate(async()=>{
-      await api('/api/import/emails',{method:'POST',body:{items:[{user:'picker-a@example.test'},{user:'picker-b@example.test'}]}});
+      await api('/api/import/emails',{method:'POST',body:{items:[{user:'picker-a@example.test'},{user:'picker-b@example.test'},{user:'fixture-c@example.test'},{user:'fixture-d@example.test'},{user:'fixture-e@example.test'}]}});
       await refresh();
     });
     await page.locator('#nav [data-page="create"]').click();
@@ -89,17 +89,16 @@ const {certificate}=require('../tests/pdf-fixture');
     assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?q=round73-status.example&limit=10&offset=0');return r.items[0]?.status;}),'异常');
     console.log('PASS F19 status mutation is not reported as failed when only refresh fails');
 
-    const deleteId=await page.evaluate(async()=>{
-      const r=await api('/api/records',{method:'POST',body:{domains:['round73-delete.example'],country:'Delete me',proxy_mode:'none',email_ids:[],card_ids:[],license_ids:[]}});
-      await refresh();return r.created[0].id;
-    });
+    // Reuse the status fixture: an additional record would require a second
+    // distinct PDF license because the existing one was already allocated.
+    const deleteId=statusId;
     await page.locator('#nav [data-page="records"]').click();
     failRefresh=true;
     await page.locator(`[data-action="del-record"][data-id="${deleteId}"]`).click();
     await page.locator('#confirm-ok-btn').click();
     await page.getByText('记录已删除，但列表刷新失败；请重新连接，不要重复删除',{exact:true}).waitFor();
     assert.equal(await page.locator('#confirm-ok-btn').count(),0,'successful delete must close the confirmation even if refresh fails');
-    assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?q=round73-delete.example&limit=10&offset=0');return r.total;}),0);
+    assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?q=round73-status.example&limit=10&offset=0');return r.total;}),0);
     console.log('PASS F19 delete mutation closes cleanly when only refresh fails');
 
     assert.deepEqual(errors,[]);
