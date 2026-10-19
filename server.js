@@ -1266,8 +1266,29 @@ fastify.get('/api/bootstrap', async (req) => {
   };
 });
 
-fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
+/**
+ * 记录列表的服务端分页查询（方案工作包 07「查询优化」）。
+ *
+ * 与 /api/bootstrap 的分工：bootstrap 仍返回完整快照供整体渲染与既有测试使用；本接口
+ * 只取当前页，让列表视图按需翻页，不再「读全部 + 传全部」。owner_id 恒定取自会话。
+ * 敏感字段的脱敏由 onSend 的 redact() 统一处理，与本服务其他 /api/ 响应同一套规则。
+ */
+fastify.get('/api/records', async (req) => {
+  const ownerId = currentUserId(req);
+  const requestedSort = String(req.query?.sort || 'id_desc');
+  const page = store.listRecordsPage(db, ownerId, {
+    limit: Math.min(Math.max(Number(req.query?.limit) || 50, 1), 200),
+    offset: Math.max(Number(req.query?.offset) || 0, 0),
+    q: String(req.query?.q || ''),
+    status: String(req.query?.status || ''),
+    sort: requestedSort,
+  });
+  return { ...page, limit: Math.min(Math.max(Number(req.query?.limit) || 50, 1), 200),
+    offset: Math.max(Number(req.query?.offset) || 0, 0),
+    sort: Object.hasOwn(store.RECORD_SORTS, requestedSort) ? requestedSort : 'id_desc' };
+});
 
+fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
 fastify.post('/api/import/auto', async (req) => {
   const ownerId = currentUserId(req);
   let emails = Array.isArray(req.body?.emails)
