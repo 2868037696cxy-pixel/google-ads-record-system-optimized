@@ -760,3 +760,15 @@ body.auth-body::after { display: none; animation: none; filter: none; }
 }
 
 body[data-table-density="compact"] .rec-table, body[data-table-density="compact"] .pool-table { font-size: 13px; }
+
+/* Column presets remain discoverable even if the table is empty. */
+#recordsPanel:has(.col-menu[open]) { overflow: visible; }
+.col-preset-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 0 0 10px;
+  margin-bottom: 7px;
+  border-bottom: 1px solid var(--line);
+}
+.col-preset-actions .btn { min-width: 0; font-size: 12px; }
