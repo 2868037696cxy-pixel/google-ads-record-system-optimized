@@ -108,6 +108,16 @@ function enhanceCopyTargets(root = document) {
 }
 
 document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || document.querySelector('#modal-root .modal')) return;
+  const open = document.querySelector('.col-menu[open]');
+  if (open) {
+    event.preventDefault();
+    open.open = false;
+    open.querySelector('summary')?.focus();
+  }
+});
+
+document.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' && event.key !== ' ') return;
   const target = event.target.closest('span[data-copy], div[data-copy]');
   if (!target || target.hasAttribute('data-action')) return;
@@ -692,8 +702,11 @@ function renderWorkbench() {
         <details class="col-menu">
           <summary class="btn btn-ghost btn-sm" aria-label="选择显示的列">列 <span class="dim">${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}</span></summary>
           <div class="col-menu-body">
+            <div class="col-preset-actions" role="group" aria-label="列显示预设">
+              <button class="btn btn-ghost btn-sm" data-action="preset-cols" data-preset="core">常用列</button>
+              <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>全部列</button>
+            </div>
             ${RECORD_COLUMNS.map((column) => `<label class="col-menu-item"><input type="checkbox" data-action="toggle-col" data-col="${column.key}" ${state.hiddenCols.includes(column.key) ? '' : 'checked'}> ${column.label}</label>`).join('')}
-            <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>恢复默认列</button>
           </div>
         </details>
         <span class="toolbar-spacer"></span>
@@ -1562,6 +1575,13 @@ document.addEventListener('click', async (e) => {
         }
         break;
       }
+      case 'preset-cols':
+        if (t.dataset.preset === 'core') {
+          state.hiddenCols = ['emailPass','fakey','ipreg','idcard'];
+          saveHiddenCols();
+          render();
+        }
+        break;
       case 'reset-cols':
         state.hiddenCols = [];
         saveHiddenCols();
