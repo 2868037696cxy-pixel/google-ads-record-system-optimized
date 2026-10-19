@@ -16,7 +16,7 @@ const OUT = path.join(__dirname, '..', '.shots');
 fs.mkdirSync(OUT, { recursive: true });
 service_placeholder: {
   // 只清理本轮要覆盖的文件
-  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-我的记录.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png', 'r11-新建记录.png']) {
+  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-我的记录.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png', 'r11-新建记录.png', 'r12-我的记录-横向滚动到最右.png']) {
     const file = path.join(OUT, name);
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
@@ -148,6 +148,24 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     };
   })()`)));
   await shot('r3-我的记录.png', 1440, 1000);
+
+  // 冻结关键编号列：横向滚到最右，指纹列仍必须贴在滚动容器左缘（不能跟着滑走）
+  const frozen = await evaluate(`(() => {
+    const wrap = document.querySelector('#recordsPanel .table-wrap');
+    if (!wrap) return 'missing';
+    const fp = wrap.querySelector('tbody td.cell-fp');
+    const left = () => Math.round(fp.getBoundingClientRect().left - wrap.getBoundingClientRect().left);
+    const offsetBefore = left();
+    wrap.scrollLeft = wrap.scrollWidth;
+    return { scrollable: wrap.scrollWidth > wrap.clientWidth + 1, scrolledTo: Math.round(wrap.scrollLeft), offsetBefore, offsetAfter: left() };
+  })()`);
+  console.log('   冻结编号列:', JSON.stringify(frozen));
+  if (frozen === 'missing' || frozen.offsetAfter < 0) throw new Error('冻结关键编号列失效：横向滚动后指纹名称已滑出视野');
+  if (!frozen.scrollable) console.log('   ⚠ 当前夹具宽度不足以触发横向滚动，冻结列未被真正验证');
+  await evaluate(`document.querySelector('#recordsPanel .table-wrap').scrollLeft = document.querySelector('#recordsPanel .table-wrap').scrollWidth`);
+  await sleep(300);
+  await shot('r12-我的记录-横向滚动到最右.png', 1440, 1000);
+  await evaluate(`document.querySelector('#recordsPanel .table-wrap').scrollLeft = 0`);
 
   // 新建记录页：创建表单在、记录表格不在；吸底操作条必须落在视口内（不能滚到底才看得到）
   await evaluate(`document.querySelector('#nav [data-page="create"]')?.click()`);
