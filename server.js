@@ -1017,6 +1017,19 @@ function rejectEarly(reply, code, payload) {
 }
 
 fastify.addHook('onRequest', async (req, reply) => {
+  // 只接受 origin-form 请求目标（以 / 开头）。
+  //
+  // 绝对形式（`GET http://host/api/bootstrap HTTP/1.1`）是合法 HTTP/1.1，
+  // find-my-way 仍会把它路由到对应的 handler，但此时 req.url 以 "http://" 开头，
+  // 下面那句 startsWith('/api/') 会判假并直接 return —— 桌面令牌、CSRF、
+  // 会话鉴权会被整体跳过，req.userId 保持 undefined。
+  // 实测后果：不带任何凭据、不带 x-workbench 头即可调用
+  // POST /api/backup/restore 覆盖账号数据（origin-form 同一请求被正确挡在 403）。
+  // 所以必须在钩子最前面挡掉，不能依赖后续任何一环。
+  if (!req.url.startsWith('/')) {
+    return rejectEarly(reply, 400, { error: '不支持的请求目标形式' });
+  }
+
   if (!req.url.startsWith('/api/')) return;
 
   // 桌面版仍要求携带本机令牌；网页版没有令牌，这一层自动跳过

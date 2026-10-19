@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const net = require('node:net');
 const { after, before, describe, it } = require('node:test');
 
 // 隔离数据目录：绝不触碰日常数据。
@@ -34,6 +35,24 @@ const call = async (method, url, { body, headers = {}, auth = true } = {}) => fe
 const sessionCookieFrom = (response) => (response.headers.getSetCookie() || [])
   .map((value) => value.split(';')[0])
   .find((value) => value.startsWith('wb_session='));
+
+/** 用原始 socket 发请求：只有这样才能构造绝对形式请求行，fetch 无法发送。 */
+const rawRequest = (port, requestLine, headers = {}, body = null) => new Promise((resolve, reject) => {
+  const socket = net.connect(Number(port), '127.0.0.1');
+  let buffer = '';
+  socket.setTimeout(8000);
+  socket.on('connect', () => {
+    const payload = body === null ? null : Buffer.from(body);
+    const lines = [requestLine, ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`)];
+    lines.push(`Content-Length: ${payload ? payload.length : 0}`, 'Connection: close');
+    socket.write(`${lines.join('\r\n')}\r\n\r\n`);
+    if (payload) socket.write(payload);
+  });
+  socket.on('data', (chunk) => { buffer += chunk.toString('utf8'); });
+  socket.on('end', () => resolve(buffer.split('\r\n')[0] || ''));
+  socket.on('timeout', () => { socket.destroy(); reject(new Error('原始请求超时')); });
+  socket.on('error', reject);
+});
 
 before(async () => {
   origin = await service.start({ port: 0, host: '127.0.0.1' });
@@ -79,6 +98,30 @@ describe('静态资源与会话', () => {
     const source = await (await call('GET', '/app.js', { auth: false })).text();
     assert.ok(source.includes("'x-workbench': '1'"));
     assert.ok(source.includes("location.replace('/login.html')"));
+  });
+
+  it('拒绝非 origin-form 请求目标，防止整个鉴权钩子被跳过', async () => {
+    // 绝对形式请求行（`GET http://host/api/...`）是合法 HTTP/1.1，Fastify 仍会路由到
+    // 对应 handler，但 req.url 会以 "http://" 开头，使 onRequest 里的
+    // startsWith('/api/') 判假并 return —— 桌面令牌、CSRF、会话鉴权被整体跳过。
+    // 修复前实测：未带 Cookie 与 x-workbench 头的绝对形式写请求返回 200 并覆盖数据。
+    // 下面用「同一条 socket、同样的头、只改请求行形式」做对照，确保测的就是这一个变量。
+    const { port } = new URL(origin);
+    const absolute = `http://127.0.0.1:${port}`;
+    const snapshot = JSON.stringify({
+      counters: {}, documents: {}, emails: [], proxies: [], cards: [], licenses: [], records: [],
+    });
+
+    const readAbsolute = await rawRequest(port, `GET ${absolute}/api/bootstrap HTTP/1.1`, { Host: `127.0.0.1:${port}` });
+    assert.match(readAbsolute, /^HTTP\/1\.1 400/, `绝对形式读请求应被拒绝，实际：${readAbsolute}`);
+
+    const writeHeaders = { Host: `127.0.0.1:${port}`, 'Content-Type': 'application/json' };
+    const writeAbsolute = await rawRequest(port, `POST ${absolute}/api/backup/restore HTTP/1.1`, writeHeaders, snapshot);
+    assert.match(writeAbsolute, /^HTTP\/1\.1 400/, `绝对形式写请求应被拒绝，实际：${writeAbsolute}`);
+
+    // 对照：同一写请求改用 origin-form，应被 CSRF 层挡在 403（说明差异只来自请求行形式）
+    const writeOrigin = await rawRequest(port, 'POST /api/backup/restore HTTP/1.1', writeHeaders, snapshot);
+    assert.match(writeOrigin, /^HTTP\/1\.1 403/, `origin-form 写请求应被 CSRF 拦下，实际：${writeOrigin}`);
   });
 });
 
