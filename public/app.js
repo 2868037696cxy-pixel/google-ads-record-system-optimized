@@ -173,6 +173,7 @@ const state = {
   poolPage: 1,
   // 列显隐偏好（方案工作包 06）：只存「哪些列被隐藏」这类列名，不存任何字段值。
   hiddenCols: [],
+  tableDensity: 'comfortable',
 };
 
 const MASK = '••••••';
@@ -208,6 +209,15 @@ function loadHiddenCols() {
 }
 function saveHiddenCols() {
   try { localStorage.setItem(hiddenColKey(), JSON.stringify(state.hiddenCols)); } catch { /* 无痕模式下不可写，忽略 */ }
+}
+
+const densityKey = () => `wb.tableDensity.${state.user?.username || 'anonymous'}`;
+function loadTableDensity() {
+  try { return localStorage.getItem(densityKey()) === 'compact' ? 'compact' : 'comfortable'; }
+  catch { return 'comfortable'; }
+}
+function saveTableDensity() {
+  try { localStorage.setItem(densityKey(), state.tableDensity); } catch { /* 非关键显示偏好 */ }
 }
 /** 把隐藏列写成一条动态规则；没有隐藏列时规则为空。 */
 function applyColumnVisibility() {
@@ -335,6 +345,7 @@ function render() {
   else renderPool(state.page);
   // 列偏好是全局样式规则，与记录表是否刚被重建无关
   applyColumnVisibility();
+  document.body.classList.toggle('table-compact', state.tableDensity === 'compact');
 }
 
 async function loadRecordsPage({ renderMode = 'none' } = {}) {
@@ -393,6 +404,7 @@ async function refresh() {
   };
   state.recentRecords = data.recent_records;
   state.hiddenCols = loadHiddenCols();
+  state.tableDensity = loadTableDensity();
 
   for (const kind of Object.keys(state.picked)) {
     const available = new Set(data.pools[kind].filter((item) => item.status === '未使用').map((item) => item.id));
@@ -647,6 +659,7 @@ function renderWorkbench() {
             <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>恢复默认列</button>
           </div>
         </details>
+        <button class="btn btn-ghost btn-sm" data-action="toggle-density" aria-pressed="${state.tableDensity === 'compact'}" title="切换记录表格行距">${state.tableDensity === 'compact' ? '紧凑模式' : '舒适模式'}</button>
         <span class="toolbar-spacer"></span>
         <button class="btn btn-ghost btn-sm" data-action="export-adspower">导出 AdsPower TXT</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">导出 CSV</button>
@@ -1501,6 +1514,13 @@ document.addEventListener('click', async (e) => {
         state.recordPage = 1;
         await loadRecordsPage();
         render();
+        break;
+      case 'toggle-density':
+        state.tableDensity = state.tableDensity === 'compact' ? 'comfortable' : 'compact';
+        saveTableDensity();
+        document.body.classList.toggle('table-compact', state.tableDensity === 'compact');
+        t.setAttribute('aria-pressed', String(state.tableDensity === 'compact'));
+        t.textContent = state.tableDensity === 'compact' ? '紧凑模式' : '舒适模式';
         break;
       case 'reset-cols':
         state.hiddenCols = [];
