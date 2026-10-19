@@ -401,3 +401,16 @@ textarea { line-height: 1.6; }
   .license-form { grid-template-columns: 1fr; }
   .license-wide { grid-column: 1; }
 }
+
+/* Per-user density setting. Important: this never changes fetched data or selection. */
+.table-compact .rec-table td,
+.table-compact .rec-table th,
+.table-compact .pool-table td,
+.table-compact .pool-table th { padding-top: 8px; padding-bottom: 8px; }
+.table-compact .rec-table tbody td,
+.table-compact .pool-table tbody td { line-height: 1.4; }
+[data-action="toggle-density"][aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-dim);
+  color: var(--accent-strong);
+}
