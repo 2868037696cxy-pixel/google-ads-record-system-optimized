@@ -206,6 +206,34 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   })()`)));
   await shot('r11-新建记录.png', 1440, 1000);
 
+  // 审计 F02：锁定后不得留下弹窗内容。
+  // 注入、调锁、读取全部放在同一个 evaluate 里（第 52 轮分成两次，测出来的是
+  // 假结果），并记录节点同一性，避免把测量误差当成产品行为。
+  const f02 = await evaluate(`(async () => {
+    const root = document.getElementById('modal-root');
+    root.innerHTML = '<div class="modal"><label>密码<input id="f02-plain" value="PLAINTEXT-SECRET"></label></div>';
+    const before = { len: root.innerHTML.length, sameNode: document.getElementById('modal-root') === root, inputValue: root.querySelector('#f02-plain')?.value ?? null };
+    lockSensitive();
+    await new Promise((r) => setTimeout(r, 250));
+    const stillSame = document.getElementById('modal-root') === root;
+    return {
+      before,
+      after: {
+        len: (stillSame ? root : document.getElementById('modal-root')).innerHTML.length,
+        sameNode: stillSame,
+        modalOpen: !!document.querySelector('#modal-root .modal'),
+        secretInBody: document.body.innerHTML.includes('PLAINTEXT-SECRET'),
+      },
+    };
+  })()`);
+  console.log('   F02 锁定前后:', JSON.stringify(f02));
+  if (!f02.before.inputValue) throw new Error('F02 测量无效：注入的明文输入框不存在，断言将空转');
+  if (f02.after.len !== 0 || f02.after.modalOpen || f02.after.secretInBody) {
+    throw new Error('锁定后弹窗内容仍在（审计 F02）：' + JSON.stringify(f02.after));
+  }
+  if (!f02.after.sameNode) console.log('   ⚠ 锁定过程中 #modal-root 被替换过，节点同一性不成立，该测量需人工复核');
+  console.log('   ✔ F02 锁定后弹窗已清空');
+
   // 资源库用 data-page 定位：导航项下标会随信息架构调整而变，不可依赖
   await evaluate(`document.querySelector('#nav [data-page="emails"]')?.click()`);
   await sleep(700);
@@ -235,5 +263,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('完成');
 })().catch((error) => {
   console.error('渲染失败:', error.message);
-  process.exitCode = 1;
+  // 原来这里只设 process.exitCode，而 ws / edge / service 都还活着，事件循环
+  // 因此不退出 —— 断言一旦抛出，脚本会永久挂住，验证永远拿不到结论。
+  // 第 56 轮实测：撤掉修复后重跑，600 秒无任何输出，只能杀进程，还留下
+  // 45 个浏览器进程。异常路径下拿不到 ws/edge 的引用，所以直接强制退出，
+  // 保证"失败即退出"这条最基本的可观测性。
+  process.exit(1);
 });
