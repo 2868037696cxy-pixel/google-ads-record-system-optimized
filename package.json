@@ -12,7 +12,8 @@
     "test:desktop": "node scripts/desktop-smoke.cjs",
     "test:desktop:remote": "node scripts/remote-smoke.cjs",
     "test:round73": "node scripts/round73-ui.cjs",
-    "backup:check": "node scripts/backup.cjs verify"
+    "backup:check": "node scripts/backup.cjs verify",
+    "test:f15": "node scripts/f15-ui.cjs"
   },
   "engines": {
     "node": ">=22.16.0"
