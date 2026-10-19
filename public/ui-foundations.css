@@ -414,3 +414,31 @@ textarea { line-height: 1.6; }
   background: var(--accent-dim);
   color: var(--accent-strong);
 }
+
+/* Desktop workspace fallback: never turn labelled utility actions into blank buttons. */
+@media (max-width: 860px) {
+  .app { grid-template-columns: 210px minmax(0,1fr); }
+  .sidebar { align-items: stretch; padding: 14px 9px; }
+  .brand-text, .nav-label, .nav-item .count, .account-meta { display: flex; }
+  .brand-text { min-width: 0; }
+  .brand-text span { display: block; }
+  .nav-item { justify-content: flex-start; padding: 9px 10px; }
+  .nav-item .ico { width: 23px; flex: none; }
+  .nav-item.active::before { left: -9px; }
+  .sidebar-foot .ghost-btn { font-size: 12px; gap: 6px; padding: 7px 9px; white-space: normal; }
+  .sidebar-foot .desktop-actions { gap: 5px; }
+  .sidebar-foot .desktop-actions .ghost-btn { min-height: 36px; }
+  .account-who { justify-content: flex-start; }
+}
+@media (max-width: 640px) {
+  .app { grid-template-columns: 172px minmax(0,1fr); }
+  .main { padding-inline: 12px; }
+  .sidebar { padding-inline: 5px; }
+  .brand { padding-inline: 5px; }
+  .brand-text strong { font-size: 13px; }
+  .brand-mark { width: 32px; height: 32px; }
+  .nav-item { font-size: 12px; }
+  .nav-item .count { font-size: 10px; padding-inline: 4px; }
+  .sidebar-foot > .foot-note { display: none; }
+  .sidebar-foot .ghost-btn { font-size: 11px; }
+}
