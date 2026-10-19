@@ -16,7 +16,7 @@ const OUT = path.join(__dirname, '..', '.shots');
 fs.mkdirSync(OUT, { recursive: true });
 service_placeholder: {
   // 只清理本轮要覆盖的文件
-  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-工作台.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png']) {
+  for (const name of ['r1-登录页.png', 'r2-登录页-注册.png', 'r3-我的记录.png', 'r4-邮箱库.png', 'r5-窄屏登录页.png', 'r11-新建记录.png', 'r12-我的记录-横向滚动到最右.png', 'r13-我的记录-隐藏身份证列.png']) {
     const file = path.join(OUT, name);
     if (fs.existsSync(file)) fs.unlinkSync(file);
   }
@@ -119,16 +119,76 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const post = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-workbench': '1' }, body: JSON.stringify(body) }).then((r) => r.status);
     await post('/api/import/emails', { items: Array.from({ length: 12 }, (_, i) => ({ user: 'ads' + (i + 1) + '@gmail.com', pass: 'Passw0rd!' + i, fakey: 'JBSWY3DPEHPK3PXP' })) });
     await post('/api/import/cards', { items: Array.from({ length: 6 }, (_, i) => ({ number: '43679701526190' + (10 + i), expiry: '0' + (i % 9 + 1) + '/28', cvv: '00' + i })) });
-    await post('/api/import/licenses', { items: [{ name: 'Nordlys Handel ApS', legal_name: 'Nordlys Handel ApS', address: 'Nørregade 12', city: 'Aarhus', zip: '8000', cvr: '41234567' }] });
-    await post('/api/records', { domains: ['nordlys-shop.com', 'fjord-market.dk', 'kbh-tech.eu'], country: '丹麦', product: '呼吸机' });
+    // 建记录会按顺序占用邮箱/付款工具/营业执照，夹具必须够 3 条，否则记录表是空的
+    await post('/api/import/licenses', { items: [
+      { name: 'Nordlys Handel ApS', legal_name: 'Nordlys Handel ApS', address: 'Nørregade 12', city: 'Aarhus', zip: '8000', cvr: '41234567' },
+      { name: 'Fjord Market ApS', legal_name: 'Fjord Market ApS', address: 'Havnegade 4', city: 'Aalborg', zip: '9000', cvr: '42345678' },
+      { name: 'KBH Tech ApS', legal_name: 'KBH Tech ApS', address: 'Nørrebrogade 88', city: 'København', zip: '2200', cvr: '43456789' },
+    ] });
+    const created = await post('/api/records', { domains: ['nordlys-shop.com', 'fjord-market.dk', 'kbh-tech.eu'], country: '丹麦', product: '呼吸机' });
+    if (created !== 200) throw new Error('渲染夹具创建记录失败，HTTP ' + created);
     return true;
   })()`);
 
   await goto(origin + '/');
-  await waitFor('document.querySelectorAll("#nav .nav-item").length >= 5', '工作台');
+  await waitFor('document.querySelectorAll("#nav .nav-item").length >= 5', '我的记录');
   await sleep(800);
-  await shot('r3-工作台.png', 1440, 1000);
-  // 精确校验吸底操作条：主按钮必须落在视口内，而不是滚到底才看得到
+  // 默认入口必须是「我的记录」：记录表格在，创建表单不在（方案工作包 06「信息架构」）
+  console.log('   默认入口:', JSON.stringify(await evaluate(`(() => {
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none';
+    return {
+      page: document.getElementById('main').className,
+      active: (document.querySelector('#nav .nav-item.active') || {}).textContent?.trim(),
+      title: document.querySelector('.page-head h1')?.textContent.trim(),
+      rows: document.querySelectorAll('#recordsPanel tbody tr').length,
+      headerCount: document.querySelector('#recordsPanel .overview-title-count')?.textContent.trim(),
+      selCount: document.querySelector('#recordsPanel .sel-count')?.textContent.trim(),
+      createVisible: vis(document.getElementById('createPanel')),
+      recordsVisible: vis(document.getElementById('recordsPanel')),
+    };
+  })()`)));
+  await shot('r3-我的记录.png', 1440, 1000);
+
+  // 冻结关键编号列：横向滚到最右，指纹列仍必须贴在滚动容器左缘（不能跟着滑走）
+  const frozen = await evaluate(`(() => {
+    const wrap = document.querySelector('#recordsPanel .table-wrap');
+    if (!wrap) return 'missing';
+    const fp = wrap.querySelector('tbody td.cell-fp');
+    const left = () => Math.round(fp.getBoundingClientRect().left - wrap.getBoundingClientRect().left);
+    const offsetBefore = left();
+    wrap.scrollLeft = wrap.scrollWidth;
+    return { scrollable: wrap.scrollWidth > wrap.clientWidth + 1, scrolledTo: Math.round(wrap.scrollLeft), offsetBefore, offsetAfter: left() };
+  })()`);
+  console.log('   冻结编号列:', JSON.stringify(frozen));
+  if (frozen === 'missing' || frozen.offsetAfter < 0) throw new Error('冻结关键编号列失效：横向滚动后指纹名称已滑出视野');
+  if (!frozen.scrollable) console.log('   ⚠ 当前夹具宽度不足以触发横向滚动，冻结列未被真正验证');
+  await evaluate(`document.querySelector('#recordsPanel .table-wrap').scrollLeft = document.querySelector('#recordsPanel .table-wrap').scrollWidth`);
+  await sleep(300);
+  await shot('r12-我的记录-横向滚动到最右.png', 1440, 1000);
+  await evaluate(`document.querySelector('#recordsPanel .table-wrap').scrollLeft = 0`);
+
+  // 列显隐：勾掉「身份证」后可见列数应减少，且偏好要落到按账号保存的本地存储里
+  const cols = await evaluate(`(() => {
+    const visible = () => [...document.querySelectorAll('#recordsPanel .rec-table thead th')]
+      .filter((th) => getComputedStyle(th).display !== 'none').length;
+    const before = visible();
+    const box = document.querySelector('[data-action="toggle-col"][data-col="idcard"]');
+    if (!box) return 'missing';
+    box.checked = false;
+    box.dispatchEvent(new Event('change', { bubbles: true }));
+    return { before, after: visible(), stored: JSON.parse(localStorage.getItem('wb.hiddenCols.render') || 'null'), menuStillOpen: !!document.querySelector('.col-menu') };
+  })()`);
+  console.log('   列显隐:', JSON.stringify(cols));
+  if (cols === 'missing' || cols.after !== cols.before - 1) throw new Error('列显隐失效：隐藏身份证列后可见列数未减少');
+  if (!Array.isArray(cols.stored) || !cols.stored.includes('idcard')) throw new Error('列偏好未写入按账号保存的本地存储');
+  await shot('r13-我的记录-隐藏身份证列.png', 1440, 1000);
+  // 清掉偏好，避免残留影响后续轮次的截图
+  await evaluate(`localStorage.removeItem('wb.hiddenCols.render'); location.reload()`);
+  await sleep(1500);
+
+  // 新建记录页：创建表单在、记录表格不在；吸底操作条必须落在视口内（不能滚到底才看得到）
+  await evaluate(`document.querySelector('#nav [data-page="create"]')?.click()`);
+  await sleep(700);
   const sticky = await evaluate(`(() => {
     const el = document.querySelector('.create-preview');
     if (!el) return 'missing';
@@ -136,7 +196,46 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     return { top: Math.round(r.top), bottom: Math.round(r.bottom), vh: window.innerHeight, pinned: r.bottom <= window.innerHeight + 1 };
   })()`);
   console.log('   吸底操作条:', JSON.stringify(sticky));
-  await evaluate(`document.querySelectorAll('#nav .nav-item')[1]?.click()`);
+  console.log('   新建记录页:', JSON.stringify(await evaluate(`(() => {
+    const vis = (el) => !!el && getComputedStyle(el).display !== 'none';
+    return {
+      title: document.querySelector('.page-head h1')?.textContent.trim(),
+      createVisible: vis(document.getElementById('createPanel')),
+      recordsVisible: vis(document.getElementById('recordsPanel')),
+    };
+  })()`)));
+  await shot('r11-新建记录.png', 1440, 1000);
+
+  // 审计 F02：锁定后不得留下弹窗内容。
+  // 注入、调锁、读取全部放在同一个 evaluate 里（第 52 轮分成两次，测出来的是
+  // 假结果），并记录节点同一性，避免把测量误差当成产品行为。
+  const f02 = await evaluate(`(async () => {
+    const root = document.getElementById('modal-root');
+    root.innerHTML = '<div class="modal"><label>密码<input id="f02-plain" value="PLAINTEXT-SECRET"></label></div>';
+    const before = { len: root.innerHTML.length, sameNode: document.getElementById('modal-root') === root, inputValue: root.querySelector('#f02-plain')?.value ?? null };
+    lockSensitive();
+    await new Promise((r) => setTimeout(r, 250));
+    const stillSame = document.getElementById('modal-root') === root;
+    return {
+      before,
+      after: {
+        len: (stillSame ? root : document.getElementById('modal-root')).innerHTML.length,
+        sameNode: stillSame,
+        modalOpen: !!document.querySelector('#modal-root .modal'),
+        secretInBody: document.body.innerHTML.includes('PLAINTEXT-SECRET'),
+      },
+    };
+  })()`);
+  console.log('   F02 锁定前后:', JSON.stringify(f02));
+  if (!f02.before.inputValue) throw new Error('F02 测量无效：注入的明文输入框不存在，断言将空转');
+  if (f02.after.len !== 0 || f02.after.modalOpen || f02.after.secretInBody) {
+    throw new Error('锁定后弹窗内容仍在（审计 F02）：' + JSON.stringify(f02.after));
+  }
+  if (!f02.after.sameNode) console.log('   ⚠ 锁定过程中 #modal-root 被替换过，节点同一性不成立，该测量需人工复核');
+  console.log('   ✔ F02 锁定后弹窗已清空');
+
+  // 资源库用 data-page 定位：导航项下标会随信息架构调整而变，不可依赖
+  await evaluate(`document.querySelector('#nav [data-page="emails"]')?.click()`);
   await sleep(700);
   await shot('r4-邮箱库.png', 1440, 1000);
 
@@ -164,5 +263,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('完成');
 })().catch((error) => {
   console.error('渲染失败:', error.message);
-  process.exitCode = 1;
+  // 原来这里只设 process.exitCode，而 ws / edge / service 都还活着，事件循环
+  // 因此不退出 —— 断言一旦抛出，脚本会永久挂住，验证永远拿不到结论。
+  // 第 56 轮实测：撤掉修复后重跑，600 秒无任何输出，只能杀进程，还留下
+  // 45 个浏览器进程。异常路径下拿不到 ws/edge 的引用，所以直接强制退出，
+  // 保证"失败即退出"这条最基本的可观测性。
+  process.exit(1);
 });

@@ -45,6 +45,36 @@ test('same PDF concurrent uploads produce one winner and preserve encrypted orig
   await api(owner,'DELETE',`/api/pool/licenses/${pdfLicense}`);
   assert.equal((await api('carol','POST','/api/import/licenses',{pdf:bytes.toString('base64'),items:[{name:'Rename To Evade'}]})).status,409,'Deleting records must not release global fingerprint');
 });
+test('同一幂等键换内容必须冲突，而不是重放旧结果或重复创建',async()=>{
+  // 方案 WP07 验收标准「重复点击都有确定结果」。既有用例只覆盖了同键同内容的重放，
+  // 而「按键复用但表单已改」是重复点击里最危险的一种：既不能重放旧结果，
+  // 也不能把新内容当新请求落库。
+  //
+  // 本用例自带账号与资源，不借 alice 做实验：备份用例会对 alice 的记录做精确断言，
+  // 幂等用例会消耗 alice 的资源池。实测中这两条先后被我撞坏过 —— 只加断言、
+  // 共用夹具就会产生这种顺序耦合。
+  const who='idem';
+  const reg=await fetch(url+'/api/auth/register',{method:'POST',headers:{'content-type':'application/json','x-workbench':'1'},body:JSON.stringify({username:who,password:'Secure-Test-1234'})});
+  assert.equal(reg.status,201);
+  cookie[who]=reg.headers.get('set-cookie').split(';')[0];
+  await api(who,'POST','/api/import/emails',{items:[{user:'idem@example.test',pass:'Idem-Pass-1234'}]});
+  await api(who,'POST','/api/import/cards',{items:[{number:'idem-card',last4:'4242',expiry:'12/29'}]});
+  const headers={'idempotency-key':'request-abcdefghijklmnop'};
+  const body={domains:['idem-one.shop'],proxy_mode:'none'};
+  const first=await api(who,'POST','/api/records',body,headers);
+  assert.equal(first.status,200);
+  const replay=await api(who,'POST','/api/records',body,headers);
+  assert.equal(replay.status,200);
+  assert.equal(replay.value.replayed,true);
+  assert.equal(replay.value.created[0].id,first.value.created[0].id);
+  const changed=await api(who,'POST','/api/records',{...body,domains:['idem-two.shop']},headers);
+  assert.equal(changed.status,409);
+  const list=await api(who,'GET','/api/records?limit=200');
+  const domains=list.value.items.map((r)=>r.domain);
+  assert.equal(domains.filter((d)=>d==='idem-one.shop').length,1,'同键重放不得重复创建');
+  assert.equal(domains.filter((d)=>d==='idem-two.shop').length,0,'换内容后必须拒绝，不得落库');
+});
+
 test('API idempotency prevents network retries creating extra records',async()=>{
   const body={domains:['secure-operation.example'],proxy_mode:'none'};
   const headers={'idempotency-key':'request-1234567890123456'};
@@ -95,4 +125,23 @@ test('vault fails closed on ciphertext context mismatch and wrong key',()=>{
 });
 test('changing password invalidates existing sessions immediately',async()=>{
   const changed=await api('carol','POST','/api/account/password',{current_password:'Secure-Test-1234',new_password:'New-Secure-Test-123'});assert.equal(changed.status,200);assert.equal((await api('carol','GET','/api/bootstrap')).status,401);
+});
+// 原始 socket：只有这样才能构造绝对形式请求行。fetch 发不出绝对形式，且 URL 解析会
+// 改写百分号编码，所以下面这两类绕过用 fetch 写的用例天生测不到。
+function rawGet(requestLine){return new Promise((resolve,reject)=>{const net=require('node:net');const port=new URL(url).port;const s=net.connect(Number(port),'127.0.0.1');let buf='';s.setTimeout(8000);s.on('connect',()=>s.write(requestLine+'\r\nHost: 127.0.0.1:'+port+'\r\nConnection: close\r\n\r\n'));s.on('data',d=>{buf+=d.toString('utf8');});s.on('end',()=>resolve(buf.split('\r\n')[0]||''));s.on('timeout',()=>{s.destroy();reject(new Error('原始请求超时'));});s.on('error',reject);});}
+test('鉴权判断不得与被路由的路径分歧：编码路径与绝对形式都不得跳过整个钩子',async()=>{
+  const port=new URL(url).port;
+  assert.match(await rawGet('GET /api/bootstrap HTTP/1.1'),/401/,'基线：未登录访问受保护接口必须 401');
+  // %61='a'、%69='i'：find-my-way 会解码，把 /%61pi/bootstrap 路由到 /api/bootstrap 的
+  // handler，而未解码的 req.url 不以 /api/ 开头。修复前这里返回 200（钩子被整体跳过，
+  // 桌面令牌、来源校验、CSRF、限速、会话鉴权全部失效）。
+  for(const target of ['/%61pi/bootstrap','/%61p%69/bootstrap','/%61pi/backup','/%61pi/pool/emails']){
+    const line=await rawGet('GET '+target+' HTTP/1.1');
+    assert.match(line,/401|404/,'编码路径 '+target+' 不应绕过鉴权，实际：'+line);
+  }
+  // 绝对形式请求行是合法 HTTP/1.1，会使 req.url 以 http:// 开头
+  const abs=await rawGet('GET http://127.0.0.1:'+port+'/api/bootstrap HTTP/1.1');
+  assert.match(abs,/400|401/,'绝对形式请求目标不应绕过鉴权，实际：'+abs);
+  // 畸形百分号序列必须 400，不能进入路由
+  assert.match(await rawGet('GET /%zz/api/bootstrap HTTP/1.1'),/400/,'畸形编码应 400');
 });

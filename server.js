@@ -165,7 +165,19 @@ function parseEmailLine(line) {
     const restStr = t.slice(t.indexOf(parts[1])).trim();
     if (/^[^@\s]+@[^\s:@]+:\d{1,5}$/.test(restStr)) return null;
   }
-  return { user: parts[0], pass: parts[1] || '', fakey: parts[2] || '' };
+  // 审计 F14：原来机械取 parts[1]/parts[2]，密码里只要含分隔符就会被截断，
+  // 碎片还会被当成 2FA 写进 fakey（"pa:ss" → pass="pa", fakey="ss"）。
+  // 改为先取"邮箱之后的原文"，只有当尾部确实像一个 2FA 令牌时才单列，
+  // 其余整段视为密码 —— 这样密码内部的分隔符得以保留。
+  // 2FA 令牌的形状是可识别的：base32 大写串（16-32 位）或 6-8 位数字。
+  const at = t.indexOf(parts[0]);
+  let rest = (at >= 0 ? t.slice(at + parts[0].length) : parts.slice(1).join(' ')).trim();
+  rest = rest.replace(/^[\s:：|=,，;；\-–—\t|]+/, '').trim();
+  const twofa = rest.match(/[\s:：|=,，;；\-–—\t|]+([A-Z2-7]{16,32}|\d{6,8})$/);
+  if (twofa && rest.length > twofa[0].length) {
+    return { user: parts[0], pass: rest.slice(0, rest.length - twofa[0].length).trim(), fakey: twofa[1] };
+  }
+  return { user: parts[0], pass: rest, fakey: '' };
 }
 
 function parseEmails(text) {
@@ -456,9 +468,17 @@ function parseCards(text) {
 }
 
 // Bound PDF parser work. Parsing never executes PDF JavaScript.
+// 审计 F17 前置：并发上限原先硬编码为 2，导致"服务器忙"这条分支既不可配置，
+// 也无法在测试里稳定触发（第 71 轮试了两次真并发，闸门一次都没命中）。
+// 改为可配置：默认仍是 2；设 0 表示暂停 PDF 解析（维护期可用），
+// 测试里设 0 就能确定性地走到 429 分支。
+const PDF_PARSE_LIMIT = (() => {
+  const raw = Number(process.env.PDF_PARSE_CONCURRENCY);
+  return Number.isInteger(raw) && raw >= 0 ? raw : 2;
+})();
 let parsingPdfs=0;
 async function extractPdfText(buf) {
-  if(parsingPdfs>=2) {const e=new Error('\u8bc6\u522b\u4efb\u52a1\u8f83\u591a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');e.statusCode=429;throw e;}
+  if(parsingPdfs>=PDF_PARSE_LIMIT) {const e=new Error('\u8bc6\u522b\u4efb\u52a1\u8f83\u591a\uff0c\u8bf7\u7a0d\u540e\u91cd\u8bd5');e.statusCode=429;throw e;}
   parsingPdfs++;
   try{return await extractPdfTextInternal(buf);}finally{parsingPdfs--;}
 }
@@ -490,6 +510,16 @@ function decodePdf(base64) {
   const bytes = Buffer.from(base64, 'base64');
   if (bytes.length > 10 * 1024 * 1024) return reply400('PDF 文件不能超过 10 MB');
   if (!bytes.subarray(0, 5).equals(Buffer.from('%PDF-'))) return reply400('请选择有效 PDF 文件');
+  // 审计 F09：原先只比对 5 字节文件头，于是 "%PDF-" 后面跟任意垃圾也算有效原件，
+  // 库里可以存进根本打不开的 PDF，直到有人点开才发现 —— 而那时原件已经被当作
+  // 凭证收下了。真实 PDF 的尾部必有 %%EOF 结束标记（规范要求，阅读器据此判断
+  // 文件完整），因此在末尾 1 KB 内要求它：能挡掉截断与伪造，又不会误伤正常文件
+  // （%%EOF 之后允许有空白或增量更新段）。
+  // 说明：这不是完整的 PDF 结构校验，只是把"仅验文件头"这条具体的空子收窄；
+  // 严格解析需要引入 PDF 解析器，属后续工作（审计同样要求不要夸大此处强度）。
+  if (!bytes.subarray(Math.max(0, bytes.length - 1024)).includes('%%EOF')) {
+    return reply400('PDF 文件不完整（缺少 %%EOF 结束标记），请重新导出后上传');
+  }
   return bytes;
 }
 
@@ -674,6 +704,26 @@ function importItems(ownerId, type, items) {
         continue;
       }
       if (mine) {
+        // 审计 F04：命中既有行的判据只有「名称归一化相同」，但同一名称可能对应两家
+        // 注册号不同的公司（Example Orchid ApS / Example Orchid Ltd 剥掉尾缀后同名）。
+        // 若照旧按「更新」处理，{ ...toPublic(mine), ...it } 会让 it 的 cvr 覆盖既有行
+        // —— 等于静默销毁原公司的注册号，而且行数不变、added/updated 计数正常，
+        // 从任何仪表盘上都看不出来。已知复现：A 的 DK11111111 被 B 的 DK22222222 覆盖。
+        // 注册号两边都非空且不相等 → 这是两家不同的公司，判为冲突，不写库，
+        // 交给人工核对（迁移与导入都不该替人判断哪条是真实企业）。
+        const mineCvr = mine.dup_cvr || '';
+        const nextCvr = keys.dup_cvr || '';
+        if (mineCvr && nextCvr && mineCvr !== nextCvr) {
+          skipped.push(it);
+          conflicts.push({
+            name: it.name,
+            field: 'cvr',
+            label: '注册号',
+            owner: mine.owner_id,
+            message: '该公司名称已存在但注册号不同，请核对后再处理',
+          });
+          continue;
+        }
         try {
           const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
           // 本人只更新组织字段时，已有账号记录中的营业执照快照也要同步。
@@ -764,6 +814,10 @@ function createRecords(ownerId, body) {
   const seqInput = body.start_seq;
   let seq = seqInput === undefined || seqInput === '' ? store.nextSeq(db, ownerId) : Number(seqInput);
 
+  // 没有域名时必须**显式**给出创建数量。旧判据只看 count<1 或非整数，而 count 在没有
+  // count 字段时会默认成 1，于是「没有域名」这一情况恒不触发 —— 任何空体或畸形体都会
+  // 静默创建一条国家/产品/域名全空、只有指纹的垃圾记录。
+  if (!domains.length && body.count === undefined) return { error: '缺少域名：请至少填写一个域名，或显式指定创建数量' };
   if (!domains.length && (typeof body.count === 'boolean' || !Number.isSafeInteger(count) || count < 1)) return { error: '创建数量必须为 1 到 500 的整数' };
   if (count > 500) return { error: '单次最多创建 500 条记录' };
   if (typeof seqInput === 'boolean' || !Number.isSafeInteger(seq) || seq < 1 || !Number.isSafeInteger(seq + count)) return { error: '指纹编号无效' };
@@ -882,6 +936,9 @@ function releaseIfUnused(ownerId, prefix, oldId, excludeRecId) {
 }
 
 function updateRecord(ownerId, id, body) {
+  // 自守：目前唯一调用方（PATCH /api/records/:id）已在路由层校验，但本函数内部直接
+  // 取字段并用了 `k in body`；把守卫放在函数边界，将来新增调用方不会重新引入 500。
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: '请求体必须是一个 JSON 对象' };
   const rec = store.getRecord(db, ownerId, id);
   if (!rec) return { error: '记录不存在' };
 
@@ -1038,9 +1095,27 @@ function requireUnlocked(req) {
 fastify.addHook('onRequest', async (req, reply) => {
   const rawPath=req.url.split('?')[0];
   if(/%2f|%5c|%2e|\\|\/\//i.test(rawPath)) return rejectEarly(reply,400,{error:'Invalid path'});
-  if (!req.url.startsWith('/api/')) return;
+
+  // 只接受 origin-form 请求目标。绝对形式（`GET http://host/api/x HTTP/1.1`）是合法
+  // HTTP/1.1，find-my-way 仍会把它路由到对应 handler，但 req.url 以 "http://" 开头，
+  // 会让下面基于前缀的鉴权判断失效。（本行同时是纵深防御：上面那条 // 拦截虽已覆盖
+  // 绝对形式，但不该依赖「恰好含 //」这个副作用。）
+  if(!req.url.startsWith('/')) return rejectEarly(reply,400,{error:'Invalid path'});
+
+  // 鉴权判断必须建立在「解码后」的路径上，否则会与路由判断产生分歧：
+  // find-my-way 会解码百分号编码，实测 `/%61pi/bootstrap`（%61 = 'a'）被路由到
+  // /api/bootstrap 的 handler，而未解码的 req.url 不以 /api/ 开头 —— 原先这里直接
+  // return，导致桌面令牌、来源校验、CSRF、限速、会话鉴权被整体跳过，onSend 的
+  // Cache-Control: no-store 与敏感字段脱敏也一并失效。实测该路径可在未登录状态下
+  // 拿到 /api/bootstrap 的 200 响应（因 handler 自身无法解析 owner 而返回空数据，
+  // 破坏性写则被敏感操作解锁检查挡下 —— 但那是巧合，不是设计）。
+  // 解码失败（畸形 % 序列）一律 400，避免路由与鉴权再次分歧。
+  let pathname;
+  try { pathname = decodeURIComponent(rawPath); } catch { return rejectEarly(reply,400,{error:'Invalid path'}); }
+
+  if (!pathname.startsWith('/api/')) return;
   if(!SAFE_METHODS.has(req.method.toUpperCase()) && req.headers.origin && PUBLIC_ORIGIN && req.headers.origin!==PUBLIC_ORIGIN) return rejectEarly(reply,403,{error:'Invalid origin'});
-  if(['/api/auth/login','/api/auth/register','/api/security/unlock'].includes(rawPath)) {
+  if(['/api/auth/login','/api/auth/register','/api/security/unlock'].includes(pathname)) {
     if(!networkLimiter.check(clientAddress(req)).allowed) return rejectEarly(reply,429,{error:'Too many attempts. Try later.'});
   }
 
@@ -1055,7 +1130,6 @@ fastify.addHook('onRequest', async (req, reply) => {
     return rejectEarly(reply, 403, { error: '请求缺少来源标记，请刷新页面后重试' });
   }
 
-  const pathname = req.url.split('?')[0];
   if (PUBLIC_PATHS.has(pathname) || isDesktopRequest(req)) return;
 
   const token = auth.parseCookies(req.headers.cookie)[auth.SESSION_COOKIE];
@@ -1072,9 +1146,13 @@ fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
   reply.header('Permissions-Policy','camera=(), microphone=(), geolocation=()');
   if(SESSION_SECURE) reply.header('Strict-Transport-Security','max-age=31536000');
-  if (req.url.startsWith('/api/')) {
+  // 与 onRequest 同理：响应的 no-store 与脱敏也按解码后的路径判断，
+  // 否则编码路径会绕过这两项保护。
+  let sendPath = req.url.split('?')[0];
+  try { sendPath = decodeURIComponent(sendPath); } catch { /* 畸形序列不在此处报错 */ }
+  if (sendPath.startsWith('/api/')) {
     reply.header('Cache-Control', 'no-store');
-    const path=req.url.split('?')[0];
+    const path=sendPath;
     if(typeof payload==='string' && String(reply.getHeader('content-type')).includes('application/json') && !path.startsWith('/api/parse/') && !req.allowSecrets) {
       try { payload=JSON.stringify(redact(JSON.parse(payload))); } catch { /* non-JSON handled by framework */ }
     }
@@ -1245,8 +1323,44 @@ fastify.get('/api/bootstrap', async (req) => {
   };
 });
 
-fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
+/**
+ * 记录列表的服务端分页查询（方案工作包 07「查询优化」）。
+ *
+ * 与 /api/bootstrap 的分工：bootstrap 仍返回完整快照供整体渲染与既有测试使用；本接口
+ * 只取当前页，让列表视图按需翻页，不再「读全部 + 传全部」。owner_id 恒定取自会话。
+ * 敏感字段的脱敏由 onSend 的 redact() 统一处理，与本服务其他 /api/ 响应同一套规则。
+ */
+fastify.get('/api/records', async (req, reply) => {
+  const ownerId = currentUserId(req);
+  const requestedSort = String(req.query?.sort || 'id_desc');
+  // 审计 F13：分页参数此前用 `Number(x) || 默认值` 兜底 —— limit=abc 会被静默当成
+  // 50，limit=-3 被夹成 1，客户端以为按自己的要求翻了页，实际拿到的是另一页。
+  // 语义错误应当明确 400，而不是悄悄换一个值再假装成功。
+  const parsePaging = (raw, { min, max, fallback, name }) => {
+    if (raw === undefined || raw === '') return { value: fallback };
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < min || n > max) {
+      return { error: `${name} 必须是 ${min}..${max} 之间的整数` };
+    }
+    return { value: n };
+  };
+  const limit = parsePaging(req.query?.limit, { min: 1, max: 200, fallback: 50, name: 'limit' });
+  const offset = parsePaging(req.query?.offset, { min: 0, max: 1_000_000, fallback: 0, name: 'offset' });
+  if (limit.error) return reply.code(400).send({ error: limit.error });
+  if (offset.error) return reply.code(400).send({ error: offset.error });
+  const page = store.listRecordsPage(db, ownerId, {
+    limit: limit.value,
+    offset: offset.value,
+    q: String(req.query?.q || ''),
+    status: String(req.query?.status || ''),
+    sort: requestedSort,
+  });
+  return { ...page, limit: limit.value,
+    offset: offset.value,
+    sort: Object.hasOwn(store.RECORD_SORTS, requestedSort) ? requestedSort : 'id_desc' };
+});
 
+fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
 fastify.post('/api/import/auto', async (req) => {
   const ownerId = currentUserId(req);
   let emails = Array.isArray(req.body?.emails)
@@ -1283,7 +1397,12 @@ fastify.post('/api/parse/licenses-pdf', async (req) => {
     const enriched = items.map((item) => ({ ...item, ...probeDuplicate(item, req) }));
     return { items: enriched, text };
   } catch (error) {
-    if (error.statusCode === 400) throw error;
+    // 审计 F17：原来只放行 statusCode===400，于是 extractPdfText 抛出的 **429**
+    // （并发解析超限："识别任务较多，请稍后重试"）被这里吞掉，改写成
+    // 400「PDF 解析失败，请选择可读取的 PDF」—— 服务器忙被报成"你的文件坏了"。
+    // 用户于是反复重试一份其实完好的文件，把"等一会儿再来"做成了相反的动作。
+    // 带 statusCode 的失败都有明确语义，应原样交给客户端。
+    if (error.statusCode) throw error;
     fastify.log.warn({ err: error }, 'PDF 解析失败');
     return reply400('PDF 解析失败，请选择可读取的 PDF 或手动填写信息');
   }
@@ -1411,11 +1530,14 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
   const ownerId = currentUserId(req);
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
+  // `'status' in body` 的右操作数必须是对象，字符串会直接抛 TypeError → 500。
+  // 因此在进入 mutate 之前就把非对象体拒掉，而不是靠 `req.body || {}` 兜底。
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
   return mutate(() => {
     const id = Number(req.params.id);
     const current = store.findPoolItem(db, ownerId, type, id);
     if (!current) return reply400('资源不存在');
-    const body = req.body || {};
     if(body.version !== undefined && body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
     assertNoCardSecrets(body);
     if ('status' in body) {
@@ -1466,10 +1588,14 @@ fastify.delete('/api/pool/:type/:id', async (req) => {
 
 fastify.post('/api/records', async (req) => {
   const ownerId = currentUserId(req);
-  assertNoCardSecrets(req.body||{});
+  // 非对象请求体（null / 字符串 / 数字 / 数组）不能被当成「没有字段的对象」继续往下走：
+  // 旧行为会给它们创建一条空记录并返回 200，把「请求本身有问题」悄悄吞成一次成功。
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
+  assertNoCardSecrets(body);
   const requestKey=req.headers['idempotency-key'];
   if(requestKey && (typeof requestKey!=='string'||! /^[A-Za-z0-9_-]{16,128}$/.test(requestKey))) return reply400('Invalid idempotency key');
-  const hash=crypto.createHash('sha256').update(JSON.stringify(req.body||{})).digest('hex');
+  const hash=crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
   const res = mutate(() => {
     if(requestKey) {
       const old=db.prepare('SELECT request_hash,result_ids FROM idempotency_requests WHERE owner_id=? AND request_key=?').get(ownerId,requestKey);
@@ -1480,7 +1606,7 @@ fastify.post('/api/records', async (req) => {
         return {created,replayed:true};
       }
     }
-    const result=createRecords(ownerId,req.body||{});
+    const result=createRecords(ownerId,body);
     if(!result.error) {
       if(requestKey) db.prepare('INSERT INTO idempotency_requests VALUES(?,?,?,?,?)').run(ownerId,requestKey,hash,JSON.stringify(result.created.map(r=>r.id)),new Date().toISOString());
       audit(db,ownerId,'records.create',String(result.created.length));
@@ -1493,11 +1619,17 @@ fastify.post('/api/records', async (req) => {
 
 fastify.patch('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
+  // 非对象体（字符串/数字/数组）会被 updateRecord 当成字段集合去拼 SQL：字符串的
+  // Object.entries 是「下标 → 字符」，于是拼出非法列名，把「请求有问题」报成 500。
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
   const current=store.getRecord(db,ownerId,Number(req.params.id));
   if(!current) return reply400('Record not found');
-  if(req.body?.version!==undefined && req.body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
-  const res = mutate(() => updateRecord(ownerId, Number(req.params.id), req.body || {}));
+  if(body.version!==undefined && body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+  const res = mutate(() => updateRecord(ownerId, Number(req.params.id), body));
   if (res.error) return reply400(res.error);
+  // 修改也留痕：审核与排错时，「这个字段是谁改的」同样需要能回答
+  audit(db, ownerId, 'records.update', String(req.params.id));
   return res;
 });
 
@@ -1505,17 +1637,33 @@ fastify.post('/api/records/batch-delete', async (req) => {
   const ownerId = currentUserId(req);
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return { deleted: 0 };
-  return mutate(() => deleteRecords(ownerId, ids));
+  return mutate(() => {
+    const result = deleteRecords(ownerId, ids);
+    // 删除不可逆，且多人共用同一份数据 —— 「这条记录是谁删的」是必然会被问到的问题。
+    // 此前创建/导出/备份都有审计，唯独删除没有，等于把最关键的一类操作留成了空白。
+    if (result?.deleted) audit(db, ownerId, 'records.delete', `批量 ${result.deleted} 条`);
+    return result;
+  });
 });
 
 fastify.delete('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
-  return mutate(() => deleteRecords(ownerId, [Number(req.params.id)]));
+  return mutate(() => {
+    const result = deleteRecords(ownerId, [Number(req.params.id)]);
+    if (result?.deleted) audit(db, ownerId, 'records.delete', String(req.params.id));
+    return result;
+  });
 });
 
 fastify.post('/api/export/adspower', async (req) => {
   const ownerId = currentUserId(req);
-  if(req.url.split('?')[0]==='/api/export/adspower') requireUnlocked(req);
+  // 无条件二次授权（审计 F01）。原先写的是
+  //   if (req.url.split('?')[0] === '/api/export/adspower') requireUnlocked(req);
+  // 这是真实的绕过面：路由器按**解码后**的路径匹配路由，而 req.url 仍是编码态，
+  // 于是 POST /%61pi/export/adspower 会命中本 handler 却跳过解锁，
+  // 直接把邮箱密码、2FA 与代理密码以 text 字符串返回（JSON 脱敏洗不到它）。
+  // 此刻已经在 handler 内部，路径比较本身就没有存在理由，删掉即可。
+  requireUnlocked(req);
   if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
   const ids = new Set((req.body?.ids || []).map(Number));
   const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
@@ -1526,7 +1674,11 @@ fastify.post('/api/export/adspower', async (req) => {
 
 fastify.post('/api/export/csv', async (req) => {
   const ownerId = currentUserId(req);
-  if(req.url.split('?')[0]==='/api/export/adspower') requireUnlocked(req);
+  // 原先这里有一句 `if (req.url… === '/api/export/adspower') requireUnlocked(req)`，
+  // 但它位于 /api/export/csv 的 handler 内——那个条件在本路由上永远不成立，是死代码
+  // （审计 F01 修改动作 2）。已删除。
+  // CSV 不需要二次解锁：buildCsv 在映射阶段就把 email_pass / email_fakey /
+  // proxy_pass / id_card 清空（见 server.js:981），输出里本来就不含凭据。
   if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
   const ids = new Set((req.body?.ids || []).map(Number));
   const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
@@ -1575,9 +1727,14 @@ fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 }, async (req,
 /* ---------------- 备份与恢复（桌面版接口，语义保持不变） ---------------- */
 
 function resolveDefaultOwner() {
+  // 桌面版没有会话，用本机固定的 local 账号（desktop/main.js 里有若干不带 owner 的调用）。
   if (desktopToken) return ensureDesktopUser();
-  const row = db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get();
-  return row ? row.id : null;
+  // 网页版不存在「默认账号」。HTTP 路由始终从会话取 ownerId（server.js 的 currentUserId），
+  // 因此能走到这里只可能是上游鉴权出了问题；此时回退到「数据库里第一个用户」会把
+  // 破坏性写（restore 会先 DELETE 该账号的 records 与全部资源池）指到某个真实账号上，
+  // 把一次鉴权缺陷放大成数据事故。宁可硬失败，也不允许在没有账号上下文时推断归属。
+  // 这是文档工作包 02「每个接口均验证会话及所属人，不信任客户端传入的 owner_id」的直接落实。
+  throw new Error('未登录：缺少账号上下文，拒绝推断数据归属');
 }
 
 function snapshot(ownerId = null) {

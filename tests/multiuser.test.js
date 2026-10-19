@@ -361,3 +361,18 @@ test('全员查重报告对普通成员关闭，内部审计仍可以识别历�
   assert.equal(addressGroup.members.length, 2);
   assert.ok(report.duplicate_licenses >= 2);
 });
+
+test('缺少账号上下文时拒绝推断数据归属，不得回退到数据库里第一个用户', () => {
+  // 网页版不存在「默认账号」：HTTP 路由一律从会话取 ownerId。若 ownerId 为空时回退到
+  // 「数据库里第一个用户」，一次鉴权缺陷就会被放大成对真实账号的破坏性写
+  // （restore 会先 DELETE 该账号的 records 与全部资源池），从「读不到数据」升级为「数据事故」。
+  const victim = service.db.prepare('SELECT id FROM users ORDER BY id LIMIT 1').get().id;
+  assert.ok(victim, '前提：库里已有账号');
+  assert.throws(() => service.snapshot(), /未登录/, '不带 owner 的快照必须失败，而不是落到 1 号用户');
+  assert.throws(() => service.encryptedSnapshot(), /未登录/, '不带 owner 的导出必须失败');
+  assert.throws(() => service.restore({ records: [] }), /未登录/, '不带 owner 的恢复必须失败');
+  // 显式传 owner 时仍正常工作 —— 被去掉的是「推断」，不是功能本身
+  const value = service.snapshot(victim);
+  assert.ok(Array.isArray(value.records));
+  assert.ok(Array.isArray(value.emails));
+});

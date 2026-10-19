@@ -1505,3 +1505,37 @@ input[type=checkbox]{min-width:16px;min-height:16px}
 .modal-body label{display:block;margin:6px 0}
 .btn:disabled{cursor:not-allowed}
 @media(max-height:800px){.sidebar>.sidebar-foot{max-height:48vh;font-size:12px;gap:5px}}
+
+/* ---- 我的记录 / 新建记录：共用同一份渲染与统计条，按页面键决定露出哪一块面板 ----
+   方案工作包 06「信息架构」：默认进入「我的记录」，创建表单不再压在记录列表上方。
+   两块面板由同一个函数产出，资源统计只有一份，避免拆成两个渲染函数后改漏一边。 */
+.page-records #createPanel { display: none; }
+.page-create  #recordsPanel { display: none; }
+
+/* ---- 冻结关键编号列（方案工作包 06「表格布局」：冻结表头和关键编号列）----
+   记录表共 14 列，1440 宽度下必须横向滚动才能看到右侧字段；横向滚动时「指纹名称」
+   会一起滑出视野，就没法边看编号边核对右边的状态与操作。这里冻结复选框与指纹名称两列。
+   sticky 单元格必须有实色底，否则滚动的内容会透出来；底色是按面板底色 var(--surface)
+   与行状态叠加后的实际值折算的，保证冻结列与表格其余部分不断色。 */
+#recordsPanel .table-wrap th:nth-child(-n+2),
+#recordsPanel .table-wrap td:nth-child(-n+2) { position: sticky; z-index: 2; background: var(--surface); }
+#recordsPanel .table-wrap th:nth-child(1), #recordsPanel .table-wrap td:nth-child(1) { left: 0; }
+#recordsPanel .table-wrap th:nth-child(2), #recordsPanel .table-wrap td:nth-child(2) { left: 34px; }
+#recordsPanel .table-wrap thead th:nth-child(-n+2) { z-index: 3; background: var(--surface-2); }
+#recordsPanel .table-wrap tbody tr:hover td:nth-child(-n+2) { background: #161c26; }
+#recordsPanel .table-wrap tbody tr.selected td:nth-child(-n+2) { background: #1b2322; }
+
+/* ---- 记录表列显隐菜单（方案工作包 06「列宽、列显隐」）----
+   用原生 <details> 而不是自绘弹层：键盘可达（Enter/Space 展开）与 Esc 收起都免费拿到，
+   方案验收标准要求「键盘可完成关键操作」。 */
+.col-menu { position: relative; }
+.col-menu > summary { list-style: none; cursor: pointer; }
+.col-menu > summary::-webkit-details-marker { display: none; }
+.col-menu-body {
+  position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; min-width: 190px;
+  display: flex; flex-direction: column; gap: 2px; padding: 10px;
+  border: 1px solid var(--line-strong); border-radius: var(--r-md);
+  background: var(--surface-2); box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45);
+}
+.col-menu-item { display: flex; align-items: center; gap: 8px; padding: 5px 6px; border-radius: 6px; font-size: 12.5px; cursor: pointer; }
+.col-menu-item:hover { background: var(--surface-3); }

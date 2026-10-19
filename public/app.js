@@ -131,7 +131,7 @@ const KINDS = [
 ];
 
 const state = {
-  page: 'workbench',
+  page: 'records',
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
   records: [],
   next: null,
@@ -151,9 +151,52 @@ const state = {
   creating: false,
   recordPage: 1,
   poolPage: 1,
+  // 列显隐偏好（方案工作包 06）：只存「哪些列被隐藏」这类列名，不存任何字段值。
+  hiddenCols: [],
 };
 
 const MASK = '••••••';
+
+/* ============ 记录表列显隐（方案工作包 06：列显隐 + 按用户保存的表格偏好） ============
+   本地偏好里只写「哪些列被隐藏」这类列名，不写任何字段值 —— 方案要求
+   「敏感字段不写入不受控的本地偏好」。复选框、指纹名称、状态与操作四列不参与显隐：
+   它们是识别记录与操作记录的最小集合，藏掉表格就没法用了。
+   用一条动态样式表按 nth-child 隐藏，而不是在模板里逐列写条件：后者要改 20 处
+   <th>/<td>，很容易改漏一半；nth-child 按 DOM 位置计数，隐藏前面某一列不会让
+   后面的列错位（也保证冻结列用的 nth-child(1)/(2) 始终成立）。 */
+const RECORD_COLUMNS = [
+  { key: 'name', label: '名称', index: 3 },
+  { key: 'domain', label: '域名', index: 4 },
+  { key: 'email', label: '谷歌邮箱', index: 5 },
+  { key: 'emailPass', label: '邮箱密码', index: 6 },
+  { key: 'fakey', label: '2FA', index: 7 },
+  { key: 'proxy', label: '代理', index: 8 },
+  { key: 'card', label: '付款工具', index: 9 },
+  { key: 'ipreg', label: 'IP注册时间', index: 10 },
+  { key: 'license', label: '营业执照', index: 11 },
+  { key: 'idcard', label: '身份证', index: 12 },
+];
+const hiddenColKey = () => `wb.hiddenCols.${state.user?.username || 'anonymous'}`;
+function loadHiddenCols() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(hiddenColKey()) || '[]');
+    // 白名单过滤：本地存储可以被手工改，不能让它注入任意 nth-child
+    return Array.isArray(parsed) ? parsed.filter((k) => RECORD_COLUMNS.some((c) => c.key === k)) : [];
+  } catch { return []; }
+}
+function saveHiddenCols() {
+  try { localStorage.setItem(hiddenColKey(), JSON.stringify(state.hiddenCols)); } catch { /* 无痕模式下不可写，忽略 */ }
+}
+/** 把隐藏列写成一条动态规则；没有隐藏列时规则为空。 */
+function applyColumnVisibility() {
+  let style = document.getElementById('rec-col-style');
+  if (!style) { style = document.createElement('style'); style.id = 'rec-col-style'; document.head.appendChild(style); }
+  style.textContent = state.hiddenCols
+    .map((key) => RECORD_COLUMNS.find((column) => column.key === key))
+    .filter(Boolean)
+    .map((column) => `#recordsPanel .rec-table th:nth-child(${column.index}),#recordsPanel .rec-table td:nth-child(${column.index}){display:none}`)
+    .join('\n');
+}
 
 function sens(value) {
   if (state.reveal && value !== '[protected]') return esc(value);
@@ -228,8 +271,9 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 
 function renderNav() {
   const main = [
+    { key: 'records', label: '我的记录', ico: '▤', count: state.records.length },
+    { key: 'create', label: '新建记录', ico: '＋', count: '' },
     { key: 'overview', label: '运营总览', ico: '◈', count: '' },
-    { key: 'workbench', label: '创建与记录', ico: '◧', count: state.records.length },
   ];
   const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
   const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}" ${state.page === it.key ? 'aria-current="page"' : ''}>
@@ -258,11 +302,17 @@ function renderAccount() {
 }
 
 function render() {
+  const main = document.getElementById('main');
+  // 页面键写到 main 上：「我的记录」与「新建记录」共用同一份渲染与统计条，
+  // 由 CSS 决定露出哪一块面板，避免把资源统计复制成两份、后续改漏一边。
+  if (main) main.className = `main page-${state.page}`;
   renderNav();
   renderAccount();
   if (state.page === 'overview') renderOverview();
-  else if (state.page === 'workbench') { renderWorkbench(); refreshSelectionUI(); }
+  else if (state.page === 'records' || state.page === 'create') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
+  // 列偏好是全局样式规则，与记录表是否刚被重建无关
+  applyColumnVisibility();
 }
 
 async function refresh() {
@@ -274,6 +324,8 @@ async function refresh() {
   state.pools = data.pools;
   state.records = data.records;
   state.user = data.user || null;
+  // 列偏好按账号分别保存，账号就绪后再读；saveHiddenCols 写的就是这个键，重读不会丢改动
+  state.hiddenCols = loadHiddenCols();
   const recordIds = new Set(data.records.map((record) => record.id));
   state.sel = new Set([...state.sel].filter((id) => recordIds.has(id)));
   for (const kind of Object.keys(state.picked)) {
@@ -315,7 +367,7 @@ function renderOverview() {
     <div class="page-head">
       <div><h1>运营总览</h1><p class="sub">账号状态、资源库存、待办事项 · 当前账号可见范围</p></div>
       <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
-      <button class="btn btn-primary" data-action="nav" data-page="workbench">＋ 创建账号记录</button></div>
+      <button class="btn btn-primary" data-action="nav" data-page="create">＋ 创建账号记录</button></div>
     </div>
     <div class="overview-metrics">
       <div class="overview-metric"><span>账号记录</span><b>${records.length}</b><small>已建档总数</small></div>
@@ -337,13 +389,13 @@ function renderOverview() {
       </section>
     </div>
     <section class="panel overview-recent">
-      <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="workbench">查看全部 →</button></div>
+      <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="records">查看全部 →</button></div>
       ${recent.length ? recent.map(r => `<div class="overview-recent-row">
         <span class="overview-recent-icon" aria-hidden="true">◧</span>
         <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
         <span class="overview-status">${esc(r.status)}</span>
         <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>
-      </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="workbench">开始创建</button></div>'}
+      </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="create">开始创建</button></div>'}
     </section>`;
 }
 
@@ -393,18 +445,22 @@ function renderWorkbench() {
     return `<span class="mini">记录中代理字段留空</span>`;
   };
 
-  const filtered = getFilteredRecords();
+  const filtered = state.page === 'create' ? [] : getFilteredRecords();
 
   const todayCN = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
 
   main.innerHTML = `
     <div class="page-head">
       <div>
-        <h1>工作台</h1>
-        <p class="sub">指纹名称按今日日期自动生成，资源按状态分组、自动分配</p>
+        <h1>${state.page === 'create' ? '新建记录' : '我的记录'}</h1>
+        <p class="sub">${state.page === 'create'
+          ? '指纹名称按今日日期自动生成，资源按状态分组、自动分配'
+          : '查记录、看状态、处理异常优先；需要录入新记录时走「新建记录」'}</p>
       </div>
       <div class="head-actions">
-        <button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>
+        ${state.page === 'create'
+          ? '<button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>'
+          : '<button class="btn btn-primary" data-action="nav" data-page="create">＋ 新建记录</button><button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>'}
         <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
       </div>
     </div>
@@ -424,7 +480,7 @@ function renderWorkbench() {
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
               { n: '03', t: '导入付款工具', d: '工具别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
-              { n: '04', t: '创建记录', d: '回到本页填写国家/产品/域名，指纹名称按今天日期自动生成', k: '' },
+              { n: '04', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
             ]
               .map(
                 (s) => `<div class="step-card" ${s.k ? `data-action="nav" data-page="${s.k}"` : ''}>
@@ -436,7 +492,7 @@ function renderWorkbench() {
         : ''
     }
 
-    <div class="panel">
+    <div class="panel" id="createPanel">
       <div class="panel-head">
         <div class="panel-title">快速创建 <span class="tag">指纹名称自动生成</span></div>
         <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 付款工具 / 营业执照自动按顺序分配并标记已使用</span>
@@ -505,7 +561,7 @@ function renderWorkbench() {
       </div>
     </div>
 
-    <div class="panel">
+    <div class="panel" id="recordsPanel">
       <div class="panel-head">
         <div class="panel-title">账号记录 <span class="overview-title-count">${filtered.length} / ${state.records.length} 条</span></div>
       </div>
@@ -516,6 +572,13 @@ function renderWorkbench() {
         </div>
         <span class="sel-count">已选 <b>${state.sel.size}</b> 条</span>
         <button class="btn btn-ghost btn-sm" data-action="clear-record-filter" ${!state.q && state.rstatus === '全部' ? 'disabled' : ''}>清除筛选</button>
+        <details class="col-menu">
+          <summary class="btn btn-ghost btn-sm" aria-label="选择显示的列">列 <span class="dim">${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}</span></summary>
+          <div class="col-menu-body">
+            ${RECORD_COLUMNS.map((column) => `<label class="col-menu-item"><input type="checkbox" data-action="toggle-col" data-col="${column.key}" ${state.hiddenCols.includes(column.key) ? '' : 'checked'}> ${column.label}</label>`).join('')}
+            <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>恢复默认列</button>
+          </div>
+        </details>
         <span class="toolbar-spacer"></span>
         <button class="btn btn-ghost btn-sm" data-action="export-adspower">导出 AdsPower TXT</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">导出 CSV</button>
@@ -565,7 +628,7 @@ function renderRecordsTable(list) {
   const page = paginate(list, 'records');
   list = page.items;
   const allChecked = list.length && list.every((r) => state.sel.has(r.id));
-  return `<div class="table-wrap"><table>
+  return `<div class="table-wrap"><table class="rec-table">
     <thead><tr>
       <th style="width:34px"><input type="checkbox" data-action="sel-all" aria-label="全选当前页" ${allChecked ? 'checked' : ''}></th>
       <th>指纹名称</th><th>名称</th><th>域名</th><th>谷歌邮箱</th><th>邮箱密码</th><th>2FA</th>
@@ -1293,13 +1356,13 @@ document.addEventListener('click', async (e) => {
         break;
       }
       case 'jump-status':
-        state.page = 'workbench'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
+        state.page = 'records'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
         render();
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
       case 'recent-record':
         state.q = state.records.find(r => r.id === Number(t.dataset.id))?.fingerprint || '';
-        state.rstatus = '全部'; state.recordPage = 1; state.page = 'workbench';
+        state.rstatus = '全部'; state.recordPage = 1; state.page = 'records';
         render();
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
@@ -1363,6 +1426,11 @@ document.addEventListener('click', async (e) => {
       case 'rstatus':
         state.rstatus = t.dataset.v;
         state.recordPage = 1;
+        render();
+        break;
+      case 'reset-cols':
+        state.hiddenCols = [];
+        saveHiddenCols();
         render();
         break;
       case 'pool-status':
@@ -1463,6 +1531,16 @@ document.addEventListener('change', async (e) => {
       await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
       toast('状态已更新');
       await refresh();
+    } else if (action === 'toggle-col') {
+      const key = t.dataset.col;
+      if (RECORD_COLUMNS.some((column) => column.key === key)) {
+        state.hiddenCols = t.checked ? state.hiddenCols.filter((k) => k !== key) : [...state.hiddenCols, key];
+        saveHiddenCols();
+        // 只重算列可见性，不做整体 render：整体重建会把 <details> 收起，变成一次只能勾一列
+        applyColumnVisibility();
+        const counter = document.querySelector('.col-menu summary .dim');
+        if (counter) counter.textContent = `${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}`;
+      }
     } else if (action === 'sel-row') {
       const id = Number(t.dataset.id);
       if (t.checked) state.sel.add(id);
