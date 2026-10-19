@@ -44,6 +44,7 @@ async function waitFile(file){for(let n=0;n<100;n++){if(fs.existsSync(file)&&fs.
   await page.screenshot({path:path.join(shots,'records.png'),animations:'disabled'});
   await page.locator('.nav-item[data-page="overview"]').click();await page.screenshot({path:path.join(shots,'overview.png'),animations:'disabled'});
   const backupFile=path.join(root,'personal.json');await electron.evaluate(({session},file)=>session.fromPartition('ads-remote').once('will-download',(_e,item)=>item.setSavePath(file)),backupFile);
+  await page.locator('#sidebarUtilities > summary').click();
   await page.locator('[data-action="web-backup"]').click();await page.locator('#unlock-password').fill('Remote-Test-1234');await page.locator('#unlock-form [type="submit"]').click();await waitFile(backupFile);const envelope=JSON.parse(fs.readFileSync(backupFile,'utf8'));assert.equal(envelope.format,'adsworkbench-backup');assert.ok(!JSON.stringify(envelope).includes('REMOTE-SECRET-VALUE'));
   await page.locator('[data-action="web-restore"]').click();await page.locator('#restore-file').setInputFiles(backupFile);await page.locator('#restore-go').click();await page.locator('#restore-go').waitFor({state:'detached'});await page.waitForFunction(()=>state.records.length===1);console.log('PASS remote encrypted backup and UI restoration');
   await page.locator('[data-action="my-audit"]').click();await page.locator('#my-audit table').waitFor();await page.locator('.modal-close').click();
