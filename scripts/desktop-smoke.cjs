@@ -152,6 +152,7 @@ const { certificate } = require('../tests/pdf-fixture');
     if (process.env.LICENSE_SCREENSHOT) await page.screenshot({ path: process.env.LICENSE_SCREENSHOT, animations: 'disabled' });
     console.log('PASS PDF recognition, review, detail panel and exact original file');
     await page.getByRole('button', { name: '关闭', exact: true }).last().click();
+    await page.locator('#sidebarUtilities > summary').click();
     await page.locator('[data-action="desktop-backup"]').click();
     await page.waitForFunction(() => document.querySelector('#toast-root').innerText.includes('完整备份已导出'));
     const snapshot = JSON.parse(fs.readFileSync(backupFile));
