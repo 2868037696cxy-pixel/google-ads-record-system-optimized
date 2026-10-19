@@ -878,3 +878,5 @@ body[data-table-density="compact"] .rec-table, body[data-table-density="compact"
   .page-create .create-preview { position: static; box-shadow: none; }
   .page-create #createPanel .panel-body { padding-bottom: 24px; }
 }
+
+#webTools[hidden], #desktopTools[hidden] { display: none !important; }
