@@ -1558,6 +1558,8 @@ fastify.patch('/api/records/:id', async (req) => {
   if(body.version!==undefined && body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
   const res = mutate(() => updateRecord(ownerId, Number(req.params.id), body));
   if (res.error) return reply400(res.error);
+  // 修改也留痕：审核与排错时，「这个字段是谁改的」同样需要能回答
+  audit(db, ownerId, 'records.update', String(req.params.id));
   return res;
 });
 
@@ -1565,12 +1567,22 @@ fastify.post('/api/records/batch-delete', async (req) => {
   const ownerId = currentUserId(req);
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
   if (!ids.length) return { deleted: 0 };
-  return mutate(() => deleteRecords(ownerId, ids));
+  return mutate(() => {
+    const result = deleteRecords(ownerId, ids);
+    // 删除不可逆，且多人共用同一份数据 —— 「这条记录是谁删的」是必然会被问到的问题。
+    // 此前创建/导出/备份都有审计，唯独删除没有，等于把最关键的一类操作留成了空白。
+    if (result?.deleted) audit(db, ownerId, 'records.delete', `批量 ${result.deleted} 条`);
+    return result;
+  });
 });
 
 fastify.delete('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
-  return mutate(() => deleteRecords(ownerId, [Number(req.params.id)]));
+  return mutate(() => {
+    const result = deleteRecords(ownerId, [Number(req.params.id)]);
+    if (result?.deleted) audit(db, ownerId, 'records.delete', String(req.params.id));
+    return result;
+  });
 });
 
 fastify.post('/api/export/adspower', async (req) => {
