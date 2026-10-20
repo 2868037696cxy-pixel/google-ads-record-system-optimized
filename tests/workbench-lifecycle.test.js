@@ -98,3 +98,28 @@ test('Ctrl+R inside a dialog prevents reload without synchronizing its backgroun
   assert.equal(refreshes, 0);
   run('clearTimeout(secretTimer)');
 });
+
+test('a completed creation cannot replace a newer dialog after sensitive lock', async () => {
+  const { context, run } = harness();
+  const pending = deferred();
+  context.crypto = { randomUUID: () => 'synthetic-request-key' };
+  context.api = url => url === '/api/records' ? pending.promise : Promise.resolve({});
+  context.refreshAfterCommit = async () => true;
+  context.updateCreatePreview = () => {};
+  context.openModal();
+  run("state.form.domains = 'synthetic.example'; state.form.start_seq = 'test1'");
+  const creating = run("doCreate({ domains: ['synthetic.example'], fp_prefix: 'test' })");
+  await run('lockSensitive()');
+  run("state.form.domains = 'next-draft.example'; state.form.start_seq = 'next100'; state.picked.emails = new Set([7])");
+  let opened = 0, closed = 0;
+  context.openModal = () => { opened++; };
+  context.closeModal = () => { closed++; };
+  context.openModal(); // The user has moved on to a different task.
+  pending.resolve({ created: [{ fingerprint: 'test1', seq: 1 }] });
+  await creating;
+  assert.equal(opened, 1, 'the completed write must not replace the newer task');
+  assert.equal(closed, 0, 'the completed write must not close the newer task');
+  assert.equal(run('state.form.domains'), 'next-draft.example');
+  assert.equal(run('state.form.start_seq'), 'next100');
+  assert.equal(run('state.picked.emails.has(7)'), true);
+});

@@ -923,6 +923,7 @@ async function doCreate(body = createDraft().body) {
   if (domains.length > 500) return toast('单次最多创建 500 条记录，请分批创建', 'warn');
   state.creating = true;
   const confirm = document.getElementById('create-confirm');
+  const submittedInput = { domains: state.form.domains, start: state.form.start_seq };
   if (confirm) WorkbenchUI.dialog.pending(confirm, true, '正在创建…');
   const btn = document.querySelector('[data-action="create"]');
   const oldText = btn?.textContent;
@@ -935,15 +936,18 @@ async function doCreate(body = createDraft().body) {
     state.submission=null;
     const list = res.created;
     toast(`✅ 已创建 ${list.length} 条记录：${list[0].fingerprint}${list.length > 1 ? ' ~ ' + list[list.length - 1].fingerprint : ''}`);
-    state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
-    state.form.domains = '';
-    state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
-    closeModal();
+    if (confirm?.isConnected) state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
+    if (state.form.domains === submittedInput.domains) state.form.domains = '';
+    if (state.form.start_seq === submittedInput.start) state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
     await refreshAfterCommit('记录已保存，但列表刷新失败；请重新连接，不要重复创建');
-    openModal(`<div class="modal-head"><h3>已创建 ${list.length} 条记录</h3><button class="modal-close" data-action="close-modal">✕</button></div><div class="modal-body"><p>指纹范围：<b class="mono">${esc(list[0].fingerprint)}${list.length > 1 ? ' ～ ' + esc(list[list.length - 1].fingerprint) : ''}</b></p><p>${state.syncError ? '记录已保存。列表需要重新连接后更新，请勿重复创建。' : '记录与资源分配已保存，可以前往「我的记录」查看。'}</p></div><div class="modal-foot"><button class="btn btn-ghost" data-action="close-modal">继续新建</button><span class="grow"></span><button class="btn btn-primary" data-action="created-records">查看我的记录</button></div>`);
+    // A lock may have dismissed this task while the committed response was in flight.
+    if (confirm?.isConnected) {
+      closeModal();
+      openModal(`<div class="modal-head"><h3>已创建 ${list.length} 条记录</h3><button class="modal-close" data-action="close-modal">✕</button></div><div class="modal-body"><p>指纹范围：<b class="mono">${esc(list[0].fingerprint)}${list.length > 1 ? ' ～ ' + esc(list[list.length - 1].fingerprint) : ''}</b></p><p>${state.syncError ? '记录已保存。列表需要重新连接后更新，请勿重复创建。' : '记录与资源分配已保存，可以前往「我的记录」查看。'}</p></div><div class="modal-foot"><button class="btn btn-ghost" data-action="close-modal">继续新建</button><span class="grow"></span><button class="btn btn-primary" data-action="created-records">查看我的记录</button></div>`);
+    }
   } catch (e) {
     toast(e.message, 'error');
-    const message = document.getElementById('create-submit-error');
+    const message = confirm?.closest('.modal')?.querySelector('#create-submit-error');
     if (message) { message.hidden = false; message.textContent = e.message; }
     if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
   } finally {
