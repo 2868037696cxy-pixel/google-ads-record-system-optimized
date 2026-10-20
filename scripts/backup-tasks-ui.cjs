@@ -20,7 +20,8 @@ const largePdf=require('../tests/large-pdf-fixture');
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.getByText('已连接',{exact:true}).waitFor();await page.setViewportSize({width:1280,height:800});
     await electron.evaluate(({BrowserWindow},filename)=>{
-      globalThis.packageDownloadStatus='waiting';
+      globalThis.packageDownloadStatus='waiting';globalThis.packageWorkerErrors=[];
+      process.on('worker',worker=>worker.on('error',error=>packageWorkerErrors.push(error.message)));
       BrowserWindow.getAllWindows()[0].webContents.session.on('will-download',(_event,item)=>{
         if(!item.getFilename().endsWith('.awbp'))return;
         item.setSavePath(filename);item.once('done',(_event,status)=>{globalThis.packageDownloadStatus=status;});
@@ -43,19 +44,30 @@ const largePdf=require('../tests/large-pdf-fixture');
     console.log('PASS native .awbp save, worker progress, verified counts and exact file checksum');
 
     await page.locator('#package-new-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-new-upload').disabled);await page.locator('#package-new-upload').click();
-    let release,started;const gate=new Promise(resolve=>{release=resolve;});const intercepted=new Promise(resolve=>{started=resolve;});let held=false;
-    await page.route('**/api/backup-jobs/*/chunk?*',async route=>{
-      if(new URL(route.request().url()).searchParams.get('offset')==='1048576'&&!held){
-        held=true;
-        // Persist the chunk, but withhold its response: cancellation cannot undo
-        // a server commit that happened before the browser received confirmation.
-        const response=await route.fetch();started();await gate;
-        await route.fulfill({response}).catch(()=>{});return;
-      }
-      await route.continue().catch(()=>{});
+    // Intercept the real renderer fetch response rather than issuing a new
+    // Playwright API request, which does not traverse desktop source headers.
+    await page.evaluate(()=>{
+      globalThis.packageOriginalFetch=fetch;globalThis.packageHeldResponse=null;
+      fetch=async(...args)=>{
+        const response=await packageOriginalFetch(...args);
+        if(String(args[0]).includes('/chunk?offset=1048576')&&!packageHeldResponse){
+          packageHeldResponse={status:response.status,body:await response.clone().json()};
+          await new Promise((resolve,reject)=>{
+            const signal=args[1]?.signal;
+            const abort=()=>reject(new DOMException('Paused','AbortError'));
+            globalThis.releasePackageResponse=()=>{signal?.removeEventListener('abort',abort);resolve();};
+            if(signal?.aborted)abort();else signal?.addEventListener('abort',abort,{once:true});
+          });
+        }
+        return response;
+      };
     });
-    await page.locator('#package-upload-start').click();await intercepted;assert.equal(await page.locator('#package-progress').evaluate(element=>element.value),1048576);await page.locator('#package-pause').click();release();
+    await page.locator('#package-upload-start').click();await page.waitForFunction(()=>globalThis.packageHeldResponse);
+    const held=await page.evaluate(()=>packageHeldResponse);assert.equal(held.status,200,JSON.stringify(held));assert.equal(held.body.offset,2097152);
+    assert.equal(await page.locator('#package-progress').evaluate(element=>element.value),1048576);
+    await page.locator('#package-pause').click();
     await page.waitForFunction(()=>!document.getElementById('package-upload-start').disabled);
+    await page.evaluate(()=>{releasePackageResponse();fetch=packageOriginalFetch;});
     const uploaded=await page.evaluate(async()=>(await api('/api/backup-jobs')).jobs.find(job=>job.kind==='restore'));
     assert.equal(uploaded.offset,2097152,'pause reconciles an already committed chunk whose response was not received');
     assert.equal(await page.locator('#package-progress').evaluate(element=>element.value),uploaded.offset);
@@ -64,7 +76,7 @@ const largePdf=require('../tests/large-pdf-fixture');
     const wrong=path.join(directory,'wrong.awbp');const altered=Buffer.from(fs.readFileSync(archive));altered[64]^=1;fs.writeFileSync(wrong,altered);
     await page.locator('#package-resume-file').setInputFiles(wrong);await page.getByText('文件与此上传任务不一致，请选择原文件或建立新任务',{exact:true}).waitFor();assert.equal(await page.locator('#package-upload-start').isDisabled(),true);
     await page.locator('#package-resume-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-upload-start').disabled);await page.locator('#package-upload-start').click();
-    await page.locator('#package-verify').waitFor();await page.unroute('**/api/backup-jobs/*/chunk?*');
+    await page.locator('#package-verify').waitFor();
     await page.locator('#package-verify').click();await page.locator(`[data-job="${uploaded.id}"] [data-package-action="review"]`).waitFor();
     console.log('PASS lost chunk response, pause reconciled to server offset, reopen, wrong-file rejection, resume and authenticated verification');
     await page.locator(`[data-job="${uploaded.id}"] [data-package-action="review"]`).click();assert.equal(await page.locator('#package-apply').isDisabled(),true);
@@ -84,12 +96,21 @@ const largePdf=require('../tests/large-pdf-fixture');
     console.log('PASS unchecked restore consent, stale-version refusal, explicit re-review and single committed restore');
 
     // A late result must never reopen a dialog that has been closed by locking.
-    let finishReview,reviewStarted;const reviewGate=new Promise(resolve=>{finishReview=resolve;});const reviewing=new Promise(resolve=>{reviewStarted=resolve;});
-    await page.route('**/api/backup-jobs/*/review',async route=>{const response=await route.fetch();reviewStarted();await reviewGate;await route.fulfill({response}).catch(()=>{});});
+    await page.evaluate(()=>{
+      globalThis.packageOriginalFetch=fetch;globalThis.packageReviewStatus=null;
+      fetch=async(...args)=>{
+        const response=await packageOriginalFetch(...args);
+        if(String(args[0]).endsWith('/review')){
+          packageReviewStatus=response.status;
+          await new Promise(resolve=>{globalThis.releasePackageReview=resolve;});
+        }
+        return response;
+      };
+    });
     // The completed upload cannot be reviewed again, so create one more verified task.
     await page.locator(`[data-job="${exported.id}"] [data-package-action="delete"]`).click();await page.locator('#package-delete-confirm').click();
     await page.locator('#package-new-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-new-upload').disabled);await page.locator('#package-new-upload').click();await page.locator('#package-upload-start').click();await page.locator('#package-verify').waitFor();await page.locator('#package-verify').click();await page.locator('[data-package-action="review"]').waitFor();
-    await page.locator('[data-package-action="review"]').click();await reviewing;await page.evaluate(()=>lockSensitive());finishReview();await page.unroute('**/api/backup-jobs/*/review');
+    await page.locator('[data-package-action="review"]').click();await page.waitForFunction(()=>globalThis.packageReviewStatus!==null);assert.equal(await page.evaluate(()=>packageReviewStatus),200);await page.evaluate(()=>lockSensitive());await page.evaluate(()=>{releasePackageReview();fetch=packageOriginalFetch;});
     await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,100)));assert.equal(await page.locator('.modal').count(),0);
     console.log('PASS lock invalidates late backup review response');
 
@@ -102,7 +123,11 @@ const largePdf=require('../tests/large-pdf-fixture');
     }
     await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
     assert.deepEqual(errors,[]);console.log('PASS 1280px layout, 125/150% Electron zoom and no renderer errors');
-  }catch(error){if(page)await shot('failure').catch(()=>{});throw error;}
+  }catch(error){
+    if(page){console.error('Backup UI state:',await page.evaluate(async()=>({title:document.querySelector('.modal h3')?.textContent,error:document.querySelector('.dialog-error')?.textContent,jobs:await api('/api/backup-jobs')})).catch(()=>({})));await shot('failure').catch(()=>{});}
+    if(electron)console.error('Worker errors:',await electron.evaluate(()=>globalThis.packageWorkerErrors).catch(()=>[]));
+    throw error;
+  }
   finally{
     clearTimeout(watchdog);
     if(electron){const cleanup=setTimeout(()=>{console.error('FAIL backup UI did not shut down within 5 seconds');stop();},5000);try{await electron.close();}finally{clearTimeout(cleanup);}}
