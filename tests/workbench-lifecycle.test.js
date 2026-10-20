@@ -23,10 +23,12 @@ function harness(timing = {}) {
     hidden: false,
   };
   const UI = { busy: (button, value) => { button.disabled = value; }, dialog: { signal: () => new AbortController().signal, pending: (button, value) => { button.disabled = value; }, error: () => {} } };
-  const context = vm.createContext({ document, window: { addEventListener() {} }, WorkbenchUI: UI, MutationObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout, ...timing, AbortController, AbortSignal, URLSearchParams, Date, console });
+  const context = vm.createContext({ document, window: { addEventListener() {} }, WorkbenchUI: UI, MutationObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout, ...timing, AbortController, AbortSignal, URLSearchParams, Date, console, TextEncoder, crypto: require('node:crypto').webcrypto });
   const run = source => vm.runInContext(source, context);
   const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8').replace(/\nconnect\(\);\s*$/, '\n');
   run(fs.readFileSync(path.join(__dirname, '../public/record-query.js'), 'utf8'));
+  run(fs.readFileSync(path.join(__dirname, '../public/record-create.js'), 'utf8'));
+  run(fs.readFileSync(path.join(__dirname, '../public/resource-import.js'), 'utf8'));
   run(source);
   run(fs.readFileSync(path.join(__dirname, '../public/security.js'), 'utf8'));
   context.openModal = () => { modal = {}; for (const value of elements.values()) value.isConnected = true; };
@@ -135,14 +137,15 @@ test('Ctrl+R inside a dialog prevents reload without synchronizing its backgroun
 
 test('a completed creation cannot replace a newer dialog after sensitive lock', async () => {
   const { context, run } = harness();
-  const pending = deferred();
-  context.crypto = { randomUUID: () => 'synthetic-request-key' };
-  context.api = url => url === '/api/records' ? pending.promise : Promise.resolve({});
+  const pending = deferred(), started = deferred();
+  context.crypto = { ...require('node:crypto').webcrypto, subtle: require('node:crypto').webcrypto.subtle, randomUUID: () => 'synthetic-request-key' };
+  context.api = url => { if (url === '/api/records') { started.resolve(); return pending.promise; } return Promise.resolve({}); };
   context.refreshAfterCommit = async () => true;
   context.updateCreatePreview = () => {};
   context.openModal();
   run("state.form.domains = 'synthetic.example'; state.form.start_seq = 'test1'");
   const creating = run("doCreate({ domains: ['synthetic.example'], fp_prefix: 'test' })");
+  await started.promise;
   await run('lockSensitive()');
   run("state.form.domains = 'next-draft.example'; state.form.start_seq = 'next100'; state.picked.emails = new Set([7])");
   let opened = 0, closed = 0;
@@ -156,4 +159,15 @@ test('a completed creation cannot replace a newer dialog after sensitive lock', 
   assert.equal(run('state.form.domains'), 'next-draft.example');
   assert.equal(run('state.form.start_seq'), 'next100');
   assert.equal(run('state.picked.emails.has(7)'), true);
+});
+
+test('failed creation does not retain a serialized private draft after locking', async () => {
+  const { context, run } = harness();
+  context.api = async url => { if (url === '/api/records') throw new Error('response lost'); return {}; };
+  context.updateCreatePreview = () => {};
+  context.openModal();
+  run("state.form.id_card = 'SYNTHETIC-PRIVATE-CREATE'");
+  await run("doCreate({ domains: ['private.example'], id_card: state.form.id_card, fp_prefix: 'test' })");
+  await run('lockSensitive()');
+  assert.equal(run("JSON.stringify(state).includes('SYNTHETIC-PRIVATE-CREATE')"), false);
 });

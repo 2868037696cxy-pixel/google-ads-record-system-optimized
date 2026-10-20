@@ -1006,83 +1006,6 @@ tbody td:hover:not(:has(button, select, input, a)) { color: var(--accent-strong)
 
 .grow { flex: 1; }
 
-/* ---- 导入弹窗 ---- */
-.format-hint {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.75;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--accent-line);
-  border-radius: var(--r-sm);
-  padding: 11px 14px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
-.parse-result {
-  font-size: 12.5px;
-  color: var(--muted);
-  min-height: 20px;
-}
-
-.parse-result b { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
-
-.parse-preview-list {
-  margin: 8px 0 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.parse-preview-list li {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  padding: 5px 10px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ---- 智能导入 ---- */
-.auto-hint {
-  font-size: 12px;
-  line-height: 1.75;
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-left: 2px solid var(--accent-line);
-  border-radius: var(--r-sm);
-  padding: 10px 14px;
-}
-
-.auto-hint b { color: var(--accent-strong); font-weight: 600; }
-
-.auto-toolbar { display: flex; align-items: center; gap: 10px; }
-
-.auto-section { margin-top: 2px; }
-
-.auto-sec-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--text);
-  margin-bottom: 2px;
-}
-
-.auto-sec-head .ico { color: var(--accent-strong); }
-
-.auto-sec-head b { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
-
 /* ---- 选择器 ---- */
 .picker-list {
   display: flex;
@@ -1304,26 +1227,6 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
   box-shadow: 0 -14px 22px -16px rgba(0, 0, 0, 0.85);
 }
 .modal-overlay { background: rgba(5, 7, 11, 0.86); backdrop-filter: blur(2px); }
-
-/* 格式说明：规则用正文字体，示例单独分块并与规则之间加虚线分隔 */
-.format-hint {
-  font-family: var(--sans);
-  font-size: 12.5px;
-  white-space: normal;
-  padding: 12px 14px;
-}
-.format-rule { margin: 0; line-height: 1.7; color: var(--text); }
-.format-sample {
-  margin: 9px 0 0;
-  padding-top: 9px;
-  border-top: 1px dashed var(--line);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.85;
-  color: var(--muted);
-  white-space: pre-wrap;
-  word-break: break-all;
-}
 
 /* ===== Team Console UX · operations overview and refined hierarchy ===== */
 .overview-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:18px}

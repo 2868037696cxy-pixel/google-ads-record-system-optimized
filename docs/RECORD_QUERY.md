@@ -34,4 +34,4 @@
 
 `tests/record-query.test.js` 使用实际控制器和受控请求，覆盖旧成功/失败、防抖取消、重试、分页纠正及其取消、全部参数/锁定代次和无效总数。`tests/workbench-lifecycle.test.js` 执行生产脚本与实际事件处理，复现组词时旧请求晚到。`test:ux` 在真实 Electron 中验证事件序列、请求次数、焦点、筛选按下尺寸和截图，并保留已有跨页选择、导出、锁定与布局回归。
 
-合成 CompositionEvent 验证应用事件处理，不代替 Windows 实体输入法与屏幕阅读器验收。创建草稿、资源导入和其他 legacy 样式仍待迁移；本模块不代表整个 app.js 已拆分完成。
+合成 CompositionEvent 验证应用事件处理，不代替 Windows 实体输入法与屏幕阅读器验收。创建规则/提交与资源导入已另行迁移，见 `CREATE_AND_IMPORT.md`；创建核对视图、其他业务视图和剩余 legacy 样式仍需后续分批处理。

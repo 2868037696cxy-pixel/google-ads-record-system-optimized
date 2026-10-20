@@ -238,6 +238,56 @@ const { DatabaseSync } = require('node:sqlite');
     await page.evaluate(() => { download = originalDownload; });
     console.log('PASS cancelled sensitive exports cannot download late responses');
 
+    await nav('emails');
+    await page.locator('[data-action="open-import"][data-kind="emails"]').click();
+    let parseAttempts = 0;
+    await page.route('**/api/parse/emails', async route => {
+      if (route.request().postDataJSON().text.startsWith('retry-flow@') && ++parseAttempts === 1) {
+        await route.fulfill({ status: 503, json: { error: '临时识别失败，请重试' } });
+      } else await route.continue();
+    });
+    await page.locator('#import-text').fill('retry-flow@example.test|SYNTHETIC-IMPORT-SECRET');
+    await page.locator('.parse-retry').waitFor();
+    assert.equal(await page.locator('#import-ok').isDisabled(), true);
+    assert.equal(await page.locator('#import-text').getAttribute('aria-invalid'), 'true');
+    await shot('import-parse-error');
+    await page.locator('.parse-retry').click();
+    await page.waitForFunction(() => !document.getElementById('import-ok').disabled);
+    assert.equal(parseAttempts, 2);
+    assert.match(await page.locator('#parse-result').innerText(), /retry-flow@example.test/);
+    assert.doesNotMatch(await page.locator('#parse-result').innerText(), /SYNTHETIC-IMPORT-SECRET/);
+    const closedRequests = [];
+    const observeClosed = request => { if (request.url().includes('/api/parse/emails') && request.postDataJSON().text.startsWith('closed-flow@')) closedRequests.push(request.url()); };
+    page.on('request', observeClosed);
+    await page.locator('#import-text').fill('closed-flow@example.test|not-sent');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    assert.deepEqual(closedRequests, [], 'closing cancels the pending preview before any parse request');
+    page.off('request', observeClosed);
+    await page.unroute('**/api/parse/emails');
+
+    await page.locator('[data-action="open-auto-import"]').click();
+    await page.evaluate(() => {
+      globalThis.originalFileReader = FileReader; globalThis.importReaders = [];
+      globalThis.FileReader = class {
+        readAsText(file) { this.file = file; this.lateError = this.onerror; importReaders.push(this); }
+        abort() { this.aborted = true; }
+      };
+    });
+    await page.locator('#auto-file').setInputFiles({ name: 'old.txt', mimeType: 'text/plain', buffer: Buffer.from('old') });
+    await page.locator('#auto-file').setInputFiles({ name: 'new.txt', mimeType: 'text/plain', buffer: Buffer.from('new') });
+    await page.evaluate(() => { const reader = importReaders[1]; reader.result = 'new-file-flow@example.test|SYNTHETIC-FILE-SECRET'; reader.onload(); });
+    await page.waitForFunction(() => !document.getElementById('auto-ok').disabled);
+    await page.evaluate(() => importReaders[0].lateError());
+    assert.match(await page.locator('#auto-result').innerText(), /new-file-flow@example.test/);
+    assert.doesNotMatch(await page.locator('#auto-result').innerText(), /失败|SYNTHETIC-FILE-SECRET/);
+    assert.equal(await page.locator('#auto-ok').isEnabled(), true);
+    assert.equal(await page.locator('#auto-file').inputValue(), '', 'same-file re-selection remains available');
+    await shot('import-file-ownership');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => { FileReader = originalFileReader; delete globalThis.originalFileReader; delete globalThis.importReaders; });
+    console.log('PASS import parse retry, redacted preview, close-before-debounce and old-file error ownership');
+
     await nav('create');
     await page.locator('#f-domains').fill('https://same.example/path\nSAME.EXAMPLE');
     await page.locator('[data-action="create"]').click();
@@ -261,10 +311,29 @@ const { DatabaseSync } = require('node:sqlite');
     assert.equal(await page.locator('#f-domains').inputValue(), 'https://new-ux.example/path');
     let creates = 0;
     page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/records') ++creates; });
+    let loseCreationResponse = true;
+    const creationKeys = [];
+    await page.route('**/api/records', async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      creationKeys.push(route.request().headers()['idempotency-key']);
+      if (loseCreationResponse) {
+        loseCreationResponse = false;
+        const committed = await route.fetch();
+        assert.equal(committed.status(), 200, 'the first request really commits before its response is lost');
+        await route.fulfill({ status: 503, json: { error: '记录已提交，响应丢失，请原样重试核对' } });
+      } else await route.continue();
+    });
     await page.locator('[data-action="create"]').click();
     await page.locator('#create-confirm').evaluate(button => { button.click(); button.click(); });
-    await page.getByRole('heading', { name: '已创建 1 条记录', exact: true }).waitFor();
+    await page.locator('#create-submit-error').waitFor();
     assert.equal(creates, 1);
+    assert.equal(await page.evaluate(() => Object.hasOwn(state, 'submission')), false, 'no full private draft is cached in global state');
+    await shot('create-idempotent-retry');
+    await page.locator('#create-confirm').click();
+    await page.getByRole('heading', { name: '已创建 1 条记录', exact: true }).waitFor();
+    assert.equal(creates, 2);
+    assert.equal(creationKeys[0], creationKeys[1]);
+    await page.unroute('**/api/records');
     assert.equal(await page.evaluate(() => state.recordStats.total), 124);
     await page.locator('[data-action="created-records"]').click();
     await ready();
@@ -467,6 +536,15 @@ const { DatabaseSync } = require('node:sqlite');
       const visible = await page.locator('.modal-foot').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight + 1);
       assert.equal(visible, true, `dialog footer remains reachable at ${zoom * 100}% Electron zoom`);
       await shot(`dialog-zoom-${zoom * 100}`);
+      await page.keyboard.press('Escape');
+      await nav('emails');
+      await page.locator('[data-action="open-auto-import"]').click();
+      await page.locator('#auto-text').fill('long-resource-desktop-layout@example.test|SYNTHETIC-INPUT');
+      await page.waitForFunction(() => !document.getElementById('auto-ok').disabled);
+      assert.equal(await page.locator('.modal-foot').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight + 1), true, 'import footer remains reachable when enlarged');
+      assert.equal(await page.locator('#auto-result li').evaluate(element => element.scrollWidth <= element.clientWidth + 1), true, 'resource preview wraps instead of clipping');
+      await page.locator('#auto-result').scrollIntoViewIfNeeded();
+      await shot(`import-zoom-${zoom * 100}`);
       await page.keyboard.press('Escape');
     }
     await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));

@@ -129,24 +129,8 @@ function poolCount(kind, status = '未使用') {
   return state.pools[kind].filter((x) => x.status === status).length;
 }
 
-// 解析「起始编号」输入：支持纯数字（如 6）或完整指纹名（如 10.8ads6）
-// 纯数字 → 前缀取今日日期 + "ads"，序号为该数字
-// 完整指纹名 → 提取末尾数字为序号，前面的部分为前缀
 function parseFpStart(input) {
-  const raw = String(input || '').trim();
-  const dk = todayKey();
-  const defaultPrefix = `${dk}ads`;
-  if (!raw) return { prefix: defaultPrefix, seq: state.next?.seq || 1, display: defaultPrefix + (state.next?.seq || 1) };
-  if (/^\d+$/.test(raw)) {
-    const seq = parseInt(raw, 10);
-    return { prefix: defaultPrefix, seq, display: defaultPrefix + seq };
-  }
-  const m = raw.match(/^(.+?)(\d+)$/);
-  if (m) {
-    return { prefix: m[1], seq: parseInt(m[2], 10), display: raw };
-  }
-  // 没有数字结尾，当作纯前缀，序号自动取下一个
-  return { prefix: raw, seq: state.next?.seq || 1, display: raw + (state.next?.seq || 1) };
+  return WorkbenchRecordCreate.parseStart(input, { dateKey: todayKey(), nextSeq: state.next?.seq || 1 });
 }
 
 /* ============ 状态 ============ */
@@ -177,7 +161,6 @@ const state = {
   reveal: false,
   unlockedUntil: 0,
   sensitiveEpoch: 0,
-  submission: null,
   sel: new Set(),
   q: '',
   rstatus: '全部',
@@ -830,27 +813,12 @@ function renderRecordsTable(list) {
 }
 
 function createDraft() {
-  const domains = state.form.domains.split(/\r?\n/).map(value => value.trim().replace(/^https?:\/\//i, '').replace(/\/.*$/, '').toLowerCase()).filter(Boolean);
-  const fp = parseFpStart(state.form.start_seq);
-  let error = '', field = '';
-  if (!domains.length) { error = '请至少填写一个域名。'; field = 'f-domains'; }
-  else if (domains.length > 500) { error = '单次最多创建 500 条记录，请减少域名数量。'; field = 'f-domains'; }
-  else if (new Set(domains).size !== domains.length) { error = '域名存在重复（大小写、网址前缀和路径会先统一处理），请核对后再创建。'; field = 'f-domains'; }
-  else if (!Number.isSafeInteger(fp.seq) || fp.seq < 1 || !Number.isSafeInteger(fp.seq + domains.length)) { error = '指纹起始编号必须是有效的正整数。'; field = 'f-start'; }
-  for (const kind of ['emails', 'cards', 'licenses', ...(state.form.proxy_mode === 'auto' ? ['proxies'] : [])]) {
-    if (!error && state.pools[kind].length && poolCount(kind) < domains.length) {
-      error = `${KINDS.find(item => item.key === kind).label}可用资源不足：需要 ${domains.length} 条，当前可用 ${poolCount(kind)} 条。请先补充资源或减少创建数量。`;
-    }
-  }
-  return { error, field, fp, body: {
-    country: state.form.country, product: state.form.product, domains,
-    start_seq: fp.seq, fp_prefix: fp.prefix, date_key: todayKey(),
-    ip_reg_time: state.form.ip_reg_time, id_card: state.form.id_card,
-    proxy_mode: state.form.proxy_mode,
-    proxy_id: state.form.proxy_mode === 'shared' && state.form.proxy_id ? Number(state.form.proxy_id) : undefined,
-    email_ids: [...state.picked.emails].map(Number), card_ids: [...state.picked.cards].map(Number), license_ids: [...state.picked.licenses].map(Number),
-  } };
+  return WorkbenchRecordCreate.draft({
+    form: state.form, picked: state.picked, dateKey: todayKey(), nextSeq: state.next?.seq || 1,
+    resources: Object.fromEntries(KINDS.map(kind => [kind.key, { label: kind.label, total: state.pools[kind.key].length, available: poolCount(kind.key) }])),
+  });
 }
+const createSubmitter = WorkbenchRecordCreate.createSubmitter({ request: (path, options) => api(path, options) });
 
 function showCreateValidation(draft, focus = false) {
   for (const id of ['f-domains', 'f-start']) document.getElementById(id)?.removeAttribute('aria-invalid');
@@ -894,16 +862,16 @@ async function doCreate(body = createDraft().body) {
   state.creating = true;
   const confirm = document.getElementById('create-confirm');
   const submittedInput = { domains: state.form.domains, start: state.form.start_seq };
+  const previousError = confirm?.closest('.modal')?.querySelector('#create-submit-error');
+  if (previousError) { previousError.hidden = true; previousError.textContent = ''; }
   if (confirm) WorkbenchUI.dialog.pending(confirm, true, '正在创建…');
   const btn = document.querySelector('[data-action="create"]');
   const oldText = btn?.textContent;
   if (btn) { btn.disabled = true; btn.classList.add('btn-loading'); btn.textContent = '创建中'; }
   const fp = { prefix: body.fp_prefix };
   try {
-    const encoded=JSON.stringify(body);
-    if(state.submission?.body !== encoded) state.submission={body:encoded,key:crypto.randomUUID()};
-    const res = await api('/api/records', { method: 'POST', headers:{'idempotency-key':state.submission.key}, body });
-    state.submission=null;
+    const res = await createSubmitter.submit(body, { signal: WorkbenchUI.dialog.signal() });
+    if (!res) return;
     const list = res.created;
     toast(`✅ 已创建 ${list.length} 条记录：${list[0].fingerprint}${list.length > 1 ? ' ~ ' + list[list.length - 1].fingerprint : ''}`);
     if (confirm?.isConnected) state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
@@ -916,7 +884,7 @@ async function doCreate(body = createDraft().body) {
       openModal(`<div class="modal-head"><h3>已创建 ${list.length} 条记录</h3><button class="modal-close" data-action="close-modal">✕</button></div><div class="modal-body"><p>指纹范围：<b class="mono">${esc(list[0].fingerprint)}${list.length > 1 ? ' ～ ' + esc(list[list.length - 1].fingerprint) : ''}</b></p><p>${state.syncError ? '记录已保存。列表需要重新连接后更新，请勿重复创建。' : '记录与资源分配已保存，可以前往「我的记录」查看。'}</p></div><div class="modal-foot"><button class="btn btn-ghost" data-action="close-modal">继续新建</button><span class="grow"></span><button class="btn btn-primary" data-action="created-records">查看我的记录</button></div>`);
     }
   } catch (e) {
-    toast(e.message, 'error');
+    if (e.name !== 'AbortError') toast(e.message, 'error');
     const message = confirm?.closest('.modal')?.querySelector('#create-submit-error');
     if (message) { message.hidden = false; message.textContent = e.message; }
     if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
@@ -1065,200 +1033,15 @@ function renderPoolTableInto() {
 
 /* ============ 导入弹窗 ============ */
 
-function bindImportPreview(textarea, button, resultBox, route, onResult) {
-  let revision = 0;
-  let timer;
-  let controller;
-  const parse = async () => {
-    const current = ++revision;
-    controller?.abort();
-    controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]);
-    const text = textarea.value;
-    button.disabled = true;
-    if (!text.trim()) { resultBox.textContent = '等待粘贴内容…'; return; }
-    resultBox.textContent = '正在识别最新内容…';
-    try {
-      const result = await api(route, { method: 'POST', body: { text }, signal });
-      if (current !== revision || !textarea.isConnected || textarea.value !== text) return;
-      onResult(result);
-    } catch (error) {
-      if (current === revision && textarea.isConnected && error.name !== 'AbortError') resultBox.textContent = error.message;
-    }
-  };
-  const invalidate = () => {
-    ++revision;
-    controller?.abort();
-    button.disabled = true;
-    resultBox.textContent = textarea.value.trim() ? '正在识别最新内容…' : '等待粘贴内容…';
-    clearTimeout(timer);
-  };
-  textarea.addEventListener('input', () => {
-    invalidate();
-    timer = setTimeout(parse, 350);
-  });
-  return { parse, invalidate };
-}
-
-async function openImportModal(kind) {
-  if (kind === 'licenses') return openLicenseImport();
-  const conf = KINDS.find((k) => k.key === kind);
-  openModal(`
-    <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
-    <div class="modal-body">
-      <div class="format-hint">
-        <p class="format-rule">${esc(POOL_FORMAT[kind].rule)}</p>
-        ${POOL_FORMAT[kind].sample ? `<pre class="format-sample">${esc(POOL_FORMAT[kind].sample)}</pre>` : ''}
-      </div>
-      <label for="import-text">粘贴资源文本</label><textarea id="import-text" aria-describedby="parse-result" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
-      <div class="parse-result" id="parse-result">等待粘贴内容…</div>
-    </div>
-    <div class="modal-foot">
-      <span class="grow"></span>
-      <button class="btn btn-ghost" data-action="close-modal">取消</button>
-      <button class="btn btn-primary" id="import-ok" disabled>确认导入</button>
-    </div>`, { large: true });
-
-  const ta = document.getElementById('import-text');
-  const resultBox = document.getElementById('parse-result');
-  const okBtn = document.getElementById('import-ok');
-  let parsed = [];
-  let saving = false;
-  bindImportPreview(ta, okBtn, resultBox, `/api/parse/${kind}`, (res) => {
-    parsed = res.items || [];
-    if (!parsed.length) {
-      resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
-      okBtn.disabled = true;
-    } else {
-      const preview = parsed
-        .slice(0, 5)
-        .map((it) => `<li>${esc(Object.entries(it).filter(([k,v])=>v&&!['pass','fakey'].includes(k)).map(([,v])=>v).join(' · '))}</li>`)
-        .join('');
-      resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
-      okBtn.disabled = false;
-    }
-  });
-
-  okBtn.onclick = async () => {
-    if (saving || okBtn.disabled || !parsed.length) return;
-    saving = true; WorkbenchUI.dialog.pending(okBtn, true, '正在导入…'); ta.readOnly = true;
-    try {
-      const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
-      toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
-      if (ta.isConnected) closeModal();
-      await refreshAfterCommit('已保存，但列表刷新失败；请点击重新连接');
-    } catch (e) {
-      WorkbenchUI.dialog.error(okBtn, e.message);
-    } finally {
-      saving = false; WorkbenchUI.dialog.pending(okBtn, false); ta.readOnly = false;
-    }
-  };
-
-  ta.focus();
-}
-
-/* ============ 智能导入（自动识别邮箱 / 代理） ============ */
-
-function openAutoImport() {
-  openModal(`
-    <div class="modal-head"><h3>智能导入 · 邮箱 + 代理</h3><button class="modal-close" data-action="close-modal">✕</button></div>
-    <div class="modal-body">
-      <div class="auto-hint">粘贴任意格式，自动识别并拆分（可混合）：<br>
-        ① <b>AdsPower 导入 TXT</b>（key=value，星号线分块）<br>
-        ② 邮箱：<span class="mono">账号——密码——2FA</span>，分隔符支持 —、|、Tab、冒号、分号、逗号、空格，或「邮箱：xxx 密码：yyy 2FA：zzz」标签形式（顺序任意）<br>
-        ③ 一行代理：<span class="mono">socks5://user:pass@host:port</span>、<span class="mono">user:pass@host:port</span>、<span class="mono">host:port:user:pass</span>、<span class="mono">user:pass:host:port</span>、<span class="mono">host,port,user,pass</span> 等<br>
-        ④ 代理商多行文本块（账号/密码/主机/端口/国家等标签行，中英文均可）<br>
-        识别后邮箱进「邮箱库」、代理进「代理库」，重复自动跳过。</div>
-      <div class="auto-toolbar">
-        <button type="button" class="btn btn-ghost btn-sm" id="auto-file-btn">选择 TXT 文件</button>
-        <input type="file" id="auto-file" accept=".txt,.csv,text/plain" hidden>
-        <span class="mini faint" id="auto-file-name"></span>
-      </div>
-      <label for="auto-text">粘贴需要识别的文本</label><textarea id="auto-text" aria-describedby="auto-result" class="mono" rows="9" style="width:100%" placeholder="粘贴 AdsPower TXT / 邮箱 / 代理，任意混合…"></textarea>
-      <div class="parse-result" id="auto-result">等待粘贴内容…</div>
-    </div>
-    <div class="modal-foot">
-      <span class="grow"></span>
-      <button class="btn btn-ghost" data-action="close-modal">取消</button>
-      <button class="btn btn-primary" id="auto-ok" disabled>确认导入</button>
-    </div>`, { large: true });
-
-  const ta = document.getElementById('auto-text');
-  const resultBox = document.getElementById('auto-result');
-  const okBtn = document.getElementById('auto-ok');
-  const fileInput = document.getElementById('auto-file');
-  const fileName = document.getElementById('auto-file-name');
-  let parsed = { emails: [], proxies: [] };
-  let saving = false;
-
-  const renderPreview = () => {
-    const { emails, proxies } = parsed;
-    if (!emails.length && !proxies.length) {
-      resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
-      okBtn.disabled = true;
-      okBtn.textContent = '确认导入';
-      return;
-    }
-    const sec = (title, ico, items, fmt) => (!items.length ? '' : `
-      <div class="auto-section">
-        <div class="auto-sec-head"><span class="ico">${ico}</span>${title} <b>${items.length}</b> 条${items.length > 5 ? '<span class="mini faint">（预览前 5 条）</span>' : ''}</div>
-        <ul class="parse-preview-list">${items.slice(0, 5).map((it) => `<li>${esc(fmt(it))}</li>`).join('')}</ul>
-      </div>`);
-    resultBox.innerHTML =
-      sec('邮箱', '✉', emails, (e) => [e.user,e.pass?'密码已识别':'',e.fakey?'2FA已识别':''].filter(Boolean).join(' · ')) +
-      sec('代理', '⇅', proxies, (p) => [p.host ? `${p.host}:${p.port}` : '', p.user, p.sn, p.ip].filter(Boolean).join(' · '));
-    okBtn.disabled = false;
-    okBtn.textContent = `确认导入（邮箱 ${emails.length} · 代理 ${proxies.length}）`;
-  };
-
-  const preview = bindImportPreview(ta, okBtn, resultBox, '/api/parse/auto', (result) => {
-    parsed = result;
-    renderPreview();
-  });
-
-  document.getElementById('auto-file-btn').onclick = () => fileInput.click();
-  fileInput.addEventListener('change', () => {
-    const f = fileInput.files[0];
-    if (!f) return;
-    preview.invalidate();
-    if (f.size > 10 * 1024 * 1024) { resultBox.textContent = '文本文件不能超过 10 MB'; return; }
-    okBtn.disabled = true;
-    fileName.textContent = f.name;
-    const previousText = ta.value;
-    const rd = new FileReader();
-    rd.onload = () => {
-      if (!ta.isConnected || fileInput.files[0] !== f || ta.value !== previousText) return;
-      ta.value = String(rd.result || '');
-      preview.parse();
-    };
-    rd.onerror = () => { if (ta.isConnected) resultBox.textContent = '文件读取失败，请重新选择'; };
-    rd.readAsText(f);
-  });
-
-  okBtn.onclick = async () => {
-    if (saving || okBtn.disabled || (!parsed.emails.length && !parsed.proxies.length)) return;
-    saving = true; ta.readOnly = true; fileInput.disabled = true;
-    document.getElementById('auto-file-btn').disabled = true;
-    WorkbenchUI.dialog.pending(okBtn, true, '正在导入…');
-    try {
-      const res = await api('/api/import/auto', { method: 'POST', body: parsed });
-      const parts = [];
-      if (parsed.emails.length) parts.push(`邮箱 +${res.emails.added}${dupNote(res.emails)}`);
-      if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${dupNote(res.proxies)}`);
-      toast(`✅ 导入成功：${parts.join('，')}`);
-      if (ta.isConnected) closeModal();
-      await refreshAfterCommit('已保存，但列表刷新失败；请点击重新连接');
-    } catch (e) {
-      WorkbenchUI.dialog.error(okBtn, e.message);
-    } finally {
-      saving = false; WorkbenchUI.dialog.pending(okBtn, false); ta.readOnly = false; fileInput.disabled = false;
-      const fileButton = document.getElementById('auto-file-btn');
-      if (ta.isConnected && fileButton) fileButton.disabled = false;
-    }
-  };
-
-  ta.focus();
-}
+const resourceImports = WorkbenchResourceImport.create({
+  api: (path, options) => api(path, options), ui: WorkbenchUI,
+  openModal: (...args) => openModal(...args), closeModal: () => closeModal(), esc,
+  kinds: KINDS, formats: POOL_FORMAT, toast, dupNote,
+  refreshAfterCommit: (...args) => refreshAfterCommit(...args),
+  openLicenseImport: () => openLicenseImport(),
+});
+function openImportModal(kind) { return resourceImports.open(kind); }
+function openAutoImport() { return resourceImports.openAuto(); }
 
 /* ============ 资源选择弹窗 ============ */
 
