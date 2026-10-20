@@ -19,6 +19,8 @@
 
 `tests/workbench-lifecycle.test.js` 使用实际生产函数和受控 I/O 复现异步时序；不是只检查源码是否包含某个字符串。`test:ux` 验证真实 Electron 的 DOM、焦点、禁用态、取消与截图；`test:desktop:remote` 验证合成 HTTPS 服务上的加密备份恢复。以对应提交的 CI 结果判定通过。
 
+旧 round73 回归在 Windows 候选中出现未能结束的运行；补齐测试超时与 Electron 收尾的失败退出，保留全部业务断言。设置 `process.exitCode` 加终止子进程不足以保证 Playwright 传输挂起时退出；超时现在明确失败并结束隔离测试进程，不据此推断真实产品已通过关闭验收。
+
 ## 仍需后续工作
 
 | 优先级 | 剩余不足 | 推进边界 |

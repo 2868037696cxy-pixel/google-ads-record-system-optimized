@@ -8,10 +8,12 @@ const {certificate}=require('../tests/pdf-fixture');
 (async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'ads-round73-ui-'));
   let electron,page;
+  const stopIsolatedTest=()=>{
+    try{electron?.process()?.kill();}finally{process.exit(1);}
+  };
   const watchdog=setTimeout(()=>{
     console.error('FAIL round73 watchdog: test exceeded 120 seconds; terminating the isolated test application');
-    electron?.process()?.kill();
-    process.exitCode=1;
+    stopIsolatedTest();
   },120000);
   watchdog.unref();
   try {
@@ -124,7 +126,7 @@ const {certificate}=require('../tests/pdf-fixture');
     clearTimeout(watchdog);
     if(electron){
       // A failed renderer/request must not keep CI waiting indefinitely in app.quit.
-      const cleanup=setTimeout(()=>{console.error('round73: forcing isolated Electron cleanup');electron.process()?.kill();},5000);
+      const cleanup=setTimeout(()=>{console.error('FAIL round73: isolated Electron did not shut down within 5 seconds');stopIsolatedTest();},5000);
       try{await electron.close();}catch{/* The watchdog may already have stopped it. */}finally{clearTimeout(cleanup);}
     }
     fs.rmSync(directory,{recursive:true,force:true});
