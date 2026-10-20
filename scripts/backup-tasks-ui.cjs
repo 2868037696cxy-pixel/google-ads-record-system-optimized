@@ -28,6 +28,7 @@ const largePdf=require('../tests/large-pdf-fixture');
       const bridge=await page.evaluate(async()=>({url:location.href,type:typeof window.workbenchShell,retry:typeof document.getElementById('retry').onclick,info:window.workbenchShell?await window.workbenchShell.info().catch(error=>({error:error.message})):null}));
       console.log('PACKAGED BRIDGE:',JSON.stringify(bridge));
       assert.equal(bridge.info?.origin,fixture.remote,'offline bridge must identify its configured isolated server');
+      await shot('offline');
       // Test-driver trust is limited to this exact origin and ephemeral cert.
       // https://www.electronjs.org/docs/latest/api/app#event-certificate-error
       await electron.evaluate(({app},expected)=>{

@@ -3,17 +3,15 @@ const {app,BrowserWindow,Menu,dialog,ipcMain,session,shell,screen}=require('elec
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
-const {pathToFileURL}=require('node:url');
+const trustedSender=require('./trusted-sender');
 const {resolveConfiguration}=require('./config');
 app.setName('AdsWorkbench');
 const dataDirectory=process.env.ADS_DESKTOP_DATA_DIR||path.join(app.getPath('appData'),'AdsWorkbench');
 app.setPath('userData',dataDirectory);
 let window,service,origin,configuration,quitting=false,busy=false;
 const offlineFile=path.join(__dirname,'offline.html');
-const offlineUrl=pathToFileURL(offlineFile).href;
 function validSender(event,allowOffline=false) {
-  if(!window || event.sender!==window.webContents || event.senderFrame!==window.webContents.mainFrame) return false;
-  try {return new URL(event.senderFrame.url).origin===origin || (allowOffline && event.senderFrame.url===offlineUrl);}catch{return false;}
+  return trustedSender(event,{webContents:window?.webContents,origin,offlineFile,allowOffline});
 }
 function nativeAction(fn) {
   return async()=>{

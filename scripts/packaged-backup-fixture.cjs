@@ -10,7 +10,7 @@ const hashFile=async filename=>{const hash=crypto.createHash('sha256');for await
 module.exports=async function packagedFixture(root,executable){
   if(process.platform!=='win32'||process.env.GITHUB_ACTIONS!=='true')throw new Error('Packaged HTTPS fixture runs only on a disposable Windows Actions runner');
   const originalAsar=path.join(path.dirname(executable),'resources','app.asar');
-  const originalHash=await hashFile(originalAsar);
+  const originalHash=await hashFile(originalAsar),originalExecutableHash=await hashFile(executable);
   const certFile=path.join(root,'localhost-cert.pem'),keyFile=path.join(root,'localhost-key.pem');
   const openssl=['openssl','C:\\Program Files\\Git\\usr\\bin\\openssl.exe'].find(candidate=>spawnSync(candidate,['version'],{stdio:'ignore',timeout:5000}).status===0);
   if(!openssl)throw new Error('OpenSSL is required for an ephemeral test certificate');
@@ -24,7 +24,8 @@ module.exports=async function packagedFixture(root,executable){
     finally{
       try{console.log('PACKAGED FIXTURE: close backend');if(service)await service.close();}
       finally{
-        assert.equal(await hashFile(originalAsar),originalHash,'the shipped candidate must remain byte-for-byte unchanged');
+        assert.equal(await hashFile(originalAsar),originalHash,'the shipped archive must remain byte-for-byte unchanged');
+        assert.equal(await hashFile(executable),originalExecutableHash,'the shipped executable must remain byte-for-byte unchanged');
       }
     }
   };
@@ -49,7 +50,21 @@ module.exports=async function packagedFixture(root,executable){
     const replacement=path.join(copy,'resources','fixture.asar');await asar.createPackage(unpacked,replacement);
     assert.equal(JSON.parse(asar.extractFile(replacement,'desktop/client-config.json').toString()).serverUrl,remote,'verify the private copy points to the isolated HTTPS service before launch');
     fs.renameSync(replacement,path.join(copy,'resources','app.asar'));
-    console.log('PACKAGED FIXTURE: ready');
+    // Repacking a private config changes the archive header hash. Keep the
+    // copy's embedded integrity resource consistent; never disable validation.
+    const {NtExecutable,NtExecutableResource}=require('resedit');
+    const copiedExecutable=path.join(copy,path.basename(executable));
+    const image=NtExecutable.from(fs.readFileSync(copiedExecutable));
+    const resources=NtExecutableResource.from(image);
+    const entry=resources.entries.find(item=>item.type==='INTEGRITY'&&item.id==='ELECTRONASAR');
+    assert.ok(entry,'packaged EXE contains its ASAR integrity resource');
+    const integrity=JSON.parse(Buffer.from(entry.bin).toString());
+    const item=integrity.find(item=>path.win32.normalize(item.file).toLowerCase()==='resources\\app.asar');
+    assert.ok(item,'packaged archive is covered by embedded integrity');
+    item.value=crypto.createHash('sha256').update(asar.getRawHeader(path.join(copy,'resources','app.asar')).headerString).digest('hex');
+    item.alg='SHA256';entry.bin=Buffer.from(JSON.stringify(integrity));
+    resources.outputResource(image);fs.writeFileSync(copiedExecutable,Buffer.from(image.generate()));
+    console.log('PACKAGED FIXTURE: private copy integrity refreshed; ready');
     return {executable:path.join(copy,path.basename(executable)),username,password,remote,fingerprint,close};
   }catch(error){await close();throw error;}
 };
