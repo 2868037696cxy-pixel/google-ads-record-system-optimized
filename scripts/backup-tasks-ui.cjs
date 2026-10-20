@@ -132,7 +132,7 @@ const largePdf=require('../tests/large-pdf-fixture');
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth+1),false);
       const counts=page.locator('.backup-count-wrap');
       if(await counts.evaluate(element=>element.scrollHeight>element.clientHeight+1)){
-        await counts.focus();await page.keyboard.press('End');assert.ok(await counts.evaluate(element=>element.scrollTop>0),'all counts remain reachable by keyboard at zoom');
+        await counts.focus();await page.keyboard.press('End');await page.waitForFunction(()=>document.querySelector('.backup-count-wrap').scrollTop>0);assert.ok(await counts.evaluate(element=>element.scrollTop>0),'all counts remain reachable by keyboard at zoom');
         await shot(`counts-bottom-zoom-${zoom*100}`);await page.keyboard.press('Home');
       }
       await shot(`review-zoom-${zoom*100}`);
