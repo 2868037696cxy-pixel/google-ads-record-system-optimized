@@ -310,30 +310,38 @@ const { DatabaseSync } = require('node:sqlite');
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#f-domains').inputValue(), 'https://new-ux.example/path');
     let creates = 0;
-    page.on('request', request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/records') ++creates; });
-    let loseCreationResponse = true;
     const creationKeys = [];
-    await page.route('**/api/records', async route => {
-      if (route.request().method() !== 'POST') return route.continue();
-      creationKeys.push(route.request().headers()['idempotency-key']);
-      if (loseCreationResponse) {
-        loseCreationResponse = false;
-        const committed = await route.fetch();
-        assert.equal(committed.status(), 200, 'the first request really commits before its response is lost');
-        await route.fulfill({ status: 503, json: { error: '记录已提交，响应丢失，请原样重试核对' } });
-      } else await route.continue();
+    page.on('request', request => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/records') {
+        ++creates; creationKeys.push(request.headers()['idempotency-key']);
+      }
+    });
+    // Use the actual renderer fetch so Electron still injects local authorization.
+    // Playwright route.fetch() runs outside that native request path.
+    await page.evaluate(() => {
+      globalThis.originalCreationAPI = api;
+      let loseResponse = true;
+      api = async (path, options) => {
+        const response = await originalCreationAPI(path, options);
+        if (path === '/api/records' && options?.method === 'POST' && loseResponse) {
+          loseResponse = false;
+          throw new Error('记录已提交，响应丢失，请原样重试核对');
+        }
+        return response;
+      };
     });
     await page.locator('[data-action="create"]').click();
     await page.locator('#create-confirm').evaluate(button => { button.click(); button.click(); });
     await page.locator('#create-submit-error').waitFor();
     assert.equal(creates, 1);
+    assert.equal(await page.evaluate(async () => (await originalCreationAPI('/api/records?limit=1&offset=0&q=new-ux.example')).total), 1, 'the first request really committed before the response was lost');
     assert.equal(await page.evaluate(() => Object.hasOwn(state, 'submission')), false, 'no full private draft is cached in global state');
     await shot('create-idempotent-retry');
     await page.locator('#create-confirm').click();
     await page.getByRole('heading', { name: '已创建 1 条记录', exact: true }).waitFor();
     assert.equal(creates, 2);
     assert.equal(creationKeys[0], creationKeys[1]);
-    await page.unroute('**/api/records');
+    await page.evaluate(() => { api = originalCreationAPI; delete globalThis.originalCreationAPI; });
     assert.equal(await page.evaluate(() => state.recordStats.total), 124);
     await page.locator('[data-action="created-records"]').click();
     await ready();
