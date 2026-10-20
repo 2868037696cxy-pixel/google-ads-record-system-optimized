@@ -16,7 +16,8 @@
     "test:f15": "node scripts/f15-ui.cjs",
     "test:design": "node scripts/design-foundations-ui.cjs",
     "test:ux": "node scripts/workbench-ux-ui.cjs",
-    "test:backup-ui": "node scripts/backup-tasks-ui.cjs"
+    "test:backup-ui": "node scripts/backup-tasks-ui.cjs",
+    "build:win:from-dir": "electron-builder --win --x64 --prepackaged dist/win-unpacked --publish never"
   },
   "engines": {
     "node": ">=22.16.0"

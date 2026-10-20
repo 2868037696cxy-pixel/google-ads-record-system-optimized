@@ -36,8 +36,8 @@ jobs:
         run: npm run test:f15
       - name: Verify desktop typography and layout foundations
         run: npm run test:design
-      - name: Build preconfigured Windows application without publishing
-        run: npm run build:win
+      - name: Prepare Windows application for packaged runtime verification
+        run: npm run build:dir
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Verify packaged Windows client backup and restore against isolated HTTPS
@@ -45,6 +45,10 @@ jobs:
         run: npm run test:backup-ui
         env:
           WORKBENCH_TEST_EXECUTABLE: ${{ github.workspace }}/dist/win-unpacked/AdsWorkbench.exe
+      - name: Assemble EXE and ZIP from the verified Windows application without publishing
+        run: npm run build:win:from-dir
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Hash installable artifacts
         shell: pwsh
         run: |
