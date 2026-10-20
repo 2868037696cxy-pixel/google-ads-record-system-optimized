@@ -130,6 +130,11 @@ const largePdf=require('../tests/large-pdf-fixture');
       await electron.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(value),zoom);
       assert.equal(await page.locator('.modal-foot').evaluate(element=>element.getBoundingClientRect().bottom<=innerHeight+1),true);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth+1),false);
+      const counts=page.locator('.backup-count-wrap');
+      if(await counts.evaluate(element=>element.scrollHeight>element.clientHeight+1)){
+        await counts.focus();await page.keyboard.press('End');assert.ok(await counts.evaluate(element=>element.scrollTop>0),'all counts remain reachable by keyboard at zoom');
+        await shot(`counts-bottom-zoom-${zoom*100}`);await page.keyboard.press('Home');
+      }
       await shot(`review-zoom-${zoom*100}`);
     }
     await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
