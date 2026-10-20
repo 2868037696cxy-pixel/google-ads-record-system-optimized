@@ -124,6 +124,7 @@ test('temporary task quota, expiry, source protection and cross-owner restore co
   service.db.prepare('UPDATE personal_backup_jobs SET expires_at=? WHERE id=?').run(Date.now()-1,exported.id);
   assert.equal((await f.api('GET',`/api/backup-jobs/${exported.id}`)).status,410);
   assert.equal((await f.api('GET','/api/backup-jobs')).data.jobs.some(job=>job.id===exported.id),false);
+  assert.equal((await f.api('POST','/api/backup-jobs',{kind:'restore',size:128,source_tag:'0'.repeat(64)})).status,409,'expired but not yet deleted files still consume reserved space');
   await f.api('POST','/api/security/lock',{});assert.equal((await f.api('POST',`/api/backup-jobs/${uploaded.id}/apply`,{revision:review.revision})).status,403);
 });
 

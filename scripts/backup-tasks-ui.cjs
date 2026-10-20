@@ -89,7 +89,7 @@ const largePdf=require('../tests/large-pdf-fixture');
     await page.locator('#package-consent').check();await page.locator('#package-apply').click();await page.locator('.dialog-error').waitFor();assert.match(await page.locator('.dialog-error').innerText(),/已变化/);assert.equal(await page.locator('#package-apply').isDisabled(),true);
     assert.equal(await page.evaluate(async()=>(await api('/api/records?limit=10&offset=0')).items[0].product),'LIVE CHANGE AFTER REVIEW');
     await shot('stale-protection');
-    await page.locator('#package-review-again').click();assert.equal(await page.locator('#package-consent').isChecked(),false);assert.equal(await page.locator('#package-apply').isDisabled(),true);
+    await page.locator('#package-review-again').click();await page.waitForFunction(()=>document.getElementById('package-consent')?.checked===false);assert.equal(await page.locator('#package-consent').isChecked(),false);assert.equal(await page.locator('#package-apply').isDisabled(),true);
     await page.locator('#package-consent').check();await page.locator('#package-apply').click();await page.getByText('恢复完成',{exact:true}).waitFor();
     assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?limit=10&offset=0');return r.items[0].product;}),'');
     const events=await page.evaluate(async()=>(await api('/api/audit')).events);assert.equal(events.filter(event=>event.action==='backup.package.restore').length,1);
@@ -114,7 +114,7 @@ const largePdf=require('../tests/large-pdf-fixture');
     await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,100)));assert.equal(await page.locator('.modal').count(),0);
     console.log('PASS lock invalidates late backup review response');
 
-    await page.locator('[data-action="backup-tasks"]').click();await page.locator('[data-package-action="review"]').click();
+    await page.locator('[data-action="backup-tasks"]').click();await page.locator('[data-package-action="review"]').click();await page.locator('#package-consent').waitFor();
     for(const zoom of [1,1.25,1.5]){
       await electron.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(value),zoom);
       assert.equal(await page.locator('.modal-foot').evaluate(element=>element.getBoundingClientRect().bottom<=innerHeight+1),true);
