@@ -110,6 +110,21 @@
   .dialog-error { margin-top: var(--ui-space-4); padding: var(--ui-space-3); border: 1px solid var(--red); border-radius: var(--r-sm); background: var(--danger-dim); }
   .restore-confirm { display: flex; align-items: flex-start; gap: var(--ui-space-3); margin-top: var(--ui-space-4); font-size: var(--font-label); line-height: var(--line-body); }
   .restore-confirm input { flex: none; margin-top: 3px; }
+  .integrity-record { margin-top: var(--ui-space-4); border: 1px solid var(--line-strong); border-radius: var(--r-md); overflow: hidden; }
+  .integrity-heading { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: var(--ui-space-3); padding: var(--ui-space-4); background: var(--surface-2); }
+  .integrity-heading > div { min-width: 0; flex: 1; }
+  .integrity-heading p { margin: 4px 0 0; color: var(--muted); font-size: var(--font-label); }
+  .integrity-heading > button { flex: none; }
+  .integrity-issue { padding: var(--ui-space-4); border-top: 1px solid var(--line); }
+  .integrity-issue > p { margin: var(--ui-space-2) 0; }
+  .integrity-issue > button { margin-top: var(--ui-space-3); }
+  .integrity-diff { width: 100%; table-layout: fixed; border-collapse: collapse; margin-block: var(--ui-space-3); }
+  .integrity-diff th, .integrity-diff td { padding: var(--ui-space-3); border: 1px solid var(--line); white-space: normal; overflow-wrap: anywhere; font-size: var(--font-label); text-align: left; }
+  .integrity-diff thead th { background: var(--surface-table-head); color: var(--muted); }
+  .integrity-diff th:first-child { width: 24%; }
+  .integrity-summary, .integrity-loading { margin: 0; color: var(--muted); line-height: var(--line-body); }
+  #integrity-range { font-size: var(--font-label); color: var(--muted); text-align: right; }
+  .integrity-error { padding: var(--ui-space-4); background: var(--warning-dim); border-radius: var(--r-sm); }
   .modal[data-submitting] [data-action="close-modal"] { pointer-events: none; opacity: .5; }
   .empty { gap: var(--ui-space-3); }
   .empty-ico .ui-icon { width: 28px; height: 28px; }

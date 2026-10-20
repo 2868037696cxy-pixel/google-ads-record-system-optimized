@@ -570,6 +570,10 @@ function renderSettings() {
         ${local ? '<div class="settings-row"><div><b>本机数据目录</b><p>查看桌面程序保存的数据文件。</p></div><button class="btn btn-ghost" data-action="desktop-data">打开目录</button></div>' : ''}
         <div class="settings-row settings-danger"><div><b>从备份恢复</b><p>会替换当前账号的数据。请先导出当前备份，再核对恢复内容。</p></div><button class="btn btn-danger" data-action="${local ? 'desktop' : 'web'}-restore">恢复备份</button></div>
       </div></section>
+      <section class="panel"><div class="panel-head"><h2 class="panel-title">数据一致性</h2></div><div class="panel-body settings-stack">
+        <div class="settings-row"><div><b>记录关联检查</b><p>逐批检查历史关联、字段差异和重复占用，核对后逐项处理。</p></div><button class="btn btn-ghost" data-action="check-integrity">检查本人数据</button></div>
+        <p class="settings-hint">检查不会修改数据；修复需临时授权、核对差异并确认。历史归属不明确时由你重新选择资源。</p>
+      </div></section>
       <section class="panel"><div class="panel-head"><h2 class="panel-title">账号安全</h2></div><div class="panel-body settings-stack">
         <div class="settings-row"><div><b>我的安全操作记录</b><p>查看本人最近的解锁、导出与数据操作。</p></div><button class="btn btn-ghost" data-action="my-audit">查看记录</button></div>
         ${local ? '<p class="settings-hint">敏感信息通过左侧入口临时显示，离开窗口或授权过期后自动隐藏。</p>' : '<div class="settings-row"><div><b>登录密码</b><p>修改后所有设备需要重新登录。</p></div><button class="btn btn-ghost" data-action="change-password">修改密码</button></div>'}
@@ -1692,6 +1696,8 @@ document.addEventListener('click', async (e) => {
         break;
       case 'my-audit':
         await showMyAudit();break;
+      case 'check-integrity':
+        RecordIntegrity.open();break;
       case 'change-password':
         showChangePassword();break;
       case 'duplicate-audit':

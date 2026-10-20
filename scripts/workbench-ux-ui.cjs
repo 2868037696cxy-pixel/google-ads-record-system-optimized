@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { _electron } = require('playwright');
+const { DatabaseSync } = require('node:sqlite');
 
 (async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'wb-ux-system-'));
@@ -273,6 +274,83 @@ const { _electron } = require('playwright');
     await shot('restore-confirmation');
     await page.keyboard.press('Escape');
     console.log('PASS draft focus after sync, pending writes, inline retry and restore confirmation reset');
+
+    // Corrupt public snapshots only in this disposable test database. The actual
+    // production endpoint must diagnose them without guessing new associations.
+    const fixtureDb = new DatabaseSync(path.join(directory, 'userdata', 'workbench.sqlite'));
+    let integrityFixture;
+    try {
+      const owner = fixtureDb.prepare("SELECT id FROM users WHERE username='local'").get().id;
+      const first = fixtureDb.prepare('SELECT id,fingerprint FROM records WHERE owner_id=? ORDER BY id LIMIT 1').get(owner);
+      const last = fixtureDb.prepare('SELECT id,email_id,fingerprint FROM records WHERE owner_id=? ORDER BY id DESC LIMIT 1').get(owner);
+      fixtureDb.prepare("UPDATE records SET license_name='独立历史快照核对',version=version+1 WHERE owner_id=? AND id=?").run(owner, first.id);
+      fixtureDb.prepare("UPDATE records SET email_user='old-integrity@example.test',version=version+1 WHERE owner_id=? AND id=?").run(owner, last.id);
+      integrityFixture = { first, last };
+    } finally { fixtureDb.close(); }
+    await nav('settings');
+    await page.locator('[data-action="check-integrity"]').click();
+    await page.getByText('有独立快照但没有关联，可能是历史录入；需人工核对', { exact: true }).waitFor();
+    assert.match(await page.locator('#integrity-range').innerText(), /1–100.*124/);
+    await shot('integrity-manual');
+    await page.locator('[data-integrity-record]').first().click();
+    await page.locator('#edit-ok').waitFor();
+    assert.match(await page.locator('.modal-head').innerText(), new RegExp(integrityFixture.first.fingerprint.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    await page.keyboard.press('Escape');
+    await nav('settings');
+    await page.locator('[data-action="check-integrity"]').click();
+    await page.locator('#integrity-next').click();
+    await page.getByText('记录快照与当前关联资源不一致', { exact: true }).waitFor();
+    assert.match(await page.locator('#integrity-range').innerText(), /101–124.*124/);
+    assert.equal((await page.locator('#integrity-results').innerText()).includes('SYNTHETIC-'), false);
+    await shot('integrity-diff');
+    await page.locator('#integrity-prev').click();
+    await page.getByText('有独立快照但没有关联，可能是历史录入；需人工核对', { exact: true }).waitFor();
+    await page.locator('#integrity-next').click();
+    await page.locator('[data-integrity-repair]').first().click();
+    await page.locator('#integrity-consent').waitFor();
+    assert.equal(await page.locator('#integrity-apply').isDisabled(), true);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    assert.equal(await page.locator('.modal-foot').evaluate(element => element.getBoundingClientRect().bottom <= innerHeight + 1), true);
+    await shot('integrity-confirm');
+    await page.locator('#integrity-back').click();
+    await page.locator('[data-integrity-repair]').first().click();
+    await page.locator('#integrity-consent').check();
+    // A legitimate concurrent edit makes this confirmation stale.
+    await page.evaluate(async id => {
+      const row = (await api('/api/records?limit=200')).items.find(item => item.id === id);
+      await api(`/api/records/${id}`, { method: 'PATCH', body: { version: row.version, product: '版本变化回归' } });
+    }, integrityFixture.last.id);
+    let repairs = 0;
+    const countRepairs = request => { if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/data-integrity/repair') ++repairs; };
+    page.on('request', countRepairs);
+    await page.locator('#integrity-apply').click();
+    await page.locator('.dialog-error').waitFor();
+    assert.equal(await page.locator('#integrity-apply').isDisabled(), true);
+    await shot('integrity-conflict');
+    await page.locator('#integrity-back').click();
+    await page.locator('[data-integrity-repair]').first().click();
+    await page.locator('#integrity-consent').check();
+    await page.locator('#integrity-apply').evaluate(button => { button.click(); button.click(); });
+    await page.getByRole('heading', { name: '本批未发现关联差异', exact: true }).waitFor();
+    assert.equal(repairs, 2, 'one stale rejection and exactly one successful repair');
+    page.off('request', countRepairs);
+    const repaired = await page.evaluate(async id => (await api('/api/records?limit=200')).items.find(item => item.id === id), integrityFixture.last.id);
+    assert.equal(repaired.email_id, integrityFixture.last.email_id);
+    assert.equal(repaired.email_user, 'ux-one@example.test');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    let failIntegrity = true;
+    await page.route('**/api/data-integrity?*', async route => {
+      if (failIntegrity) { failIntegrity = false; await route.fulfill({ status: 503, json: { error: '合成检查中断' } }); }
+      else await route.continue();
+    });
+    await page.locator('[data-action="check-integrity"]').click();
+    await page.locator('#integrity-retry').click();
+    await page.getByText('有独立快照但没有关联，可能是历史录入；需人工核对', { exact: true }).waitFor();
+    await page.keyboard.press('Escape');
+    await page.unroute('**/api/data-integrity?*');
+    console.log('PASS owner-only integrity batches, manual route, confirmation, stale version, single repair and retry');
 
     // Keyboard loop and reachable footer on the longest existing form.
     await nav('licenses');

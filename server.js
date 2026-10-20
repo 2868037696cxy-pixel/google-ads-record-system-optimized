@@ -31,6 +31,8 @@ const { openDatabase, transaction } = require('./lib/db');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
 const dedup = require('./lib/dedup');
+const { SNAP } = require('./lib/resource-snapshots');
+const recordIntegrity = require('./lib/record-integrity');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -983,16 +985,6 @@ function createRecords(ownerId, body) {
 
 /* ---------------- 记录编辑 / 删除 ---------------- */
 
-const SNAP = {
-  email: (e) => ({ email_user: e.user, email_pass: e.pass, email_fakey: e.fakey }),
-  proxy: (p) => ({
-    proxy_sn: p.sn, proxy_type: p.type, proxy_host: p.host, proxy_port: p.port,
-    proxy_user: p.user, proxy_pass: p.pass, proxy_country: p.country, proxy_ip: p.ip,
-  }),
-  card: (c) => ({ card_number: c.number, card_expiry: c.expiry, card_last4: c.last4 }),
-  license: (l) => ({ license_name: l.name }),
-};
-
 /** 资源被改名/改值后，同步到引用它的记录快照里（导出用的是快照字段）。 */
 function syncResource(ownerId, type, resource) {
   const prefix = POOL_PREFIX[type];
@@ -1754,6 +1746,26 @@ fastify.patch('/api/records/:id', async (req) => {
   // 修改也留痕：审核与排错时，「这个字段是谁改的」同样需要能回答
   audit(db, ownerId, 'records.update', String(req.params.id));
   return res;
+});
+
+fastify.get('/api/data-integrity', async req => {
+  if (Object.keys(req.query || {}).some(key => !['after', 'upper_bound', 'limit'].includes(key))) return reply400('检查参数无效');
+  const readInteger = (key, fallback, max) => {
+    const raw = req.query?.[key];
+    if (raw === undefined) return fallback;
+    if (typeof raw !== 'string' || !/^(0|[1-9]\d*)$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > max) return reply400(`${key} 无效`);
+    return Number(raw);
+  };
+  const after = readInteger('after', 0, Number.MAX_SAFE_INTEGER);
+  const upperBound = readInteger('upper_bound', undefined, Number.MAX_SAFE_INTEGER);
+  const limit = readInteger('limit', 100, 100);
+  if (!limit || (upperBound !== undefined && after > upperBound)) return reply400('检查范围无效');
+  return recordIntegrity.scanPage(db, currentUserId(req), { after, upperBound, limit });
+});
+
+fastify.post('/api/data-integrity/repair', async req => {
+  requireUnlocked(req);
+  return mutate(() => recordIntegrity.applyRepair(db, currentUserId(req), req.body));
 });
 
 fastify.post('/api/records/batch-delete', async (req) => {

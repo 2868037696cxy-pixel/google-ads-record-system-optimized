@@ -12,6 +12,7 @@
 | 原生组件 | 按钮、字段、表格、选择、反馈、弹窗、设置、核对和导出组件 | `public/ui-components.css` 的 `components` 层 |
 | 组件行为 | 安全模板、SVG 图标、空状态、状态文本、按钮忙碌态、字段语义和弹窗生命周期 | `public/ui-components.js` |
 | 业务与数据 | 本人数据、查询状态、创建草稿、资源分配、导出、版本冲突 | `public/app.js`、`licenses.js`、`security.js` |
+| 数据维护控制器 | 本人关联检查、有界批次、差异核对与版本保护修复 | `public/record-integrity.js`，契约见 `DATA_INTEGRITY.md` |
 
 级联顺序显式声明为 `legacy → tokens → foundations → components`，防止旧选择器凭特异性反压新规范。不得继续追加第 N 个“最终补丁”，也不得在业务数据层决定颜色或字号。业务模块仍是渐进迁移的原生模块；本轮没有更换框架或重写鉴权。
 

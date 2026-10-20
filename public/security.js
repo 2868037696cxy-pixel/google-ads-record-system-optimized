@@ -58,7 +58,7 @@ async function showMyAudit() {
   const box=document.getElementById('my-audit');
   try {
     const {events}=await api('/api/audit');if(!box.isConnected)return;
-    const labels={'secrets.unlock':'\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c','export.credentials':'\u5bfc\u51fa\u51ed\u636e','backup.export':'\u5bfc\u51fa\u52a0\u5bc6\u5907\u4efd','backup.restore':'\u6062\u590d\u5907\u4efd','password.change':'\u4fee\u6539\u5bc6\u7801','records.create':'\u521b\u5efa\u8bb0\u5f55'};
+    const labels={'records.integrity.repair':'修复记录关联','secrets.unlock':'\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c','export.credentials':'\u5bfc\u51fa\u51ed\u636e','backup.export':'\u5bfc\u51fa\u52a0\u5bc6\u5907\u4efd','backup.restore':'\u6062\u590d\u5907\u4efd','password.change':'\u4fee\u6539\u5bc6\u7801','records.create':'\u521b\u5efa\u8bb0\u5f55'};
     box.innerHTML=events.length?`<p>\u4ec5\u663e\u793a\u672c\u4eba\u6700\u8fd1100\u6761\u8bb0\u5f55\uff0c\u4e0d\u5305\u542b\u5bc6\u7801\u539f\u6587\u3002</p><table><thead><tr><th>\u64cd\u4f5c</th><th>\u6570\u91cf</th><th>\u65f6\u95f4</th></tr></thead><tbody>${events.map(e=>`<tr><td>${esc(labels[e.action]||e.action)}</td><td>${esc(e.subject)}</td><td>${esc(new Date(e.created_at).toLocaleString())}</td></tr>`).join('')}</tbody></table>`:'<p>\u6682\u65e0\u64cd\u4f5c\u8bb0\u5f55</p>';
   }catch(e){if(box.isConnected)box.innerHTML=WorkbenchUI.emptyState({title:'暂时无法读取操作记录',description:e.message,action:'my-audit',actionLabel:'重新加载'});}
 }
