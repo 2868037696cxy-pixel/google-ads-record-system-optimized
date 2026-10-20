@@ -20,6 +20,20 @@ const largePdf=require('../tests/large-pdf-fixture');
     page=await electron.firstWindow();page.setDefaultTimeout(20000);
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     if(fixture){
+      // The unmodified packaged client must reject an untrusted certificate.
+      await page.locator('#retry').waitFor();
+      console.log('PASS packaged client rejects the untrusted synthetic certificate');
+      // Test-driver trust is limited to this exact origin and ephemeral cert.
+      // https://www.electronjs.org/docs/latest/api/app#event-certificate-error
+      await electron.evaluate(({app},expected)=>{
+        const {X509Certificate}=process.getBuiltinModule('crypto');
+        app.on('certificate-error',(event,_contents,url,_error,certificate,callback)=>{
+          let allowed=false;
+          try{allowed=new URL(url).origin===expected.remote&&new X509Certificate(certificate.data).fingerprint256===expected.fingerprint;}catch{}
+          if(allowed)event.preventDefault();callback(allowed);
+        });
+      },{remote:fixture.remote,fingerprint:fixture.fingerprint});
+      await page.locator('#retry').click();
       await page.waitForURL(url=>url.origin===fixture.remote);
       assert.equal(new URL(page.url()).origin,fixture.remote,'verify the isolated origin before entering any credentials');
       await page.locator('#loginUsername').fill(fixture.username);await page.locator('#loginPassword').fill(fixture.password);await page.locator('#loginSubmit').click();

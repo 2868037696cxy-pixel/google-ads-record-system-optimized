@@ -17,22 +17,18 @@ module.exports=async function packagedFixture(root,executable){
   const generated=spawnSync(openssl,['req','-x509','-newkey','rsa:2048','-nodes','-keyout',keyFile,'-out',certFile,'-days','2','-subj','/CN=localhost','-addext','subjectAltName=IP:127.0.0.1,DNS:localhost'],{stdio:'ignore',timeout:10000});
   if(generated.status!==0)throw new Error('Could not create the localhost test certificate');
   const cert=fs.readFileSync(certFile),key=fs.readFileSync(keyFile);
-  const thumbprint=new crypto.X509Certificate(cert).fingerprint.replace(/:/g,'');
-  let trusted=false,front,service,backend;
+  const fingerprint=new crypto.X509Certificate(cert).fingerprint256;
+  let front,service,backend;
   const close=async()=>{
     try{console.log('PACKAGED FIXTURE: close HTTPS');if(front)await new Promise(resolve=>{front.closeAllConnections();front.close(resolve);});}
     finally{
       try{console.log('PACKAGED FIXTURE: close backend');if(service)await service.close();}
       finally{
-        if(trusted){const removed=spawnSync('certutil.exe',['-user','-delstore','Root',thumbprint],{stdio:'ignore',timeout:10000});assert.equal(removed.status,0,'remove only the ephemeral certificate from the disposable runner');trusted=false;}
         assert.equal(await hashFile(originalAsar),originalHash,'the shipped candidate must remain byte-for-byte unchanged');
       }
     }
   };
   try{
-    console.log('PACKAGED FIXTURE: trust ephemeral localhost certificate');
-    const installed=spawnSync('certutil.exe',['-f','-user','-addstore','Root',certFile],{stdio:'ignore',timeout:10000});
-    if(installed.status!==0)throw new Error('Could not trust the ephemeral localhost certificate on the disposable runner');trusted=true;
     console.log('PACKAGED FIXTURE: start isolated HTTPS service');
     front=https.createServer({cert,key},(req,res)=>{
       const outgoing=http.request(backend+req.url,{method:req.method,headers:req.headers},response=>{res.writeHead(response.statusCode,response.headers);response.pipe(res);});
@@ -54,6 +50,6 @@ module.exports=async function packagedFixture(root,executable){
     assert.equal(JSON.parse(asar.extractFile(replacement,'desktop/client-config.json').toString()).serverUrl,remote,'verify the private copy points to the isolated HTTPS service before launch');
     fs.renameSync(replacement,path.join(copy,'resources','app.asar'));
     console.log('PACKAGED FIXTURE: ready');
-    return {executable:path.join(copy,path.basename(executable)),username,password,remote,close};
+    return {executable:path.join(copy,path.basename(executable)),username,password,remote,fingerprint,close};
   }catch(error){await close();throw error;}
 };
