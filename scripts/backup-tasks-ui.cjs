@@ -10,26 +10,33 @@ const largePdf=require('../tests/large-pdf-fixture');
 (async()=>{
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'wb-package-ui-'));
   const archive=path.join(directory,'personal.awbp');
-  let electron,page,fixture;
+  let electron,page,fixture,childErrors='';
+  const errors=[];
   const stop=()=>{try{electron?.process()?.kill();}finally{process.exit(1);}};
   const watchdog=setTimeout(()=>{console.error('FAIL backup UI exceeded 180 seconds');stop();},180000);watchdog.unref();
   const shot=async name=>{if(!process.env.UI_SCREENSHOT_DIR)return;fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,`backup${process.env.WORKBENCH_TEST_EXECUTABLE?'-packaged':''}-${name}.png`),animations:'disabled',timeout:5000});};
   try{
     if(process.env.WORKBENCH_TEST_EXECUTABLE)fixture=await require('./packaged-backup-fixture.cjs')(directory,process.env.WORKBENCH_TEST_EXECUTABLE);
     electron=await _electron.launch({executablePath:fixture?.executable||require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),...(process.env.WORKBENCH_TEST_EXECUTABLE?[]:['.'])],env:{...process.env,ADS_WORKBENCH_MODE:'local',ADS_DESKTOP_DATA_DIR:path.join(directory,'userdata')}});
+    electron.process().stderr?.on('data',bytes=>{childErrors=(childErrors+bytes.toString()).slice(-6000);});
     page=await electron.firstWindow();page.setDefaultTimeout(20000);
-    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    page.on('pageerror',error=>errors.push(error.message));
     if(fixture){
       // The unmodified packaged client must reject an untrusted certificate.
       await page.locator('#retry').waitFor();
       console.log('PASS packaged client rejects the untrusted synthetic certificate');
+      const bridge=await page.evaluate(async()=>({url:location.href,type:typeof window.workbenchShell,retry:typeof document.getElementById('retry').onclick,info:window.workbenchShell?await window.workbenchShell.info().catch(error=>({error:error.message})):null}));
+      console.log('PACKAGED BRIDGE:',JSON.stringify(bridge));
+      assert.equal(bridge.info?.origin,fixture.remote,'offline bridge must identify its configured isolated server');
       // Test-driver trust is limited to this exact origin and ephemeral cert.
       // https://www.electronjs.org/docs/latest/api/app#event-certificate-error
       await electron.evaluate(({app},expected)=>{
         const {X509Certificate}=process.getBuiltinModule('crypto');
+        globalThis.fixtureCertificateEvents=[];
         app.on('certificate-error',(event,_contents,url,_error,certificate,callback)=>{
-          let allowed=false;
-          try{allowed=new URL(url).origin===expected.remote&&new X509Certificate(certificate.data).fingerprint256===expected.fingerprint;}catch{}
+          let allowed=false,reason='';
+          try{allowed=new URL(url).origin===expected.remote&&new X509Certificate(certificate.data).fingerprint256===expected.fingerprint;}catch(error){reason=error.message;}
+          fixtureCertificateEvents.push({url,allowed,reason});
           if(allowed)event.preventDefault();callback(allowed);
         });
       },{remote:fixture.remote,fingerprint:fixture.fingerprint});
@@ -156,8 +163,9 @@ const largePdf=require('../tests/large-pdf-fixture');
     await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
     assert.deepEqual(errors,[]);console.log('PASS 1280px layout, 125/150% Electron zoom and no renderer errors');
   }catch(error){
-    if(page){console.error('Backup UI state:',await page.evaluate(async()=>({title:document.querySelector('.modal h3')?.textContent,error:document.querySelector('.dialog-error')?.textContent,jobs:await api('/api/backup-jobs')})).catch(()=>({})));await shot('failure').catch(()=>{});}
-    if(electron)console.error('Worker errors:',await electron.evaluate(()=>globalThis.packageWorkerErrors).catch(()=>[]));
+    if(page){console.error('Backup UI state:',await page.evaluate(async()=>({url:location.href,title:document.querySelector('.modal h3')?.textContent,error:document.querySelector('.dialog-error')?.textContent,bridge:typeof window.workbenchShell,jobs:typeof api==='function'?await api('/api/backup-jobs'):null})).catch(()=>({})));await shot('failure').catch(()=>{});}
+    if(electron)console.error('Electron diagnostics:',await electron.evaluate(({app,BrowserWindow})=>({workers:globalThis.packageWorkerErrors,certificates:globalThis.fixtureCertificateEvents,appPath:app.getAppPath(),frame:BrowserWindow.getAllWindows()[0]?.webContents.mainFrame.url,preload:BrowserWindow.getAllWindows()[0]?.webContents.getLastWebPreferences().preload})).catch(()=>({})));
+    console.error('Renderer errors:',errors,'Child stderr:',childErrors);
     throw error;
   }
   finally{
