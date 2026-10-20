@@ -46,10 +46,17 @@ tar -C "$SOURCE" --exclude=.git --exclude=node_modules --exclude=data --exclude=
 chmod 755 "$RELEASE"
 chown -R adsworkbench:adsworkbench "$RELEASE"
 cd "$RELEASE"
-runuser -u adsworkbench -- env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts --cache "$RELEASE/.npm-cache"
+# Public dependency files must remain readable after the release becomes root-owned.
+# Limit the relaxed mask to installation; sensitive deployment files retain 0077.
+(
+  umask 022
+  runuser -u adsworkbench -- env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts --umask=0022 --cache "$RELEASE/.npm-cache"
+)
 runuser -u adsworkbench -- env -u ADS_SECRETS_KEY_FILE -u PUBLIC_ORIGIN NODE_ENV=test PATH="$PATH" "$NODE" --test --test-concurrency=1 tests/*.test.js
 rm -rf -- "$RELEASE/.npm-cache"
 chown -R root:root "$RELEASE"
+# Check the final runtime identity/ownership before changing live config or stopping the service.
+runuser -u adsworkbench -- env PATH="$PATH" "$NODE" -e 'for (const name of Object.keys(require("./package.json").dependencies || {})) require.resolve(name); require("fastify"); console.log("Root-owned release dependencies are readable by the service user.");'
 install -d -m 750 -o root -g adsworkbench /etc/adsworkbench
 KEY=/etc/adsworkbench/secret.key
 # Reuse the existing key, including a previously configured external key file.
