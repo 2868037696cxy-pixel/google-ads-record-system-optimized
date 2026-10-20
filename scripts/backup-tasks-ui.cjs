@@ -20,6 +20,8 @@ const largePdf=require('../tests/large-pdf-fixture');
     page=await electron.firstWindow();page.setDefaultTimeout(20000);
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     if(fixture){
+      await page.waitForURL(url=>url.origin===fixture.remote);
+      assert.equal(new URL(page.url()).origin,fixture.remote,'verify the isolated origin before entering any credentials');
       await page.locator('#loginUsername').fill(fixture.username);await page.locator('#loginPassword').fill(fixture.password);await page.locator('#loginSubmit').click();
       assert.equal(new URL(page.url()).origin,fixture.remote,'packaged test must stay on the isolated HTTPS origin');
       assert.equal(fs.existsSync(path.join(directory,'userdata','workbench.sqlite')),false,'packaged remote client never creates a local database');
@@ -145,9 +147,9 @@ const largePdf=require('../tests/large-pdf-fixture');
     throw error;
   }
   finally{
-    clearTimeout(watchdog);
+    const finish=setTimeout(()=>{console.error('FAIL backup UI environment cleanup exceeded 20 seconds');stop();},20000);
     try{
       if(electron){const cleanup=setTimeout(()=>{console.error('FAIL backup UI did not shut down within 5 seconds');stop();},5000);try{await electron.close();}finally{clearTimeout(cleanup);}}
-    }finally{try{if(fixture)await fixture.close();}finally{fs.rmSync(directory,{recursive:true,force:true});}}
+    }finally{try{if(fixture)await fixture.close();}finally{fs.rmSync(directory,{recursive:true,force:true});clearTimeout(finish);clearTimeout(watchdog);}}
   }
 })().catch(error=>{console.error(error);process.exitCode=1;});
