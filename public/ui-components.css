@@ -107,6 +107,9 @@
   .modal-foot { flex-wrap: wrap; background: var(--surface-2); }
   .modal-body > p { margin: 0; }
   .modal .form-grid { flex: none; }
+  .dialog-error { margin-top: var(--ui-space-4); padding: var(--ui-space-3); border: 1px solid var(--red); border-radius: var(--r-sm); background: var(--danger-dim); }
+  .restore-confirm { display: flex; align-items: flex-start; gap: var(--ui-space-3); margin-top: var(--ui-space-4); font-size: var(--font-label); line-height: var(--line-body); }
+  .restore-confirm input { flex: none; margin-top: 3px; }
   .modal[data-submitting] [data-action="close-modal"] { pointer-events: none; opacity: .5; }
   .empty { gap: var(--ui-space-3); }
   .empty-ico .ui-icon { width: 28px; height: 28px; }

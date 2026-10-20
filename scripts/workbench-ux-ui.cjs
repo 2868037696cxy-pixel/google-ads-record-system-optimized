@@ -149,6 +149,28 @@ const { _electron } = require('playwright');
     await page.unroute('**/api/records?*');
     console.log('PASS sensitive lock invalidates in-flight plaintext responses');
 
+    // A response already produced by the server must not escape a later lock.
+    let releaseExport, exportStarted, exportFinished;
+    const exportGate = new Promise(resolve => { releaseExport = resolve; });
+    const exporting = new Promise(resolve => { exportStarted = resolve; });
+    const exported = new Promise(resolve => { exportFinished = resolve; });
+    await page.evaluate(() => { globalThis.originalDownload = download; globalThis.exportResult = null; download = (filename, text) => { globalThis.exportResult = { filename, text }; }; });
+    await page.route('**/api/export/adspower', async route => {
+      exportStarted(); await exportGate;
+      await route.fulfill({ json: { count: 1, text: 'SYNTHETIC-LATE-EXPORT' } }).catch(() => {});
+      exportFinished();
+    });
+    await page.locator('[data-action="export-adspower"]').click();
+    await page.locator('#export-confirm').click();
+    await exporting;
+    await page.evaluate(() => lockSensitive());
+    releaseExport(); await exported;
+    assert.equal(await page.evaluate(() => globalThis.exportResult), null);
+    assert.equal(await page.locator('#modal-root .modal').count(), 0);
+    await page.unroute('**/api/export/adspower');
+    await page.evaluate(() => { download = originalDownload; });
+    console.log('PASS cancelled sensitive exports cannot download late responses');
+
     await nav('create');
     await page.locator('#f-domains').fill('https://same.example/path\nSAME.EXAMPLE');
     await page.locator('[data-action="create"]').click();
@@ -157,6 +179,14 @@ const { _electron } = require('playwright');
     await page.locator('#f-country').fill('奥地利');
     await page.locator('#f-product').fill('设计系统验收');
     await page.locator('#f-domains').fill('https://new-ux.example/path');
+    const inputContext = await page.evaluate(async () => {
+      const input = document.getElementById('f-product');
+      input.focus(); input.setSelectionRange(1, 4);
+      await refresh();
+      const replacement = document.getElementById('f-product');
+      return { focused: replacement === document.activeElement, start: replacement.selectionStart, end: replacement.selectionEnd, value: replacement.value };
+    });
+    assert.deepEqual(inputContext, { focused: true, start: 1, end: 4, value: '设计系统验收' });
     await page.locator('[data-action="create"]').click();
     assert.match(await page.locator('.modal-body').innerText(), /new-ux.example/);
     await shot('create-review');
@@ -197,6 +227,52 @@ const { _electron } = require('playwright');
     await page.waitForFunction(() => !state.syncError && !document.getElementById('syncNotice'));
     await page.unroute('**/api/bootstrap*');
     await page.waitForFunction(() => !document.querySelector('#toast-root .toast'));
+
+    // Write dialogs keep their draft and retry control when a request fails.
+    let releaseSave, saveStarted;
+    const saveGate = new Promise(resolve => { releaseSave = resolve; });
+    const saving = new Promise(resolve => { saveStarted = resolve; });
+    let writes = 0, backgroundSyncs = 0;
+    const countSync = request => { if (new URL(request.url()).pathname === '/api/bootstrap') ++backgroundSyncs; };
+    page.on('request', countSync);
+    await page.route('**/api/records/*', async route => {
+      ++writes; saveStarted(); await saveGate;
+      await route.fulfill({ status: 503, json: { message: '合成测试：服务暂不可用，请保留草稿后重试' } });
+    });
+    await page.locator('#recordsPanel [data-action="edit-record"]').first().click();
+    await page.locator('#edit-form [name="product"]').fill('保留的编辑草稿');
+    await page.locator('#edit-ok').evaluate(button => { button.click(); button.click(); });
+    await saving;
+    assert.equal(await page.locator('.modal [data-action="close-modal"]').first().isDisabled(), true);
+    assert.equal(await page.locator('#edit-form [name="product"]').isDisabled(), true);
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('Control+r');
+    assert.equal(await page.locator('#edit-ok').count(), 1);
+    assert.equal(backgroundSyncs, 0);
+    releaseSave();
+    await page.locator('.dialog-error').waitFor();
+    assert.equal(writes, 1);
+    assert.equal(await page.locator('#edit-ok').isEnabled(), true);
+    assert.equal(await page.locator('#edit-form [name="product"]').inputValue(), '保留的编辑草稿');
+    await shot('edit-retry');
+    await page.keyboard.press('Escape');
+    await page.unroute('**/api/records/*');
+    page.off('request', countSync);
+
+    await page.evaluate(() => openRestoreDialog());
+    const restoreFile = name => ({ name, mimeType: 'application/json', buffer: Buffer.from(JSON.stringify({ format: 'adsworkbench-backup', version: 2, counts: { records: 1 } })) });
+    await page.locator('#restore-file').setInputFiles(restoreFile('first.json'));
+    await page.waitForFunction(() => !document.getElementById('restore-confirm').disabled);
+    assert.equal(await page.locator('#restore-go').isDisabled(), true);
+    await page.locator('#restore-confirm').check();
+    assert.equal(await page.locator('#restore-go').isEnabled(), true);
+    await page.locator('#restore-file').setInputFiles(restoreFile('second.json'));
+    await page.waitForFunction(() => document.getElementById('restore-status').textContent.includes('second.json'));
+    assert.equal(await page.locator('#restore-confirm').isChecked(), false);
+    assert.equal(await page.locator('#restore-go').isDisabled(), true);
+    await shot('restore-confirmation');
+    await page.keyboard.press('Escape');
+    console.log('PASS draft focus after sync, pending writes, inline retry and restore confirmation reset');
 
     // Keyboard loop and reachable footer on the longest existing form.
     await nav('licenses');

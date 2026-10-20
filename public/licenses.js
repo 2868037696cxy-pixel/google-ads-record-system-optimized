@@ -99,14 +99,24 @@ function openLicenseImport() {
   };
   parseText.onclick = async () => {
     if (saving || parseText.disabled) return;
-    const current = revision;
+    const current = ++revision;
     const source = text.value;
+    WorkbenchUI.busy(parseText, true, '正在提取…');
+    submit.disabled = true;
+    fileInput.disabled = true;
     try {
       const result = await api('/api/parse/licenses', { method: 'POST', body: { text: source } });
       if (current !== revision || !form.isConnected || source !== text.value) return;
       if (result.items.length !== 1) return toast('请一次填写一份组织资料，或直接在上方校对字段', 'warn');
       fill(result.items[0]);
-    } catch (error) { toast(error.message, 'error'); }
+    } catch (error) { if (current === revision && form.isConnected) status.textContent = error.message; }
+    finally {
+      if (current === revision && form.isConnected) {
+        WorkbenchUI.busy(parseText, false);
+        submit.disabled = false;
+        fileInput.disabled = false;
+      }
+    }
   };
   submit.onclick = async () => {
     if (saving || submit.disabled) return;
@@ -114,7 +124,7 @@ function openLicenseImport() {
     submit.disabled = true;
     const item = Object.fromEntries(LICENSE_FIELDS.map(([key]) => [key, form.elements[key].value.trim()]));
     if (!item.name || !item.legal_name) { submit.disabled = false; return toast('组织名称和法定名称不能为空', 'warn'); }
-    WorkbenchUI.busy(submit, true, '正在保存…');
+    WorkbenchUI.dialog.pending(submit, true, '正在保存…');
     saving = true;
     fileInput.disabled = true;
     parseText.disabled = true;
@@ -124,10 +134,11 @@ function openLicenseImport() {
       if (form.isConnected) closeModal();
       await refreshAfterCommit('资料已保存，但列表刷新失败；请重新连接，不要重复导入');
     } catch (error) {
+      if (!form.isConnected) return;
       if (Array.isArray(error.conflicts) && error.conflicts.length) showLicenseConflicts(error);
-      else toast(error.message, 'error');
+      else WorkbenchUI.dialog.error(submit, error.message);
     }
-    finally { saving = false; WorkbenchUI.busy(submit, false); fileInput.disabled = false; parseText.disabled = false; }
+    finally { saving = false; WorkbenchUI.dialog.pending(submit, false); fileInput.disabled = false; parseText.disabled = false; }
   };
   form.onsubmit = (event) => { event.preventDefault(); submit.click(); };
 }

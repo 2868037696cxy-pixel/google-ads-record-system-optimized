@@ -175,6 +175,7 @@ const state = {
   next: null,
   reveal: false,
   unlockedUntil: 0,
+  sensitiveEpoch: 0,
   submission: null,
   sel: new Set(),
   q: '',
@@ -276,13 +277,14 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
   document.querySelector('#modal-root [data-action="close-modal"].btn')?.focus();
   confirm.onclick = async () => {
     if (confirm.disabled) return;
-    WorkbenchUI.busy(confirm, true, '正在处理…');
+    WorkbenchUI.dialog.pending(confirm, true, '正在处理…');
     try {
       await onOk();
       if (confirm.isConnected) closeModal();
     } catch (err) {
-      toast(err.message || '操作失败', 'error');
-      WorkbenchUI.busy(confirm, false);
+      WorkbenchUI.dialog.error(confirm, err.message || '操作失败');
+    } finally {
+      WorkbenchUI.dialog.pending(confirm, false);
     }
   };
 }
@@ -325,6 +327,7 @@ function renderAccount() {
 
 function render() {
   const main = document.getElementById('main');
+  const restoreView = WorkbenchUI.preserveView(main);
   // 页面键写到 main 上：「我的记录」与「新建记录」共用同一份渲染与统计条，
   // 由 CSS 决定露出哪一块面板，避免把资源统计复制成两份、后续改漏一边。
   if (main) main.className = `main page-${state.page}`;
@@ -340,6 +343,7 @@ function render() {
   renderSyncNotice();
   updateRecordsChrome();
   bindLabels();
+  restoreView();
 }
 
 function renderSyncNotice() {
@@ -919,7 +923,7 @@ async function doCreate(body = createDraft().body) {
   if (domains.length > 500) return toast('单次最多创建 500 条记录，请分批创建', 'warn');
   state.creating = true;
   const confirm = document.getElementById('create-confirm');
-  if (confirm) { WorkbenchUI.busy(confirm, true, '正在创建…'); confirm.closest('.modal').dataset.submitting = 'true'; }
+  if (confirm) WorkbenchUI.dialog.pending(confirm, true, '正在创建…');
   const btn = document.querySelector('[data-action="create"]');
   const oldText = btn?.textContent;
   if (btn) { btn.disabled = true; btn.classList.add('btn-loading'); btn.textContent = '创建中'; }
@@ -944,7 +948,7 @@ async function doCreate(body = createDraft().body) {
     if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
   } finally {
     state.creating = false;
-    if (confirm?.isConnected) { WorkbenchUI.busy(confirm, false, `确认创建 ${domains.length} 条`); delete confirm.closest('.modal').dataset.submitting; }
+    if (confirm?.isConnected) WorkbenchUI.dialog.pending(confirm, false, `确认创建 ${domains.length} 条`);
     updateCreatePreview();
   }
 }
@@ -1163,17 +1167,16 @@ async function openImportModal(kind) {
 
   okBtn.onclick = async () => {
     if (saving || okBtn.disabled || !parsed.length) return;
-    saving = true; WorkbenchUI.busy(okBtn, true, '正在导入…'); ta.readOnly = true;
+    saving = true; WorkbenchUI.dialog.pending(okBtn, true, '正在导入…'); ta.readOnly = true;
     try {
       const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
       toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
       if (ta.isConnected) closeModal();
       await refreshAfterCommit('已保存，但列表刷新失败；请点击重新连接');
     } catch (e) {
-      toast(e.message, 'error');
-      okBtn.disabled = false;
+      WorkbenchUI.dialog.error(okBtn, e.message);
     } finally {
-      saving = false; WorkbenchUI.busy(okBtn, false); ta.readOnly = false;
+      saving = false; WorkbenchUI.dialog.pending(okBtn, false); ta.readOnly = false;
     }
   };
 
@@ -1262,7 +1265,7 @@ function openAutoImport() {
     if (saving || okBtn.disabled || (!parsed.emails.length && !parsed.proxies.length)) return;
     saving = true; ta.readOnly = true; fileInput.disabled = true;
     document.getElementById('auto-file-btn').disabled = true;
-    WorkbenchUI.busy(okBtn, true, '正在导入…');
+    WorkbenchUI.dialog.pending(okBtn, true, '正在导入…');
     try {
       const res = await api('/api/import/auto', { method: 'POST', body: parsed });
       const parts = [];
@@ -1272,10 +1275,9 @@ function openAutoImport() {
       if (ta.isConnected) closeModal();
       await refreshAfterCommit('已保存，但列表刷新失败；请点击重新连接');
     } catch (e) {
-      okBtn.disabled = false;
-      toast(e.message, 'error');
+      WorkbenchUI.dialog.error(okBtn, e.message);
     } finally {
-      saving = false; WorkbenchUI.busy(okBtn, false); ta.readOnly = false; fileInput.disabled = false;
+      saving = false; WorkbenchUI.dialog.pending(okBtn, false); ta.readOnly = false; fileInput.disabled = false;
       const fileButton = document.getElementById('auto-file-btn');
       if (ta.isConnected && fileButton) fileButton.disabled = false;
     }
@@ -1402,7 +1404,7 @@ function openEditRecord(id) {
   const save = document.getElementById('edit-ok');
   save.onclick = async () => {
     if (save.disabled) return;
-    WorkbenchUI.busy(save, true, '正在保存…');
+    WorkbenchUI.dialog.pending(save, true, '正在保存…');
     const form = document.getElementById('edit-form');
     const val = (n) => form.querySelector(`[name="${n}"]`).value;
     const body = {
@@ -1424,9 +1426,9 @@ function openEditRecord(id) {
       if (form.isConnected) closeModal();
       await refreshAfterCommit('修改已保存，但列表刷新失败；请重新连接，不要重复提交');
     } catch (e) {
-      toast(e.message, 'error');
+      WorkbenchUI.dialog.error(save, e.message);
     } finally {
-      WorkbenchUI.busy(save, false);
+      WorkbenchUI.dialog.pending(save, false);
     }
   };
 }
@@ -1492,50 +1494,63 @@ function openRestoreDialog() {
         <input type="file" id="restore-file" aria-label="选择个人备份文件" accept=".json,application/json">
         <span id="restore-status" role="status">尚未选择文件</span>
       </div>
+      <label class="restore-confirm"><input type="checkbox" id="restore-confirm" disabled><span>我已核对备份文件，确认替换当前账号的数据</span></label>
     </div>
     <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-danger" id="restore-go" disabled>确认恢复</button></div>`);
   const input = document.getElementById('restore-file');
   const status = document.getElementById('restore-status');
   const go = document.getElementById('restore-go');
+  const confirmation = document.getElementById('restore-confirm');
   let parsed = null;
+  let revision = 0;
+  let saving = false;
+  confirmation.onchange = () => { go.disabled = !parsed || !confirmation.checked || saving; };
   input.onchange = async () => {
+    if (saving) return;
+    const current = ++revision;
     parsed = null;
     go.disabled = true;
+    confirmation.checked = false;
+    confirmation.disabled = true;
     const file = input.files[0];
     if (!file) { status.textContent = '尚未选择文件'; return; }
     if (file.size > 64 * 1024 * 1024) { status.textContent = '文件超过 64 MB，无法恢复'; input.value = ''; return; }
     try {
-      parsed = JSON.parse(await file.text());
-      if(parsed.format!=='adsworkbench-backup'||parsed.version!==2) throw new Error('Invalid backup format');
-      const records = Number(parsed.counts?.records)||0;
-      const licenses = Number(parsed.counts?.licenses)||0;
-      status.textContent = `已读取：记录 ${records} 条 · 营业执照 ${licenses} 条，确认后将覆盖当前账号数据`;
-      go.disabled = false;
+      const candidate = JSON.parse(await file.text());
+      if (current !== revision || !input.isConnected) return;
+      if(candidate?.format!=='adsworkbench-backup'||candidate.version!==2) throw new Error('Invalid backup format');
+      parsed = candidate;
+      status.textContent = `已选择：${file.name}。这是加密备份，内容与归属将在恢复时由服务端校验；勾选下方确认后可恢复。`;
+      confirmation.disabled = false;
     } catch {
-      status.textContent = '这个文件不是有效的备份（JSON 解析失败）';
+      if (current !== revision || !input.isConnected) return;
+      parsed = null;
+      status.textContent = '无法读取有效备份，请选择本工作台导出的 JSON 备份文件';
       input.value = '';
     }
   };
   go.onclick = async () => {
-    if (!parsed || go.disabled) return;
-    go.disabled = true;
-    go.textContent = '正在恢复…';
+    if (!parsed || go.disabled || !confirmation.checked || saving) return;
+    saving = true;
+    WorkbenchUI.dialog.pending(go, true, '正在恢复…');
     try {
       const result = await api('/api/backup/restore', { method: 'POST', body: parsed });
       toast(`恢复完成：记录 ${result.records} 条、营业执照 ${result.licenses} 条`);
       if (go.isConnected) closeModal();
       await refreshAfterCommit('恢复已完成，但列表刷新失败；请重新连接，不要重复恢复');
     } catch (error) {
-      toast(error.message, 'error');
-      go.disabled = false;
-      go.textContent = '确认恢复';
+      WorkbenchUI.dialog.error(go, error.message);
+    } finally {
+      saving = false;
+      WorkbenchUI.dialog.pending(go, false);
     }
   };
 }
 
 /* ============ 事件 ============ */
 
-function openExportDialog(format) {
+async function openExportDialog(format) {
+  if (format !== 'csv' && !await ensureSensitive('此导出包含邮箱和代理凭据，请安全保存文件。')) return;
   const selected = [...state.sel];
   const total = state.recordStats.total;
   const currentSelected = state.records.filter(record => state.sel.has(record.id)).length;
@@ -1547,18 +1562,23 @@ function openExportDialog(format) {
     </fieldset><p class="settings-hint">${format === 'csv' ? 'CSV 不包含密码、2FA、代理密码和身份证原文。' : 'AdsPower 文件包含邮箱与代理凭据，需要临时授权。请安全保管。'}</p><p class="field-error" id="export-error" role="alert" hidden></p>
     </div><div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="export-confirm">确认导出</button></div>`);
   const button = document.getElementById('export-confirm');
+  const signal = WorkbenchUI.dialog.signal();
   button.onclick = async () => {
     if (button.disabled) return;
     const ids = document.querySelector('[name="export-scope"]:checked')?.value === 'selected' ? selected : [];
     WorkbenchUI.busy(button, true, '正在导出…');
+    const epoch = state.sensitiveEpoch;
     try {
-      if (format !== 'csv' && !await ensureSensitive('此导出包含邮箱和代理凭据，请安全保存文件。')) return;
-      const result = await api(`/api/export/${format}`, { method: 'POST', body: { ids } });
-      if (button.isConnected) closeModal();
+      if (format !== 'csv' && state.unlockedUntil <= Date.now()) throw new Error('敏感授权已过期，请关闭后重新导出');
+      const result = await api(`/api/export/${format}`, { method: 'POST', body: { ids }, signal: AbortSignal.any([signal, AbortSignal.timeout(60000)]) });
+      if (signal.aborted || !button.isConnected) return;
+      if (format !== 'csv' && (epoch !== state.sensitiveEpoch || state.unlockedUntil <= Date.now())) throw new Error('敏感授权已结束，请重新授权后导出');
+      closeModal();
       download(format === 'csv' ? `记录_${todayKey().replace('.', '_')}.csv` : `adspower_${todayKey().replace('.', '_')}.txt`, result.text, format === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8');
       toast(`已导出 ${result.count} 条${format === 'csv' ? ' CSV' : ' AdsPower 导入文件'}`);
     } catch (error) {
-      const box = document.getElementById('export-error');
+      if (signal.aborted || !button.isConnected) return;
+      const box = button.closest('.modal').querySelector('#export-error');
       if (box) { box.hidden = false; box.textContent = error.message; }
       else toast(error.message, 'error');
     } finally { WorkbenchUI.busy(button, false); }
@@ -1676,9 +1696,12 @@ document.addEventListener('click', async (e) => {
       case 'web-backup':
         // 走一次同源导航触发下载：Cookie 会自动带上，浏览器停留在当前页面
         if(!await ensureSensitive()) break;
+        const backupEpoch = state.sensitiveEpoch;
         const backupResponse=await fetch('/api/backup',{headers:{'x-workbench':'1'},signal:AbortSignal.timeout(60000)});
         if(!backupResponse.ok) throw new Error('备份导出失败，请重新解锁后重试');
-        download('AdsWorkbench-'+todayKey()+'.json',await backupResponse.text(),'application/json');
+        const backupText = await backupResponse.text();
+        if (backupEpoch !== state.sensitiveEpoch || state.unlockedUntil <= Date.now()) throw new Error('敏感授权已结束，请重新导出备份');
+        download('AdsWorkbench-'+todayKey()+'.json',backupText,'application/json');
         toast('正在导出备份…');
         break;
       case 'web-restore':
@@ -1751,11 +1774,11 @@ document.addEventListener('click', async (e) => {
         }
         break;
       case 'export-adspower': {
-        if (state.recordsPhase === 'ready') openExportDialog('adspower');
+        if (state.recordsPhase === 'ready') await openExportDialog('adspower');
         break;
       }
       case 'export-csv': {
-        if (state.recordsPhase === 'ready') openExportDialog('csv');
+        if (state.recordsPhase === 'ready') await openExportDialog('csv');
         break;
       }
       case 'delete-selected': {
@@ -2079,7 +2102,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'r') {
     event.preventDefault();
-    connect();
+    if (!modalOpen && !event.repeat) connect();
   }
 });
 connect();

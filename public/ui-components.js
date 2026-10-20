@@ -68,9 +68,62 @@ globalThis.WorkbenchUI = (() => {
   }
 
   let opener = null;
+  let dialogController = null;
+  const pendingControls = new WeakMap();
   const focusable = modal => [...modal.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter(element => !element.disabled && element.getClientRects().length);
   const isBusy = () => Boolean(document.querySelector('#modal-root .modal[data-submitting]'));
+  function pending(button, value, label) {
+    const modal = button?.closest('.modal');
+    if (!modal) return;
+    if (value && !pendingControls.has(modal)) {
+      modal.querySelector('.dialog-error')?.remove();
+      pendingControls.set(modal, [...modal.querySelectorAll('button, input, select, textarea')].map(control => [control, control.disabled]));
+      modal.dataset.submitting = 'true';
+      modal.setAttribute('aria-busy', 'true');
+      pendingControls.get(modal).forEach(([control]) => { control.disabled = true; });
+      modal.focus({ preventScroll: true });
+    } else if (!value) {
+      pendingControls.get(modal)?.forEach(([control, disabled]) => { control.disabled = disabled; });
+      pendingControls.delete(modal);
+      delete modal.dataset.submitting;
+      modal.removeAttribute('aria-busy');
+    }
+    busy(button, value, label);
+    if (!value && modal.isConnected && document.activeElement === modal) button.focus({ preventScroll: true });
+  }
+  function dialogError(button, message) {
+    const modal = button?.closest('.modal');
+    if (!modal?.isConnected) return false;
+    let box = modal.querySelector('.dialog-error');
+    if (!box) {
+      box = document.createElement('p');
+      box.className = 'dialog-error field-error';
+      box.setAttribute('role', 'alert');
+      modal.querySelector('.modal-body').appendChild(box);
+    }
+    box.textContent = message;
+    box.scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+  function preserveView(root) {
+    const page = root.className;
+    const active = root.contains(document.activeElement) ? document.activeElement : null;
+    const id = active?.id;
+    const selection = active && typeof active.selectionStart === 'number' ? [active.selectionStart, active.selectionEnd, active.selectionDirection] : null;
+    const scroll = [root, ...root.querySelectorAll('.table-wrap')].map(element => [element.scrollLeft, element.scrollTop]);
+    return () => {
+      if (root.className !== page) return;
+      [root, ...root.querySelectorAll('.table-wrap')].forEach((element, index) => { if (scroll[index]) [element.scrollLeft, element.scrollTop] = scroll[index]; });
+      if (!id || document.querySelector('#modal-root .modal')) return;
+      const replacement = document.getElementById(id);
+      if (!replacement || !root.contains(replacement) || replacement.disabled || !replacement.getClientRects().length) return;
+      replacement.focus({ preventScroll: true });
+      if (selection) { try { replacement.setSelectionRange(...selection); } catch { /* Non-text inputs do not expose selection. */ } }
+    };
+  }
   function closeDialog() {
+    dialogController?.abort();
+    dialogController = null;
     document.getElementById('modal-root').replaceChildren();
     document.querySelector('.app').inert = false;
     document.removeEventListener('keydown', onDialogKey);
@@ -93,6 +146,7 @@ globalThis.WorkbenchUI = (() => {
     closeDialog();
     opener = previousOpener;
     const root = document.getElementById('modal-root');
+    dialogController = new AbortController();
     root.innerHTML = `<div class="modal-overlay" data-action="modal-overlay"><div class="modal${large ? ' modal-lg' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">${html}</div></div>`;
     const title = root.querySelector('h3');
     if (title) title.id = 'modal-title';
@@ -103,7 +157,7 @@ globalThis.WorkbenchUI = (() => {
     (preferred || focusable(root)[0] || root.querySelector('.modal')).focus({ preventScroll: true });
     document.addEventListener('keydown', onDialogKey);
   }
-  return Object.freeze({ escape, icon, button, emptyState, status, busy, enhance, positionMenu, dialog: Object.freeze({ open: openDialog, close: closeDialog, isBusy }) });
+  return Object.freeze({ escape, icon, button, emptyState, status, busy, enhance, positionMenu, preserveView, dialog: Object.freeze({ open: openDialog, close: closeDialog, isBusy, pending, error: dialogError, signal: () => dialogController?.signal || AbortSignal.abort() }) });
 })();
 
 if (typeof module !== 'undefined') module.exports = globalThis.WorkbenchUI;

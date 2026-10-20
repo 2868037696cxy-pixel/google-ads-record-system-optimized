@@ -10,6 +10,7 @@ function wipeSecrets(value) {
   }
 }
 async function lockSensitive() {
+  ++state.sensitiveEpoch;
   clearTimeout(secretTimer);state.unlockedUntil=0;state.reveal=false;
   // Abort in-flight revealed queries as well as clearing already-rendered values.
   ++refreshRequestSeq;
@@ -26,10 +27,12 @@ async function lockSensitive() {
   await api('/api/security/lock',{method:'POST',keepalive:true}).catch(()=>{});
 }
 async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u7801\u3002\u6388\u6743\u6709\u6548\u671f60\u79d2\uff0c\u4ec5\u53ef\u67e5\u770b\u672c\u4eba\u8d44\u6599\u3002') {
+  const epoch = state.sensitiveEpoch;
   if(state.unlockedUntil>Date.now()+1000) return true;
   if(window.desktop) {
     const result=await api('/api/security/unlock',{method:'POST',body:{}});
-    state.unlockedUntil=result.unlocked_until;secretTimer=setTimeout(lockSensitive,60000);return true;
+    if(epoch !== state.sensitiveEpoch) return false;
+    state.unlockedUntil=result.unlocked_until;clearTimeout(secretTimer);secretTimer=setTimeout(lockSensitive,Math.max(0,result.unlocked_until-Date.now()));return true;
   }
   return new Promise(resolve=>{
     openModal(`<div class="modal-head"><h3>\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c</h3><button class="modal-close" data-action="close-modal" aria-label="\u5173\u95ed">\u00d7</button></div>
@@ -42,7 +45,7 @@ async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u780
       e.preventDefault();const button=form.querySelector('[type=submit]');if(button.disabled)return;button.disabled=true;
       try {
         const result=await api('/api/security/unlock',{method:'POST',body:{password:document.getElementById('unlock-password').value}});
-        if(!form.isConnected||done)return;
+        if(!form.isConnected||done||epoch !== state.sensitiveEpoch)return;
         form.querySelector('#unlock-password').value='';
         state.unlockedUntil=result.unlocked_until;clearTimeout(secretTimer);secretTimer=setTimeout(lockSensitive,Math.max(0,result.unlocked_until-Date.now()));
         done=true;observer.disconnect();closeModal();resolve(true);
