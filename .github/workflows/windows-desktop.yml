@@ -40,6 +40,10 @@ jobs:
         run: npm run build:win
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify backup workers and restore in the packaged Windows EXE
+        run: npm run test:backup-ui
+        env:
+          WORKBENCH_TEST_EXECUTABLE: ${{ github.workspace }}/dist/win-unpacked/AdsWorkbench.exe
       - name: Hash installable artifacts
         shell: pwsh
         run: |

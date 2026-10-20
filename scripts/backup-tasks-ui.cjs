@@ -13,9 +13,9 @@ const largePdf=require('../tests/large-pdf-fixture');
   let electron,page;
   const stop=()=>{try{electron?.process()?.kill();}finally{process.exit(1);}};
   const watchdog=setTimeout(()=>{console.error('FAIL backup UI exceeded 180 seconds');stop();},180000);watchdog.unref();
-  const shot=async name=>{if(!process.env.UI_SCREENSHOT_DIR)return;fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,`backup-${name}.png`),animations:'disabled',timeout:5000});};
+  const shot=async name=>{if(!process.env.UI_SCREENSHOT_DIR)return;fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,`backup${process.env.WORKBENCH_TEST_EXECUTABLE?'-packaged':''}-${name}.png`),animations:'disabled',timeout:5000});};
   try{
-    electron=await _electron.launch({executablePath:require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),'.'],env:{...process.env,ADS_WORKBENCH_MODE:'local',ADS_DESKTOP_DATA_DIR:path.join(directory,'userdata')}});
+    electron=await _electron.launch({executablePath:process.env.WORKBENCH_TEST_EXECUTABLE||require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),...(process.env.WORKBENCH_TEST_EXECUTABLE?[]:['.'])],env:{...process.env,ADS_WORKBENCH_MODE:'local',ADS_DESKTOP_DATA_DIR:path.join(directory,'userdata')}});
     page=await electron.firstWindow();page.setDefaultTimeout(20000);
     const errors=[];page.on('pageerror',error=>errors.push(error.message));
     await page.getByText('已连接',{exact:true}).waitFor();await page.setViewportSize({width:1280,height:800});
@@ -45,13 +45,20 @@ const largePdf=require('../tests/large-pdf-fixture');
     await page.locator('#package-new-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-new-upload').disabled);await page.locator('#package-new-upload').click();
     let release,started;const gate=new Promise(resolve=>{release=resolve;});const intercepted=new Promise(resolve=>{started=resolve;});let held=false;
     await page.route('**/api/backup-jobs/*/chunk?*',async route=>{
-      if(new URL(route.request().url()).searchParams.get('offset')==='1048576'&&!held){held=true;started();await gate;}
+      if(new URL(route.request().url()).searchParams.get('offset')==='1048576'&&!held){
+        held=true;
+        // Persist the chunk, but withhold its response: cancellation cannot undo
+        // a server commit that happened before the browser received confirmation.
+        const response=await route.fetch();started();await gate;
+        await route.fulfill({response}).catch(()=>{});return;
+      }
       await route.continue().catch(()=>{});
     });
-    await page.locator('#package-upload-start').click();await intercepted;await page.locator('#package-pause').click();release();
+    await page.locator('#package-upload-start').click();await intercepted;assert.equal(await page.locator('#package-progress').evaluate(element=>element.value),1048576);await page.locator('#package-pause').click();release();
     await page.waitForFunction(()=>!document.getElementById('package-upload-start').disabled);
     const uploaded=await page.evaluate(async()=>(await api('/api/backup-jobs')).jobs.find(job=>job.kind==='restore'));
-    assert.equal(uploaded.offset,1048576,'only acknowledged chunks advance persisted progress');
+    assert.equal(uploaded.offset,2097152,'pause reconciles an already committed chunk whose response was not received');
+    assert.equal(await page.locator('#package-progress').evaluate(element=>element.value),uploaded.offset);
     await shot('paused');await page.locator('#package-upload-back').click();
     await page.locator(`[data-job="${uploaded.id}"] [data-package-action="upload"]`).click();
     const wrong=path.join(directory,'wrong.awbp');const altered=Buffer.from(fs.readFileSync(archive));altered[64]^=1;fs.writeFileSync(wrong,altered);
@@ -59,7 +66,7 @@ const largePdf=require('../tests/large-pdf-fixture');
     await page.locator('#package-resume-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-upload-start').disabled);await page.locator('#package-upload-start').click();
     await page.locator('#package-verify').waitFor();await page.unroute('**/api/backup-jobs/*/chunk?*');
     await page.locator('#package-verify').click();await page.locator(`[data-job="${uploaded.id}"] [data-package-action="review"]`).waitFor();
-    console.log('PASS acknowledged chunk pause, reopen, wrong-file rejection, resume and full authenticated verification');
+    console.log('PASS lost chunk response, pause reconciled to server offset, reopen, wrong-file rejection, resume and authenticated verification');
     await page.locator(`[data-job="${uploaded.id}"] [data-package-action="review"]`).click();assert.equal(await page.locator('#package-apply').isDisabled(),true);
     assert.match(await page.locator('.backup-count-wrap').innerText(),/记录\s+1\s+1/);
     await shot('review');

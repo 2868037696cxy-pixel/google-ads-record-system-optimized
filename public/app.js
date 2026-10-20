@@ -1711,7 +1711,10 @@ document.addEventListener('click', async (e) => {
         if(!await ensureSensitive()) break;
         const backupEpoch = state.sensitiveEpoch;
         const backupResponse=await fetch('/api/backup',{headers:{'x-workbench':'1'},signal:AbortSignal.timeout(60000)});
-        if(!backupResponse.ok) throw new Error('备份导出失败，请重新解锁后重试');
+        if(!backupResponse.ok) {
+          const detail = await backupResponse.json().catch(() => ({}));
+          throw new Error(detail.message || detail.error || '备份导出失败，请重新解锁后重试');
+        }
         const backupText = await backupResponse.text();
         if (backupEpoch !== state.sensitiveEpoch || state.unlockedUntil <= Date.now()) throw new Error('敏感授权已结束，请重新导出备份');
         download('AdsWorkbench-'+todayKey()+'.json',backupText,'application/json');

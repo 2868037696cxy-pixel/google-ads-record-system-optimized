@@ -73,7 +73,7 @@ globalThis.BackupTasks = (() => {
       clearTimeout(timer); loading = true;
       try {
         const result = await api('/api/backup-jobs', { signal: requestSignal(signal) });
-        if (signal.aborted) return;
+        if (signal.aborted || busy) return;
         jobs = result.jobs; errorBox.hidden = true;
         const html = jobs.length ? jobs.map(job => `<section class="backup-job" data-job="${esc(job.id)}"><div class="backup-job-heading"><b>${job.kind === 'export' ? '导出备份' : '恢复上传'} <span class="backup-state">${esc(labels[job.status] || job.status)}</span></b><span class="settings-hint">${esc(new Date(job.created_at).toLocaleString())}</span></div><p class="settings-hint">${job.kind === 'restore' ? `服务器已接收 ${sizes(job.offset)} / ${sizes(job.size)}` : job.size ? sizes(job.size) : '正在读取一致的数据快照'} · ${esc(new Date(job.expires_at).toLocaleString())} 到期</p>${job.error ? `<p class="field-error">${esc(job.error)}</p>` : ''}${job.sha256 ? `<details><summary>文件 SHA-256 校验值</summary><code class="backup-hash">${esc(job.sha256)}</code></details>` : ''}<div class="backup-job-actions">${job.status === 'ready' ? '<button class="btn btn-primary btn-sm" data-package-action="download">下载加密文件</button>' : ''}${job.status === 'uploading' ? '<button class="btn btn-ghost btn-sm" data-package-action="upload">继续上传 / 校验</button>' : ''}${job.status === 'review' ? '<button class="btn btn-danger btn-sm" data-package-action="review">核对恢复范围</button>' : ''}<button class="btn btn-ghost btn-sm" data-package-action="delete">删除临时任务</button></div></section>`).join('') : WorkbenchUI.emptyState({ title: '暂无临时任务', description: '建立备份，或选择已下载的 .awbp 文件开始恢复。' });
         if (html !== previous) {
