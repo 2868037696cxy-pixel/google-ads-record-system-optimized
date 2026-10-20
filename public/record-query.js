@@ -19,7 +19,10 @@ globalThis.WorkbenchRecordQuery = (() => {
     return '/api/records?' + params;
   };
 
-  function create({ readQuery, request, onPhase, onResult, onRender, onError, delay = 250, clock = { setTimeout, clearTimeout } }) {
+  function create({ readQuery, request, onPhase, onResult, onRender, onError, delay = 250, clock = {
+    setTimeout: (callback, ms) => globalThis.setTimeout(callback, ms),
+    clearTimeout: id => globalThis.clearTimeout(id),
+  } }) {
     let generation = 0, timer = null, active = null;
     const cancel = () => {
       clock.clearTimeout(timer);

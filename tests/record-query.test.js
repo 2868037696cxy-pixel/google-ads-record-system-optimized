@@ -1,6 +1,8 @@
 'use strict';
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
 const { create } = require('../public/record-query');
 
 const deferred = () => {
@@ -23,6 +25,19 @@ function harness() {
   return { controller, query, requests, results, phases, renders, errors, timers, flush };
 }
 const data = (id, total = 1) => ({ items: [{ id }], total });
+
+test('default timer adapters preserve the browser global receiver', () => {
+  const source = fs.readFileSync(require.resolve('../public/record-query'), 'utf8');
+  vm.runInNewContext(source + `
+    let scheduled = 0, cancelled = 0;
+    globalThis.setTimeout = function () { if (this !== globalThis) throw new TypeError('Illegal invocation'); scheduled++; return 1; };
+    globalThis.clearTimeout = function () { if (this !== globalThis) throw new TypeError('Illegal invocation'); cancelled++; };
+    const controller = WorkbenchRecordQuery.create({ onPhase() {} });
+    controller.schedule();
+    controller.invalidate();
+    if (scheduled !== 1 || cancelled !== 2) throw new Error('timer adapters did not run');
+  `);
+});
 
 test('superseded successes and failures cannot replace the newest result or feedback', async () => {
   for (const fail of [false, true]) {
