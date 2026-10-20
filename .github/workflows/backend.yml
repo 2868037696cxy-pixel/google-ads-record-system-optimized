@@ -38,12 +38,20 @@ jobs:
       - name: Verify install, rollback fault injection and maintenance exclusion on disposable runner
         run: |
           set -Eeuo pipefail
+          # Reproduce a root-only mktemp checkout; tar must not leave release '.' at 0700.
+          source_mode="$(stat -c %a "$PWD")"
+          trap 'chmod "$source_mode" "$PWD"' EXIT
+          chmod 700 "$PWD"
           sudo env PATH="$PATH" bash scripts/deploy-ubuntu.sh
           sleep 2
           sudo systemctl is-active adsworkbench
           curl --fail http://127.0.0.1:4317/api/healthz
 
           current_before="$(readlink -f /opt/adsworkbench-current)"
+          test "$(stat -c %a "$current_before")" = 755
+          test "$(stat -c %U "$current_before")" = root
+          sudo -u adsworkbench test -x "$current_before"
+          sudo -u adsworkbench test -r "$current_before/server.js"
           unit_before="$(sudo sha256sum /etc/systemd/system/adsworkbench.service | awk '{print $1}')"
           backup_unit_before="$(sudo sha256sum /etc/systemd/system/adsworkbench-backup.service | awk '{print $1}')"
           backup_timer_before="$(sudo sha256sum /etc/systemd/system/adsworkbench-backup.timer | awk '{print $1}')"

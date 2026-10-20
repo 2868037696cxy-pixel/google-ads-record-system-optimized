@@ -41,6 +41,9 @@ install -d -m 755 /opt/adsworkbench-releases
 install -d -m 755 "$RELEASE"
 # The archive excludes all live databases, keys, development dependencies and artifacts.
 tar -C "$SOURCE" --exclude=.git --exclude=node_modules --exclude=data --exclude=dist --exclude=backups --exclude='*.sqlite*' --exclude='*.log' -cf - . | tar -C "$RELEASE" -xf -
+# tar restores the source root's mode onto '.', including mktemp's 0700.
+# Keep the release traversable after ownership returns to root below.
+chmod 755 "$RELEASE"
 chown -R adsworkbench:adsworkbench "$RELEASE"
 cd "$RELEASE"
 runuser -u adsworkbench -- env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts --cache "$RELEASE/.npm-cache"
