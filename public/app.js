@@ -566,9 +566,10 @@ function renderSettings() {
         <p class="settings-hint">快捷键：Ctrl+K 搜索当前列表，Esc 关闭弹窗或列菜单。</p>
       </div></section>
       <section class="panel"><div class="panel-head"><h2 class="panel-title">数据备份与恢复</h2></div><div class="panel-body settings-stack">
-        <div class="settings-row"><div><b>导出备份</b><p>保存记录与资源，备份文件请妥善保管。</p></div><button class="btn btn-ghost" data-action="${local ? 'desktop' : 'web'}-backup">导出备份</button></div>
+        <div class="settings-row"><div><b>大文件备份与恢复</b><p>加密任务、分块续传、PDF 校验和恢复范围核对，单包上限 512 MiB。</p></div><button class="btn btn-primary" data-action="backup-tasks">管理备份任务</button></div>
+        <div class="settings-row"><div><b>旧版 JSON 导出</b><p>兼容既有备份格式；大文件请使用上方的备份任务。</p></div><button class="btn btn-ghost" data-action="${local ? 'desktop' : 'web'}-backup">导出备份</button></div>
         ${local ? '<div class="settings-row"><div><b>本机数据目录</b><p>查看桌面程序保存的数据文件。</p></div><button class="btn btn-ghost" data-action="desktop-data">打开目录</button></div>' : ''}
-        <div class="settings-row settings-danger"><div><b>从备份恢复</b><p>会替换当前账号的数据。请先导出当前备份，再核对恢复内容。</p></div><button class="btn btn-danger" data-action="${local ? 'desktop' : 'web'}-restore">恢复备份</button></div>
+        <div class="settings-row settings-danger"><div><b>旧版 JSON 恢复</b><p>恢复既有 JSON 备份，会替换当前账号的数据。请先保存当前备份。</p></div><button class="btn btn-danger" data-action="${local ? 'desktop' : 'web'}-restore">恢复备份</button></div>
       </div></section>
       <section class="panel"><div class="panel-head"><h2 class="panel-title">数据一致性</h2></div><div class="panel-body settings-stack">
         <div class="settings-row"><div><b>记录关联检查</b><p>逐批检查历史关联、字段差异和重复占用，核对后逐项处理。</p></div><button class="btn btn-ghost" data-action="check-integrity">检查本人数据</button></div>
@@ -1696,6 +1697,8 @@ document.addEventListener('click', async (e) => {
         break;
       case 'my-audit':
         await showMyAudit();break;
+      case 'backup-tasks':
+        BackupTasks.open();break;
       case 'check-integrity':
         RecordIntegrity.open();break;
       case 'change-password':

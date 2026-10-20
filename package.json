@@ -15,7 +15,8 @@
     "backup:check": "node scripts/backup.cjs verify",
     "test:f15": "node scripts/f15-ui.cjs",
     "test:design": "node scripts/design-foundations-ui.cjs",
-    "test:ux": "node scripts/workbench-ux-ui.cjs"
+    "test:ux": "node scripts/workbench-ux-ui.cjs",
+    "test:backup-ui": "node scripts/backup-tasks-ui.cjs"
   },
   "engines": {
     "node": ">=22.16.0"

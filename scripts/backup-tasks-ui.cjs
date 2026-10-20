@@ -1,0 +1,104 @@
+'use strict';
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const crypto=require('node:crypto');
+const {_electron}=require('playwright');
+const largePdf=require('../tests/large-pdf-fixture');
+
+(async()=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'wb-package-ui-'));
+  const archive=path.join(directory,'personal.awbp');
+  let electron,page;
+  const stop=()=>{try{electron?.process()?.kill();}finally{process.exit(1);}};
+  const watchdog=setTimeout(()=>{console.error('FAIL backup UI exceeded 180 seconds');stop();},180000);watchdog.unref();
+  const shot=async name=>{if(!process.env.UI_SCREENSHOT_DIR)return;fs.mkdirSync(process.env.UI_SCREENSHOT_DIR,{recursive:true});await page.screenshot({path:path.join(process.env.UI_SCREENSHOT_DIR,`backup-${name}.png`),animations:'disabled',timeout:5000});};
+  try{
+    electron=await _electron.launch({executablePath:require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),'.'],env:{...process.env,ADS_WORKBENCH_MODE:'local',ADS_DESKTOP_DATA_DIR:path.join(directory,'userdata')}});
+    page=await electron.firstWindow();page.setDefaultTimeout(20000);
+    const errors=[];page.on('pageerror',error=>errors.push(error.message));
+    await page.getByText('已连接',{exact:true}).waitFor();await page.setViewportSize({width:1280,height:800});
+    await electron.evaluate(({BrowserWindow},filename)=>{
+      globalThis.packageDownloadStatus='waiting';
+      BrowserWindow.getAllWindows()[0].webContents.session.on('will-download',(_event,item)=>{
+        if(!item.getFilename().endsWith('.awbp'))return;
+        item.setSavePath(filename);item.once('done',(_event,status)=>{globalThis.packageDownloadStatus=status;});
+      });
+    },archive);
+    await page.evaluate(async pdf=>{
+      await api('/api/import/emails',{method:'POST',body:{items:[{user:'package-ui@example.test',pass:'SYNTHETIC-PACKAGE-UI'}]}});
+      await api('/api/import/licenses',{method:'POST',body:{pdf,filename:'large-certificate.pdf',items:[{name:'Desktop backup company'}]}});
+      await api('/api/records',{method:'POST',body:{domains:['package-ui.example'],proxy_mode:'none'}});
+      await refresh();
+    },largePdf(90).toString('base64'));
+    await page.locator('#nav [data-page="settings"]').click();await page.locator('[data-action="backup-tasks"]').click();
+    await page.locator('#package-export').click();await page.locator('[data-package-action="download"]').waitFor();
+    const exported=await page.evaluate(async()=>(await api('/api/backup-jobs')).jobs.find(job=>job.kind==='export'));
+    assert.equal(exported.counts.records,1);assert.equal(exported.counts.documents,1);
+    await shot('ready');await page.locator('[data-package-action="download"]').click();
+    for(let i=0;i<400;i++){if(await electron.evaluate(()=>globalThis.packageDownloadStatus)==='completed')break;await new Promise(resolve=>setTimeout(resolve,25));}
+    assert.equal(await electron.evaluate(()=>globalThis.packageDownloadStatus),'completed');
+    assert.equal(crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex'),exported.sha256,'native download must save the exact encrypted package');
+    console.log('PASS native .awbp save, worker progress, verified counts and exact file checksum');
+
+    await page.locator('#package-new-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-new-upload').disabled);await page.locator('#package-new-upload').click();
+    let release,started;const gate=new Promise(resolve=>{release=resolve;});const intercepted=new Promise(resolve=>{started=resolve;});let held=false;
+    await page.route('**/api/backup-jobs/*/chunk?*',async route=>{
+      if(new URL(route.request().url()).searchParams.get('offset')==='1048576'&&!held){held=true;started();await gate;}
+      await route.continue().catch(()=>{});
+    });
+    await page.locator('#package-upload-start').click();await intercepted;await page.locator('#package-pause').click();release();
+    await page.waitForFunction(()=>!document.getElementById('package-upload-start').disabled);
+    const uploaded=await page.evaluate(async()=>(await api('/api/backup-jobs')).jobs.find(job=>job.kind==='restore'));
+    assert.equal(uploaded.offset,1048576,'only acknowledged chunks advance persisted progress');
+    await shot('paused');await page.locator('#package-upload-back').click();
+    await page.locator(`[data-job="${uploaded.id}"] [data-package-action="upload"]`).click();
+    const wrong=path.join(directory,'wrong.awbp');const altered=Buffer.from(fs.readFileSync(archive));altered[64]^=1;fs.writeFileSync(wrong,altered);
+    await page.locator('#package-resume-file').setInputFiles(wrong);await page.getByText('文件与此上传任务不一致，请选择原文件或建立新任务',{exact:true}).waitFor();assert.equal(await page.locator('#package-upload-start').isDisabled(),true);
+    await page.locator('#package-resume-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-upload-start').disabled);await page.locator('#package-upload-start').click();
+    await page.locator('#package-verify').waitFor();await page.unroute('**/api/backup-jobs/*/chunk?*');
+    await page.locator('#package-verify').click();await page.locator(`[data-job="${uploaded.id}"] [data-package-action="review"]`).waitFor();
+    console.log('PASS acknowledged chunk pause, reopen, wrong-file rejection, resume and full authenticated verification');
+    await page.locator(`[data-job="${uploaded.id}"] [data-package-action="review"]`).click();assert.equal(await page.locator('#package-apply').isDisabled(),true);
+    assert.match(await page.locator('.backup-count-wrap').innerText(),/记录\s+1\s+1/);
+    await shot('review');
+    await page.evaluate(async()=>{
+      const record=(await api('/api/records?limit=10&offset=0')).items[0];
+      await api(`/api/records/${record.id}`,{method:'PATCH',body:{version:record.version,product:'LIVE CHANGE AFTER REVIEW'}});
+    });
+    await page.locator('#package-consent').check();await page.locator('#package-apply').click();await page.locator('.dialog-error').waitFor();assert.match(await page.locator('.dialog-error').innerText(),/已变化/);assert.equal(await page.locator('#package-apply').isDisabled(),true);
+    assert.equal(await page.evaluate(async()=>(await api('/api/records?limit=10&offset=0')).items[0].product),'LIVE CHANGE AFTER REVIEW');
+    await shot('stale-protection');
+    await page.locator('#package-review-again').click();assert.equal(await page.locator('#package-consent').isChecked(),false);assert.equal(await page.locator('#package-apply').isDisabled(),true);
+    await page.locator('#package-consent').check();await page.locator('#package-apply').click();await page.getByText('恢复完成',{exact:true}).waitFor();
+    assert.equal(await page.evaluate(async()=>{const r=await api('/api/records?limit=10&offset=0');return r.items[0].product;}),'');
+    const events=await page.evaluate(async()=>(await api('/api/audit')).events);assert.equal(events.filter(event=>event.action==='backup.package.restore').length,1);
+    console.log('PASS unchecked restore consent, stale-version refusal, explicit re-review and single committed restore');
+
+    // A late result must never reopen a dialog that has been closed by locking.
+    let finishReview,reviewStarted;const reviewGate=new Promise(resolve=>{finishReview=resolve;});const reviewing=new Promise(resolve=>{reviewStarted=resolve;});
+    await page.route('**/api/backup-jobs/*/review',async route=>{const response=await route.fetch();reviewStarted();await reviewGate;await route.fulfill({response}).catch(()=>{});});
+    // The completed upload cannot be reviewed again, so create one more verified task.
+    await page.locator(`[data-job="${exported.id}"] [data-package-action="delete"]`).click();await page.locator('#package-delete-confirm').click();
+    await page.locator('#package-new-file').setInputFiles(archive);await page.waitForFunction(()=>!document.getElementById('package-new-upload').disabled);await page.locator('#package-new-upload').click();await page.locator('#package-upload-start').click();await page.locator('#package-verify').waitFor();await page.locator('#package-verify').click();await page.locator('[data-package-action="review"]').waitFor();
+    await page.locator('[data-package-action="review"]').click();await reviewing;await page.evaluate(()=>lockSensitive());finishReview();await page.unroute('**/api/backup-jobs/*/review');
+    await page.evaluate(()=>new Promise(resolve=>setTimeout(resolve,100)));assert.equal(await page.locator('.modal').count(),0);
+    console.log('PASS lock invalidates late backup review response');
+
+    await page.locator('[data-action="backup-tasks"]').click();await page.locator('[data-package-action="review"]').click();
+    for(const zoom of [1,1.25,1.5]){
+      await electron.evaluate(({BrowserWindow},value)=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(value),zoom);
+      assert.equal(await page.locator('.modal-foot').evaluate(element=>element.getBoundingClientRect().bottom<=innerHeight+1),true);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth+1),false);
+      await shot(`review-zoom-${zoom*100}`);
+    }
+    await electron.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
+    assert.deepEqual(errors,[]);console.log('PASS 1280px layout, 125/150% Electron zoom and no renderer errors');
+  }catch(error){if(page)await shot('failure').catch(()=>{});throw error;}
+  finally{
+    clearTimeout(watchdog);
+    if(electron){const cleanup=setTimeout(()=>{console.error('FAIL backup UI did not shut down within 5 seconds');stop();},5000);try{await electron.close();}finally{clearTimeout(cleanup);}}
+    fs.rmSync(directory,{recursive:true,force:true});
+  }
+})().catch(error=>{console.error(error);process.exitCode=1;});

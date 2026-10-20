@@ -59,6 +59,7 @@ const STATUSES = store.STATUSES;
 const RECORD_STATUSES = store.RECORD_STATUSES;
 
 const db = openDatabase(DB_FILE);
+const personalJobs = require('./lib/personal-backup-jobs')({ db, databaseFile: DB_FILE, directory: path.join(DATA_DIR, 'backup-tasks') });
 
 /** 抛出带 400 状态的错误；Fastify 会据此返回 400 与中文提示。 */
 function reply400(msg) {
@@ -1822,6 +1823,49 @@ fastify.post('/api/export/csv', async (req) => {
 
 /* ---------------- 个人备份与恢复（服务器版） ---------------- */
 
+fastify.get('/api/backup-jobs', async req => ({ jobs: personalJobs.list(currentUserId(req)) }));
+fastify.get('/api/backup-jobs/:id', async req => personalJobs.get(currentUserId(req), req.params.id));
+fastify.post('/api/backup-jobs', async req => { requireUnlocked(req); return personalJobs.create(currentUserId(req), req.body); });
+fastify.delete('/api/backup-jobs/:id', async req => personalJobs.remove(currentUserId(req), req.params.id));
+fastify.post('/api/backup-jobs/:id/verify', async req => { requireUnlocked(req); return personalJobs.verify(currentUserId(req), req.params.id); });
+fastify.post('/api/backup-jobs/:id/review', async req => { requireUnlocked(req); return personalJobs.review(currentUserId(req), req.params.id); });
+fastify.post('/api/backup-jobs/:id/apply', async req => {
+  requireUnlocked(req);
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'revision')) return reply400('恢复确认参数无效');
+  return personalJobs.apply(currentUserId(req), req.params.id, body.revision);
+});
+fastify.register(async app => {
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+  app.put('/api/backup-jobs/:id/chunk', { bodyLimit: require('./lib/personal-package').CHUNK_BYTES }, async req => {
+    const raw = req.query?.offset;
+    if (typeof raw !== 'string' || !/^(0|[1-9]\d*)$/.test(raw) || !Number.isSafeInteger(Number(raw))) return reply400('分块位置无效');
+    return personalJobs.chunk(currentUserId(req), req.params.id, Number(raw), req.body, req.headers['x-chunk-sha256']);
+  });
+});
+fastify.get('/api/backup-jobs/:id/file', async (req, reply) => {
+  requireUnlocked(req);
+  const file = personalJobs.download(currentUserId(req), req.params.id);
+  if (!fs.existsSync(file.file) || fs.statSync(file.file).size !== file.size) return reply.code(409).send({ error: '临时备份文件不完整，请重新创建任务' });
+  const etag = '"' + file.sha256 + '"';
+  reply.header('Accept-Ranges', 'bytes').header('ETag', etag).header('Content-Type', 'application/octet-stream');
+  reply.header('Content-Disposition', `attachment; filename="AdsWorkbench-${req.params.id}.awbp"`);
+  const range = !req.headers['if-range'] || req.headers['if-range'] === etag ? req.headers.range : undefined;
+  let start = 0, end = file.size - 1;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (match && (match[1] || match[2])) {
+      if (!match[1]) start = Math.max(0, file.size - Number(match[2]));
+      else { start = Number(match[1]); if (match[2]) end = Math.min(end, Number(match[2])); }
+    }
+    if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= file.size || (!match[1] && Number(match[2]) === 0)) return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
+    reply.code(206).header('Content-Range', `bytes ${start}-${end}/${file.size}`);
+  }
+  reply.header('Content-Length', end - start + 1);
+  if (req.method !== 'HEAD') audit(db, currentUserId(req), 'backup.package.download', req.params.id);
+  return reply.send(fs.createReadStream(file.file, { start, end }));
+});
+
 /** 导出当前账号的资源、记录与原件。附件以 base64 内嵌，形状与旧版 data.json 一致，可互相导入。 */
 fastify.get('/api/backup', async (req, reply) => {
   const ownerId = currentUserId(req);
@@ -1966,6 +2010,7 @@ const start = async ({ port = Number(process.env.PORT) || 3000, host = process.e
 /** 关闭服务：先停掉 HTTP，再关数据库句柄（Windows 上句柄不关会导致数据文件无法删除/替换）。 */
 const close = async () => {
   await fastify.close();
+  await personalJobs.close();
   try { db.close(); } catch { /* 已关闭 */ }
 };
 

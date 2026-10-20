@@ -189,3 +189,24 @@
     .btn[aria-busy="true"]::before, .query-feedback:not(.query-error)::before { animation: none; }
   }
 }
+
+/* Bounded backup task workspace, using the shared dialog and button system. */
+@layer components {
+.backup-create { padding: var(--ui-space-4); border: 1px solid var(--line); border-radius: var(--r-md); display: flex; align-items: center; justify-content: space-between; gap: var(--ui-space-4); }
+.backup-create p, .backup-create label span { display: block; margin: var(--ui-space-2) 0 0; color: var(--muted); font-size: var(--font-label); }
+.backup-upload-new { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+.backup-upload-new label, .backup-upload-new input { grid-column: 1 / -1; }
+.backup-upload-new input { min-width: 0; max-width: 100%; }
+.backup-list-head, .backup-job-heading, .backup-job-actions { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: var(--ui-space-3); }
+.backup-job { padding: var(--ui-space-4) 0; border-bottom: 1px solid var(--line); }
+.backup-job:last-child { border-bottom: 0; }
+.backup-job-actions { justify-content: flex-start; margin-top: var(--ui-space-3); }
+.backup-state { color: var(--accent); font-size: var(--font-label); font-weight: 500; margin-left: var(--ui-space-2); }
+.backup-job details { font-size: var(--font-label); color: var(--muted); }
+.backup-job summary { cursor: pointer; }
+.backup-hash { display: block; overflow-wrap: anywhere; margin-top: var(--ui-space-2); }
+.backup-count-wrap { overflow: auto; }
+#package-progress { width: 100%; height: 12px; accent-color: var(--accent); }
+#package-file-message, #package-resume-message { overflow-wrap: anywhere; }
+@media (max-width: 700px) { .backup-create { align-items: stretch; flex-direction: column; } .backup-upload-new { grid-template-columns: minmax(0, 1fr); } }
+}

@@ -80,7 +80,7 @@ async function openWindow() {
     const url=item.getURL();
     if(wc!==window.webContents||!(url.startsWith(origin+'/')||url.startsWith('blob:'+origin+'/'))) {event.preventDefault();return;}
     const name=path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g,'_');
-    if(!/\.(pdf|json|csv|txt)$/i.test(name)){event.preventDefault();return;}
+    if(!/\.(pdf|json|csv|txt|awbp)$/i.test(name)){event.preventDefault();return;}
     item.setSaveDialogOptions({title:'\u4fdd\u5b58\u5de5\u4f5c\u53f0\u6587\u4ef6',defaultPath:path.join(app.getPath('downloads'),name)});
     item.once('done',(_event,status)=>{if(status==='interrupted' && window && !window.isDestroyed())dialog.showMessageBox(window,{type:'error',message:'\u6587\u4ef6\u4e0b\u8f7d\u672a\u5b8c\u6210\uff0c\u8bf7\u91cd\u8bd5'});});
   });
