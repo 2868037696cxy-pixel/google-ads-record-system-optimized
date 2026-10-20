@@ -1752,7 +1752,8 @@ document.addEventListener('click', async (e) => {
           if (restoreFocus && state.page === 'records' && !document.querySelector('#modal-root .modal')
               && (document.activeElement === document.body || document.activeElement === t)) {
             const next = document.querySelector(`#recordsPanel [data-action="table-page"][data-direction="${t.dataset.direction}"]:not(:disabled)`)
-              || document.querySelector('#recordsPanel [data-action="table-page"]:not(:disabled), #recordsPanel .table-wrap');
+              || document.querySelector('#recordsPanel [data-action="table-page"]:not(:disabled)')
+              || document.querySelector('#recordsPanel .table-wrap');
             next?.focus({ preventScroll: true });
           }
         } else {
