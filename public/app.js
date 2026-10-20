@@ -170,6 +170,7 @@ const state = {
   recordSort: 'id_desc',
   recordsPhase: 'ready',
   recordError: '',
+  recordQueryReason: '',
   syncError: '',
   lastSyncedAt: null,
   next: null,
@@ -197,9 +198,6 @@ const state = {
 };
 
 const MASK = '••••••';
-let recordRequestSeq = 0;
-let recordSearchTimer = null;
-let recordController = null;
 let refreshRequestSeq = 0;
 
 /* ============ 记录表列显隐（方案工作包 06：列显隐 + 按用户保存的表格偏好） ============
@@ -353,16 +351,32 @@ function renderSyncNotice() {
   main.insertAdjacentHTML('afterbegin', `<div class="sync-notice" id="syncNotice" role="alert"><div><b>当前显示的是上次读取的数据</b><p>${esc(state.syncError)}</p></div><button class="btn btn-ghost btn-sm" data-action="retry-load">重新连接</button></div>`);
 }
 
-// 在防抖开始时立即作废旧查询，而不是等到下一次 fetch 发出才作废。
-function invalidateRecordQuery() {
-  clearTimeout(recordSearchTimer);
-  recordSearchTimer = null;
-  ++recordRequestSeq;
-  recordController?.abort();
-  state.recordsPhase = 'loading';
-  state.recordError = '';
-  updateRecordsChrome();
-}
+// Explicit adapters keep query ownership independent of page rendering and selection.
+const recordQuery = WorkbenchRecordQuery.create({
+  readQuery: () => ({
+    page: state.recordPage, limit: state.recordLimit, sort: state.recordSort,
+    q: state.q, status: state.rstatus, reveal: state.reveal, sensitiveEpoch: state.sensitiveEpoch,
+  }),
+  request: (path, options) => api(path, options),
+  onPhase(phase, error, reason) {
+    state.recordsPhase = phase;
+    state.recordError = error;
+    state.recordQueryReason = reason;
+    updateRecordsChrome();
+  },
+  onResult({ items, total, page }) {
+    state.records = items;
+    state.recordFilteredTotal = total;
+    state.recordPage = page;
+  },
+  onRender(mode) {
+    if (mode === 'table' && state.page === 'records') renderRecordsTableInto();
+    else if (mode === 'full') render();
+  },
+  onError: error => toast(error.message, 'error'),
+});
+function invalidateRecordQuery(options) { recordQuery.invalidate(options); }
+function loadRecordsPage(options) { return recordQuery.load(options); }
 
 function updateRecordsChrome() {
   const panel = document.querySelector('.page-records #recordsPanel');
@@ -375,9 +389,12 @@ function updateRecordsChrome() {
   if (feedback) {
     feedback.hidden = !unavailable;
     feedback.classList.toggle('query-error', state.recordsPhase === 'error');
+    feedback.dataset.pending = state.recordQueryReason;
     feedback.querySelector('[data-feedback-text]').textContent = state.recordsPhase === 'error'
       ? `查询失败：${state.recordError}。下方仍为上次结果。`
-      : '正在查询最新记录，下方结果更新前暂不可操作…';
+      : state.recordQueryReason === 'composition'
+        ? '确认输入后自动查询，下方仍为上次结果。'
+        : '正在查询最新记录，下方结果更新前暂不可操作…';
     feedback.querySelector('button').hidden = state.recordsPhase !== 'error';
   }
   panel.querySelectorAll('.table-wrap').forEach(wrap => { wrap.inert = unavailable; });
@@ -396,58 +413,6 @@ function updateRecordsChrome() {
   });
   const del = panel.querySelector('[data-action="delete-selected"]');
   if (del) del.disabled = unavailable || !state.sel.size;
-}
-
-async function loadRecordsPage({ renderMode = 'none' } = {}) {
-  clearTimeout(recordSearchTimer);
-  recordSearchTimer = null;
-  recordController?.abort();
-  const controller = new AbortController();
-  recordController = controller;
-  const requestId = ++recordRequestSeq;
-  const reveal = state.reveal;
-  state.recordsPhase = 'loading';
-  state.recordError = '';
-  updateRecordsChrome();
-  const params = new URLSearchParams();
-  params.set('limit', String(state.recordLimit));
-  params.set('offset', String(Math.max(0, (state.recordPage - 1) * state.recordLimit)));
-  params.set('sort', state.recordSort);
-  if (state.q.trim()) params.set('q', state.q.trim());
-  if (state.rstatus !== '全部') params.set('status', state.rstatus);
-  if (state.reveal) params.set('reveal', '1');
-
-  let data;
-  try {
-    data = await api('/api/records?' + params.toString(), { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(60000)]) });
-    if (requestId !== recordRequestSeq || reveal !== state.reveal) return false;
-    if (!data || !Array.isArray(data.items) || !Number.isSafeInteger(Number(data.total)) || Number(data.total) < 0) {
-      throw new Error('记录分页数据格式不正确');
-    }
-  } catch (error) {
-    if (requestId !== recordRequestSeq || reveal !== state.reveal) return false;
-    state.recordsPhase = 'error';
-    state.recordError = error.message;
-    updateRecordsChrome();
-    throw error;
-  }
-
-  const total = Number(data.total);
-  const pages = Math.max(1, Math.ceil(total / state.recordLimit));
-  if (state.recordPage > pages) {
-    state.recordPage = pages;
-    return loadRecordsPage({ renderMode });
-  }
-
-  state.records = data.items;
-  state.recordFilteredTotal = total;
-  state.recordsPhase = 'ready';
-  state.recordError = '';
-
-  if (renderMode === 'table' && state.page === 'records') renderRecordsTableInto();
-  else if (renderMode === 'full') render();
-  updateRecordsChrome();
-  return true;
 }
 
 async function refresh() {
@@ -799,8 +764,8 @@ function renderPagination(kind, page) {
   const limit = kind === 'records' ? state.recordLimit : 50;
   return `<div class="table-pagination"><span role="status">共 ${page.total} 条 · 第 ${page.page} / ${page.pages} 页 · 每页 ${limit} 条</span><div>
     ${kind === 'records' ? `<label class="toolbar-field">每页<select id="rec-limit" aria-label="每页记录数">${[25,50,100,200].map(value => `<option value="${value}" ${limit === value ? 'selected' : ''}>${value} 条</option>`).join('')}</select></label>` : ''}
-    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-page="${page.page - 1}" data-disabled="${page.page <= 1}" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
-    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-page="${page.page + 1}" data-disabled="${page.page >= page.pages}" ${page.page >= page.pages ? 'disabled' : ''}>下一页</button>
+    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-direction="previous" data-page="${page.page - 1}" data-disabled="${page.page <= 1}" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
+    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-direction="next" data-page="${page.page + 1}" data-disabled="${page.page >= page.pages}" ${page.page >= page.pages ? 'disabled' : ''}>下一页</button>
   </div></div>`;
 }
 
@@ -1781,10 +1746,15 @@ document.addEventListener('click', async (e) => {
       case 'table-page':
         if (t.dataset.kind === 'records') {
           if (state.recordsPhase !== 'ready') break;
+          const restoreFocus = document.activeElement === t;
           state.recordPage = Number(t.dataset.page);
-          await loadRecordsPage({ renderMode: 'table' });
-          const next = document.querySelector(`#recordsPanel [data-action="table-page"][data-page="${t.dataset.page === '1' ? 2 : Number(t.dataset.page) - 1}"]`);
-          next?.focus({ preventScroll: true });
+          if (!await loadRecordsPage({ renderMode: 'table' })) break;
+          if (restoreFocus && state.page === 'records' && !document.querySelector('#modal-root .modal')
+              && (document.activeElement === document.body || document.activeElement === t)) {
+            const next = document.querySelector(`#recordsPanel [data-action="table-page"][data-direction="${t.dataset.direction}"]:not(:disabled)`)
+              || document.querySelector('#recordsPanel [data-action="table-page"]:not(:disabled), #recordsPanel .table-wrap');
+            next?.focus({ preventScroll: true });
+          }
         } else {
           state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto();
         }
@@ -1865,7 +1835,6 @@ document.addEventListener('change', async (e) => {
     state.recordPage = 1;
     try { await loadRecordsPage({ renderMode: 'table' }); }
     catch (error) { toast(error.message, 'error'); }
-    if (e.target.id === 'rec-limit') document.getElementById('rec-limit')?.focus({ preventScroll: true });
     return;
   }
   const t = e.target.closest('[data-action]');
@@ -1915,14 +1884,30 @@ document.addEventListener('change', async (e) => {
   }
 });
 
+// A WeakSet follows the actual input node, so a replaced page cannot leave a
+// global composition flag stuck. compositionend + the final input share a timer.
+const composingRecordInputs = new WeakSet();
+document.addEventListener('compositionstart', event => {
+  if (event.target.id !== 'rec-q') return;
+  composingRecordInputs.add(event.target);
+  invalidateRecordQuery({ reason: 'composition' });
+});
+document.addEventListener('compositionend', event => {
+  if (event.target.id !== 'rec-q') return;
+  composingRecordInputs.delete(event.target);
+  if (!event.target.isConnected) return;
+  state.q = event.target.value;
+  state.recordPage = 1;
+  recordQuery.schedule({ renderMode: 'table' });
+});
+
 document.addEventListener('input', (e) => {
   if (e.target.id === 'rec-q') {
     state.q = e.target.value;
     state.recordPage = 1;
-    invalidateRecordQuery();
-    recordSearchTimer = setTimeout(() => {
-      loadRecordsPage({ renderMode: 'table' }).catch((error) => toast(error.message, 'error'));
-    }, 250);
+    if (e.isComposing || composingRecordInputs.has(e.target)) {
+      invalidateRecordQuery({ reason: 'composition' });
+    } else recordQuery.schedule({ renderMode: 'table' });
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
     state.poolPage = 1;
@@ -1977,6 +1962,7 @@ function renderRecordsTableInto(input) {
   // 只刷新表格部分，保持搜索框焦点
   const tablePanel = document.getElementById('recordsPanel');
   if (!tablePanel) return;
+  const restoreView = WorkbenchUI.preserveView(tablePanel);
   const scrollLeft = tablePanel.querySelector('.table-wrap')?.scrollLeft || 0;
   const old = tablePanel.querySelector('.table-wrap, .empty');
   if (old) old.remove();
@@ -1992,6 +1978,7 @@ function renderRecordsTableInto(input) {
   refreshSelectionUI();
   updateRecordsChrome();
   bindLabels();
+  restoreView();
 }
 
 // 勾选/全选后只刷新勾选相关 UI（行高亮、全选框、计数、删除按钮），不重建整页

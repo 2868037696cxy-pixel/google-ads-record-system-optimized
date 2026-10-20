@@ -242,17 +242,6 @@ textarea { line-height: 1.6; }
   gap: 10px;
   row-gap: 12px;
 }
-.toolbar .search { min-height: 40px; font-size: var(--font-label); }
-.tabs { gap: 4px; background: #121b26; padding: 3px; border: 1px solid var(--line); border-radius: 9px; }
-.tab {
-  min-height: 34px;
-  padding: 7px 12px;
-  border-radius: 7px;
-  font-size: var(--font-label);
-  font-weight: 570;
-}
-.tab.active { color: #e3efff; background: #32445b; box-shadow: none; }
-.tab.active .n { color: var(--accent-strong); background: rgba(136,188,255,.12); }
 .sel-count { color: var(--muted); font-size: var(--font-label); }
 .table-wrap { max-width: 100%; border-top: 1px solid var(--line); }
 .rec-table th, .pool-table th {
@@ -281,8 +270,6 @@ textarea { line-height: 1.6; }
   min-height: 34px;
   font-size: var(--font-label);
 }
-.table-pagination { padding: 16px 20px; font-size: var(--font-label); gap: 16px; }
-.table-pagination > div { gap: 10px; }
 .overview-metrics { gap: 14px; margin-bottom: 20px; }
 .overview-metric { background: var(--surface); border-color: var(--line-strong); padding: 20px 22px; }
 .overview-metric > span { font-size: var(--font-label); }

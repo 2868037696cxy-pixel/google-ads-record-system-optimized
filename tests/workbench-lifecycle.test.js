@@ -7,7 +7,7 @@ const vm = require('node:vm');
 
 // Execute the production event handlers with controlled I/O and deferred promises.
 // Native DOM layout and focus behavior are covered separately by test:ux.
-function harness() {
+function harness(timing = {}) {
   const elements = new Map();
   const listeners = new Map();
   const element = id => {
@@ -23,9 +23,10 @@ function harness() {
     hidden: false,
   };
   const UI = { busy: (button, value) => { button.disabled = value; }, dialog: { signal: () => new AbortController().signal, pending: (button, value) => { button.disabled = value; }, error: () => {} } };
-  const context = vm.createContext({ document, window: { addEventListener() {} }, WorkbenchUI: UI, MutationObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout, AbortController, AbortSignal, URLSearchParams, Date, console });
+  const context = vm.createContext({ document, window: { addEventListener() {} }, WorkbenchUI: UI, MutationObserver: class { observe() {} disconnect() {} }, setTimeout, clearTimeout, ...timing, AbortController, AbortSignal, URLSearchParams, Date, console });
   const run = source => vm.runInContext(source, context);
   const source = fs.readFileSync(path.join(__dirname, '../public/app.js'), 'utf8').replace(/\nconnect\(\);\s*$/, '\n');
+  run(fs.readFileSync(path.join(__dirname, '../public/record-query.js'), 'utf8'));
   run(source);
   run(fs.readFileSync(path.join(__dirname, '../public/security.js'), 'utf8'));
   context.openModal = () => { modal = {}; for (const value of elements.values()) value.isConnected = true; };
@@ -35,6 +36,39 @@ function harness() {
   return { context, run, element, listeners };
 }
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
+
+test('Chinese composition cancels old queries and sends only the committed text', async () => {
+  const timers = new Map(); let id = 0;
+  const { context, run, element, listeners } = harness({
+    setTimeout(callback) { timers.set(++id, callback); return id; }, clearTimeout(key) { timers.delete(key); },
+  });
+  context.renderRecordsTableInto = () => {};
+  const old = deferred(), requests = [];
+  context.api = (path, options) => { requests.push({ path, ...options }); return requests.length === 1 ? old.promise : Promise.resolve({ items: [], total: 0 }); };
+  const loading = run('loadRecordsPage()');
+  const input = element('rec-q');
+  const emit = (name, properties = {}) => { for (const callback of listeners.get(name)) callback({ target: input, ...properties }); };
+  emit('compositionstart');
+  assert.equal(requests[0].signal.aborted, true);
+  for (const value of ['zh', 'zhong', '中']) {
+    input.value = value;
+    // Some platforms omit isComposing on intermediate input events.
+    emit('input');
+    assert.equal(timers.size, 0);
+  }
+  old.resolve({ items: [{ id: 9 }], total: 999 });
+  assert.equal(await loading, false);
+  assert.equal(run('state.recordQueryReason'), 'composition');
+  assert.equal(run('state.records.length'), 0);
+  input.value = '中文';
+  emit('compositionend'); emit('input');
+  assert.equal(timers.size, 1, 'compositionend and final input coalesce');
+  for (const callback of timers.values()) callback(); timers.clear();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  assert.equal(new URL(requests[1].path, 'https://fixture.test').searchParams.get('q'), '中文');
+  assert.equal(run('state.recordsPhase'), 'ready');
+});
 
 test('restore ignores a previous file that finishes after a newer invalid selection', async () => {
   const { context, run, element } = harness();

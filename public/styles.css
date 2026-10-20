@@ -740,50 +740,6 @@ tr:hover .row-actions { opacity: 1; }
   flex-wrap: wrap;
 }
 
-.search {
-  max-width: 300px;
-  flex: 1;
-  min-width: 180px;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='13' height='13' viewBox='0 0 24 24' fill='none' stroke='%235c6a80' stroke-width='2.4' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M20 20l-3.5-3.5'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: 11px center;
-  padding-left: 32px;
-}
-
-.tabs {
-  display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  background: var(--bg-soft);
-  border: 1px solid var(--line);
-  border-radius: 9px;
-}
-
-.tab {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--faint);
-  background: none;
-  border: none;
-  border-radius: 7px;
-  padding: 5px 13px;
-  cursor: pointer;
-  transition: color 140ms var(--ease-quart), background 140ms var(--ease-quart), box-shadow 140ms var(--ease-quart), transform 120ms var(--ease-quart);
-  user-select: none;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.tab:hover { color: var(--muted); background: rgba(163, 190, 228, 0.06); }
-
-.tab:active { transform: scale(0.95); }
-
-.tab.active {
-  color: var(--accent-strong);
-  background: linear-gradient(180deg, rgba(200, 246, 93, 0.18), rgba(200, 246, 93, 0.1));
-  box-shadow: inset 0 0 0 1px rgba(200, 246, 93, 0.28), 0 1px 3px rgba(0, 0, 0, 0.2);
-}
-
 .sel-count { font-size: 12px; color: var(--faint); white-space: nowrap; }
 .sel-count b { color: var(--accent-strong); font-variant-numeric: tabular-nums; }
 .toolbar-spacer { flex: 1; }
@@ -1251,8 +1207,6 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
 .license-source summary { cursor: pointer; margin-bottom: 12px; }
 .license-source textarea { width: 100%; margin-bottom: 8px; }
 .license-link { color: var(--accent); background: transparent; border: 0; padding: 0; cursor: pointer; font: inherit; }
-.table-pagination { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; border-top: 1px solid var(--line-strong); color: var(--muted); font-size: 12px; }
-.table-pagination > div { display: flex; gap: 8px; }
 
 /* ============================================================
    账号（服务器版）：当前登录账号与退出登录
@@ -1316,22 +1270,6 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
 .audit-pdf { flex: 0 0 auto; font: 700 10px var(--mono); color: var(--muted); border: 1px solid var(--line-strong); padding: 1px 5px; border-radius: 4px; }
 .audit-empty { color: var(--muted); font-size: 12.5px; line-height: 1.8; margin: 0; }
 @media (max-width: 700px) { .audit-summary { grid-template-columns: 1fr; } }
-
-/* ---- 筛选标签上的数量角标：数字必须与标签分开，否则会读成「全部12」 ---- */
-.tab .n {
-  margin-left: 7px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(163, 190, 228, 0.12);
-  font-family: var(--mono);
-  font-size: 11px;
-  font-style: normal;
-  font-weight: 600;
-  color: var(--faint);
-  font-variant-numeric: tabular-nums;
-}
-
-.tab.active .n { background: rgba(19, 26, 4, 0.24); color: var(--accent-ink); }
 
 /* ---- 步骤卡：给出明确的「可以点进去」提示 ---- */
 .step-card { cursor: pointer; }
