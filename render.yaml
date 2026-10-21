@@ -10,7 +10,8 @@ services:
     numInstances: 1
     buildCommand: >-
       npm ci --omit=dev --ignore-scripts &&
-      env -u DATA_DIR -u DB_FILE -u ADS_SECRETS_KEY_FILE -u ADS_SECRETS_KEY_HEX
+      env -u HOST -u PORT -u SESSION_SECURE -u TRUST_CLOUDFLARE
+      -u DATA_DIR -u DB_FILE -u ADS_SECRETS_KEY_FILE -u ADS_SECRETS_KEY_HEX
       -u PUBLIC_ORIGIN -u REGISTRATION -u INVITE_CODE -u BACKUP_DIR -u BACKUP_KEEP
       NODE_ENV=test npm test
     startCommand: node scripts/start-render.cjs
