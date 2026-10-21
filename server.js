@@ -1263,8 +1263,8 @@ fastify.get('/api/auth/config', async () => ({
   registration: REGISTRATION,
   inviteRequired: REGISTRATION === 'invite',
   minPasswordLength: auth.MIN_PASSWORD,
-  minUsernameLength: 3,
-  maxUsernameLength: 32,
+  minUsernameLength: auth.MIN_USERNAME,
+  maxUsernameLength: auth.MAX_USERNAME,
   siteName: '账号工作台',
 }));
 

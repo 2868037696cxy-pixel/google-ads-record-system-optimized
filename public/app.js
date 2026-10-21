@@ -323,7 +323,7 @@ function renderAccount() {
   const user = state.user;
   const label = user ? (user.display_name || user.username) : '未登录';
   name.textContent = label;
-  document.getElementById('accountAvatar').textContent = user ? label.slice(0, 1).toUpperCase() : '—';
+  document.getElementById('accountAvatar').textContent = user ? Array.from(label)[0].toUpperCase() : '—';
   document.getElementById('accountHint').textContent = user && user.display_name ? `@${user.username}` : '数据仅本人可见';
 }
 
@@ -589,7 +589,7 @@ function renderSettings() {
       </div>
       <div class="settings-content" ${panel('security')}>
         <section class="panel settings-section" aria-labelledby="settings-account-title">
-          <div class="settings-account"><span class="settings-avatar" aria-hidden="true">${esc(label.slice(0, 1).toUpperCase())}</span><div><h2 id="settings-account-title">${esc(label)}</h2><p>${state.user?.display_name ? `@${esc(state.user.username)} · ` : ''}记录与资源仅本人可见</p></div></div>
+          <div class="settings-account"><span class="settings-avatar" aria-hidden="true">${esc(Array.from(label)[0].toUpperCase())}</span><div><h2 id="settings-account-title">${esc(label)}</h2><p>${state.user?.display_name ? `@${esc(state.user.username)} · ` : ''}记录与资源仅本人可见</p></div></div>
           <div class="settings-section-body">
             ${local ? '<div class="settings-row"><div><b>本机工作台</b><p>当前使用本机数据，可在数据管理中备份。</p></div></div>' : '<div class="settings-row"><div><b>登录密码</b><p>修改后，所有设备需要重新登录。</p></div><button class="btn btn-ghost" id="settingsPassword" data-action="change-password">修改密码</button></div>'}
             <div class="settings-row"><div><b>敏感信息</b><p>临时查看密码等资料，离开窗口或授权过期后自动隐藏。</p></div><button class="btn btn-ghost" id="settingsSensitive" data-action="toggle-reveal">${state.reveal ? '立即隐藏' : '临时显示'}</button></div>

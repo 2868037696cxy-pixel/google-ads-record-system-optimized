@@ -93,8 +93,8 @@
         <div class="auth-panel" id="panelRegister" role="tabpanel" aria-labelledby="tabRegister" hidden>
           <form class="auth-form" id="registerForm" novalidate>
             <div class="field">
-              <label for="regUsername">用户名 <span class="mini" id="regUsernameHint">3–32 个字符</span></label>
-              <input class="auth-input" id="regUsername" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="设置登录用户名" required aria-describedby="regUsernameHint regUsernameErr">
+              <label for="regUsername">用户名 <span class="mini" id="regUsernameHint">2–32 个字符</span></label>
+              <input class="auth-input" id="regUsername" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="支持中文、字母和数字" required aria-describedby="regUsernameHint regUsernameErr">
               <p class="field-err" id="regUsernameErr" aria-live="polite" hidden></p>
             </div>
             <div class="field">
@@ -138,6 +138,7 @@
     </main>
     <footer class="auth-footer"><span>账号工作台</span><span>专注每一次投放</span></footer>
   </div>
-  <script src="/login.js?v=20261021glass1"></script>
+  <script src="/username-rules.js?v=20261021identity1"></script>
+  <script src="/login.js?v=20261021identity1"></script>
 </body>
 </html>

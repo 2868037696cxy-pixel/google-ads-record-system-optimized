@@ -25,6 +25,7 @@ async function waitFile(file){for(let n=0;n<100;n++){if(fs.existsSync(file)&&fs.
   electron=await _electron.launch({executablePath:require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),'.'],env:{...process.env,NODE_ENV:'test',ADS_WORKBENCH_MODE:'remote',ADS_WORKBENCH_SERVER_URL:remote,ADS_TEST_CERT_FINGERPRINT:new crypto.X509Certificate(cert).fingerprint256,ADS_DESKTOP_DATA_DIR:path.join(root,'client')}});
   const page=await electron.firstWindow();testPage=page;const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.locator('#loginUsername').waitFor();assert.equal(await page.evaluate(()=>typeof window.require),'undefined');assert.equal(await page.evaluate(()=>typeof window.desktop),'undefined');
+  await require('./auth-identity-ui.cjs')(page);
   await page.locator('#loginUsername').fill('alice');await page.locator('#loginPassword').fill('Remote-Test-1234');await page.locator('#loginSubmit').click();await page.locator('#main[data-connection="ready"]').waitFor();
   assert.equal(fs.existsSync(path.join(root,'client','workbench.sqlite')),false);console.log('PASS remote login; sandboxed renderer; no employee-local database');
   await page.locator('.nav-item[data-page="emails"]').click();await page.locator('[data-action="open-import"][data-kind="emails"]').click();await page.locator('#import-text').fill('alice@example.test|REMOTE-SECRET-VALUE|FAKE-2FA-KEY');await page.waitForFunction(()=>!document.querySelector('#import-ok').disabled);

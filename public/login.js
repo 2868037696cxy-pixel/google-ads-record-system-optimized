@@ -18,8 +18,8 @@ const AUTH_API = {
 const DEFAULT_CONFIG = {
   registration: 'closed',
   minPasswordLength: 8,
-  minUsernameLength: 3,
-  maxUsernameLength: 32,
+  minUsernameLength: WorkbenchUsername.MIN_LENGTH,
+  maxUsernameLength: WorkbenchUsername.MAX_LENGTH,
   siteName: '账号工作台',
 };
 
@@ -138,7 +138,8 @@ function renderConfig() {
   el.regUsernameHint.textContent = `${config.minUsernameLength}–${config.maxUsernameLength} 个字符`;
   el.regPasswordHint.textContent = `至少 ${config.minPasswordLength} 位`;
   el.regUsername.minLength = config.minUsernameLength;
-  el.regUsername.maxLength = config.maxUsernameLength;
+  // HTML maxlength counts UTF-16 units; the shared rule enforces character count.
+  el.regUsername.maxLength = config.maxUsernameLength * 2;
 
   if (config.siteName) el.brandName.textContent = config.siteName;
 
@@ -269,9 +270,8 @@ function validateRegister() {
   const password = el.regPassword.value;
   const confirm = el.regConfirm.value;
 
-  if (!username) fail(el.regUsername, '请输入用户名');
-  else if (username.length < config.minUsernameLength) fail(el.regUsername, `用户名至少 ${config.minUsernameLength} 个字符`);
-  else if (username.length > config.maxUsernameLength) fail(el.regUsername, `用户名最多 ${config.maxUsernameLength} 个字符`);
+  const usernameError = WorkbenchUsername.errorFor(username, { minLength: config.minUsernameLength, maxLength: config.maxUsernameLength });
+  if (usernameError) fail(el.regUsername, usernameError);
 
   if (!password) fail(el.regPassword, '请输入密码');
   else if (password.length < config.minPasswordLength) fail(el.regPassword, `密码至少 ${config.minPasswordLength} 位`);
