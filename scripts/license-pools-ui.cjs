@@ -120,4 +120,17 @@ module.exports = async function verifyLicensePools(page, shot = async () => {}) 
   }
   await page.locator('#modal-root .modal-close').click(); await page.setViewportSize({width:1440,height:900});
   console.log('PASS full four-pool combination, manual IP/document selection, real preview, original-address copying and narrow-screen setup panel');
+  const original = await page.evaluate(() => state.pools.licenses.find(item => item.name === 'Synthetic Croatia Pool doo'));
+  await page.locator('#nav [data-page="licenses"]').click();
+  await page.locator(`[data-action="view-license"][data-id="${original.id}"]`).first().click(); await page.locator('#license-edit-fields').click();
+  assert.equal(await page.locator('#license-cvr').evaluate(element => element.readOnly), true);
+  await page.locator('#license-name').fill('Synthetic Croatia Pool doo corrected');
+  await page.locator('#license-address').fill('Corrected Croatia Pool Street 2');
+  await page.locator('#license-duplicate-status[data-state="clear"]').waitFor();
+  await page.locator('#license-import').click(); await page.locator('#license-form').waitFor({state:'detached'});
+  await page.waitForFunction(id => state.pools.licenses.find(item => item.id === id)?.name.endsWith('corrected'), original.id);
+  const updated = await page.evaluate(id => ({license:state.pools.licenses.find(item => item.id === id),records:state.records.filter(item => item.license_id === id)}), original.id);
+  assert.equal(updated.license.document_id, original.document_id); assert.equal(updated.license.cvr, original.cvr);
+  assert.equal(updated.records.length, 1); assert.equal(updated.records[0].license_name, 'Synthetic Croatia Pool doo corrected');
+  console.log('PASS explicit metadata correction preserves original PDF, identifier and assigned record');
 };

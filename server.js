@@ -1542,7 +1542,12 @@ fastify.post('/api/parse/:type', async (req) => {
 // Live, read-only lookup while typing. Never return another member's record,
 // username, dates, original identifier or document. Saving rechecks in a transaction.
 fastify.post('/api/licenses/check-duplicate', { bodyLimit: 12 * 1024 }, async (req) => {
-  currentUserId(req);
+  const ownerId = currentUserId(req);
+  const excludeId = req.body?.exclude_id;
+  if (excludeId !== undefined) {
+    if (!Number.isSafeInteger(excludeId) || excludeId < 1) return reply400('待校对的企业资料编号无效');
+    if (!store.findPoolItem(db, ownerId, 'licenses', excludeId)) { const error = new Error('企业资料不存在或不可访问'); error.statusCode = 404; throw error; }
+  }
   const source = req.body?.item;
   if (!source || typeof source !== 'object' || Array.isArray(source)) return reply400('请提供待核对的营业执照信息');
   const item = {};
@@ -1557,7 +1562,7 @@ fastify.post('/api/licenses/check-duplicate', { bodyLimit: 12 * 1024 }, async (r
   const error = licenseIdentifiers.identifierError(item);
   if (error) return { state: 'incomplete', message: error };
   if (item.cvr && (!!keys.jurisdiction !== !!keys.registration_type)) return { state: 'incomplete', message: '请同时填写注册国家 / 地区和企业编号类型' };
-  const conflict = dedup.findLicenseConflict(db, keys);
+  const conflict = dedup.findLicenseConflict(db, keys, { excludeId: excludeId ?? null });
   if (conflict) return { state: 'duplicate', conflict: conflictDetail(conflict, item) };
   if (!keys.dup_cvr) return { state: 'incomplete', message: '请填写证书上的完整企业编号，以完成全员查重' };
   if (!keys.registration_scoped) return { state: 'incomplete', message: '请填写注册国家 / 地区和企业编号类型，系统会按国家区分编号' };

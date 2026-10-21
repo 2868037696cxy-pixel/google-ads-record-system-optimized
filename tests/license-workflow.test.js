@@ -63,6 +63,9 @@ test('live duplicate checks are authenticated, read-only and private across ever
   assert.equal(incomplete.data.state, 'incomplete');
   assert.equal((await api('wf-other', '/api/bootstrap', undefined, 'GET')).data.pools.licenses.length, 0);
   assert.equal((await api('wf-owner', '/api/import/licenses', { intent: 'create', items: [original] })).status, 409, 'new entry cannot silently overwrite its own existing company');
+  const mine = (await api('wf-owner', '/api/bootstrap', undefined, 'GET')).data.pools.licenses[0];
+  assert.equal((await api('wf-owner', '/api/licenses/check-duplicate', { item: original, exclude_id: mine.id })).data.state, 'clear', 'an explicit edit may exclude its own record');
+  assert.equal((await api('wf-other', '/api/licenses/check-duplicate', { item: original, exclude_id: mine.id })).status, 404, 'another account cannot exclude the owner record');
 });
 
 test('two accounts may both preview clear, but only one concurrent save can claim the identifier', async () => {

@@ -27,16 +27,18 @@ function openLicenseDetails(id) {
     </div>
     <div class="modal-foot">
       ${license.document_id ? `<button class="btn btn-primary" data-action="open-license-pdf" data-id="${id}">${window.desktop ? '打开原 PDF' : '下载原 PDF'}</button>${window.desktop ? `<button class="btn btn-ghost" data-action="reveal-license-pdf" data-id="${id}">打开文件位置</button>` : ''}` : ''}
-      <button class="btn btn-primary" id="license-copy-fields">复制企业资料</button><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">关闭</button>
+      <button class="btn btn-primary" id="license-copy-fields">复制企业资料</button><button class="btn btn-ghost" id="license-edit-fields">校对资料</button><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">关闭</button>
     </div>`, { large: true });
   document.getElementById('license-copy-fields').onclick = () => copyText(WorkbenchAccountSetup.build({}, license).business.filter(field => field.value).map(field => `${field.label}：${field.value}`).join('\n'));
+  document.getElementById('license-edit-fields').onclick = () => openLicenseImport(license);
 }
 
-function openLicenseImport() {
+function openLicenseImport(existing = null) {
   openModal(`
-    <div class="modal-head"><div><span class="license-eyebrow">营业执照资料库</span><h3>导入与校对</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <div class="modal-head"><div><span class="license-eyebrow">营业执照资料库</span><h3>${existing ? '校对企业资料' : '导入与校对'}</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
     <div class="modal-body">
-      <div class="license-upload"><strong>企业文件入池</strong><p>可同时选择多个国家的营业执照或工商 PDF。每份文件独立识别、校对与查重；单份最大 10 MB。</p><input type="file" id="license-file" aria-label="选择营业执照 PDF" aria-describedby="license-file-status" accept=".pdf,application/pdf" multiple><span id="license-file-status" role="status">也可以不上传文件，直接填写资料。</span></div>
+      <div class="license-upload" ${existing ? 'hidden' : ''}><strong>企业文件入池</strong><p>可同时选择多个国家的营业执照或工商 PDF。每份文件独立识别、校对与查重；单份最大 10 MB。</p><input type="file" id="license-file" aria-label="选择营业执照 PDF" aria-describedby="license-file-status" accept=".pdf,application/pdf" multiple><span id="license-file-status" role="status">也可以不上传文件，直接填写资料。</span></div>
+      ${existing ? '<p class="license-help">修改已保存的企业资料，原 PDF 与账号关联会保留。已有企业编号只读，其他资料可按原件校对。</p>' : ''}
       <form id="license-form" class="license-form" autocomplete="off">
         ${LICENSE_FIELDS.map(([key, label, required]) => {
           const placeholder = key === 'zip' ? '9310 或 DK-9310'
@@ -48,7 +50,7 @@ function openLicenseImport() {
           return `<div class="field ${['address', 'cvr'].includes(key) ? 'license-wide' : ''}"><label for="license-${key}">${label}${required ? ' *' : '（选填）'}</label><input id="license-${key}" name="${key}" maxlength="512" ${required ? 'required' : ''} ${placeholder ? `placeholder="${placeholder}"` : ''} aria-describedby="license-duplicate-status"></div>${key === 'cvr' ? '<div id="license-duplicate-status" class="license-check license-wide" role="status" aria-live="polite" aria-atomic="true" data-state="empty">填写企业编号后自动检查全员记录。</div>' : ''}`;
         }).join('')}
       </form>
-      <details class="license-source"><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" aria-label="营业执照结构化信息或识别原文" class="mono" rows="7" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n注册国家：DK\n注册号类型：CVR\nCVR：12345678\n街道地址：Følfodvej 1\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
+      <details class="license-source" ${existing ? 'hidden' : ''}><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" aria-label="营业执照结构化信息或识别原文" class="mono" rows="7" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n注册国家：DK\n注册号类型：CVR\nCVR：12345678\n街道地址：Følfodvej 1\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
       <p class="license-help">输入时自动查重，保存时再次核对。巴西填写 CNPJ，克罗地亚填写企业 OIB；相同编号的空格、分隔符和大小写不影响判重。未识别出编号的 PDF，请手动补齐；扫描图片暂不支持自动识别。其他成员的资料不会显示。</p>
     </div>
     <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="license-import">确认保存</button></div>
@@ -71,7 +73,7 @@ function openLicenseImport() {
   const readItem = () => Object.fromEntries(LICENSE_FIELDS.map(([key]) => [key, form.elements[key].value.trim()]));
   const syncSubmit = () => {
     submit.disabled = saving || parsing || !['clear', 'error'].includes(checkState);
-    if (!saving) submit.textContent = checkState === 'error' ? '重试查重并保存' : '确认保存';
+    if (!saving) submit.textContent = checkState === 'error' ? '重试查重并保存' : existing ? '保存修改' : '确认保存';
   };
   const showCheck = (phase, message, conflict) => {
     checkState = phase;
@@ -96,7 +98,7 @@ function openLicenseImport() {
     checkController = new AbortController();
     try {
       const result = await api('/api/licenses/check-duplicate', {
-        method: 'POST', body: { item }, signal: AbortSignal.any([checkController.signal, AbortSignal.timeout(12000)]),
+        method: 'POST', body: { item, ...(existing ? { exclude_id: existing.id } : {}) }, signal: AbortSignal.any([checkController.signal, AbortSignal.timeout(12000)]),
       });
       if (!form.isConnected || current !== checkRevision || snapshot !== JSON.stringify(readItem())) return false;
       if (result.state === 'duplicate' && result.conflict?.label) {
@@ -206,8 +208,10 @@ function openLicenseImport() {
     fileInput.disabled = true;
     parseText.disabled = true;
     try {
-      const result = await api('/api/import/licenses', { method: 'POST', body: { intent: 'create', items: [item], ...attachment } });
-      toast(result.added ? '营业执照已保存' : result.attached ? '资料已更新，原 PDF 已关联' : result.updated ? '组织资料已更新' : '该组织已在资料库中');
+      const result = existing
+        ? await api(`/api/pool/licenses/${existing.id}`, { method: 'PATCH', body: { ...item, version: existing.version } })
+        : await api('/api/import/licenses', { method: 'POST', body: { intent: 'create', items: [item], ...attachment } });
+      toast(existing ? '企业资料已更新' : result.added ? '营业执照已保存' : result.attached ? '资料已更新，原 PDF 已关联' : result.updated ? '组织资料已更新' : '该组织已在资料库中');
       if (form.isConnected) closeModal();
       await refreshAfterCommit('资料已保存，但列表刷新失败；请重新连接，不要重复导入');
     } catch (error) {
@@ -221,6 +225,11 @@ function openLicenseImport() {
     finally { saving = false; WorkbenchUI.dialog.pending(submit, false); fileInput.disabled = false; parseText.disabled = false; syncSubmit(); }
   };
   form.onsubmit = (event) => { event.preventDefault(); submit.click(); };
+  if (existing) {
+    fill(existing);
+    for (const key of ['cvr', 'jurisdiction', 'registration_type']) if (existing[key]) form.elements[key].readOnly = true;
+    scheduleCheck();
+  }
 }
 
 /**

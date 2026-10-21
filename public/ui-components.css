@@ -337,6 +337,7 @@
 .license-check[data-state="error"] { color: var(--amber); }
 .license-check[data-state="pending"] { color: var(--accent); }
 .license-form input[aria-invalid="true"] { border-color: var(--red); }
+.license-form input[readonly] { background: var(--surface-2); color: var(--muted); }
 .license-form .field { min-width: 0; }
 .license-batch-layout { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(0, 1.3fr); gap: 20px; align-items: start; }
 .license-batch-files { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; }
