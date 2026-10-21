@@ -14,9 +14,7 @@ const AUTH_API = {
   register: '/api/auth/register',
 };
 
-/* 读取 /api/auth/config 失败时的兜底值：
-   登录始终可用；注册入口按「开放」处理（首个账号需要注册），
-   只有服务端明确返回 closed 时才隐藏。 */
+/* 配置读取完成前隐藏注册；开放与邀请码规则始终以服务端为准。 */
 const DEFAULT_CONFIG = {
   registration: 'closed',
   minPasswordLength: 8,
@@ -30,7 +28,7 @@ const state = {
   mode: 'login',
   busy: false,
   redirecting: false,
-  registerEnabled: true,
+  registerEnabled: false,
   inviteRequired: false,
 };
 
@@ -40,9 +38,9 @@ const el = {};
 
 function cacheEls() {
   const ids = [
-    'authTabs', 'tabLogin', 'tabRegister', 'panelLogin', 'panelRegister', 'authAlert', 'brandName',
+    'authTabs', 'tabLogin', 'tabRegister', 'panelLogin', 'panelRegister', 'authAlert', 'brandName', 'authHeading', 'authSubtitle',
     'loginForm', 'loginUsername', 'loginPassword', 'loginSubmit', 'switchWrapLogin', 'switchToRegister',
-    'registerForm', 'regUsername', 'regUsernameHint', 'regDisplayName', 'regPassword', 'regPasswordHint',
+    'registerForm', 'regUsername', 'regUsernameHint', 'regPassword', 'regPasswordHint',
     'regConfirm', 'regInviteField', 'regInvite', 'regSubmit', 'switchToLogin',
     'regStrength', 'regStrengthLabel', 'capsLogin', 'capsRegister',
   ];
@@ -151,6 +149,7 @@ function renderConfig() {
 /* ---------------- 模式切换 ---------------- */
 
 function switchMode(mode, focusField) {
+  if (state.busy || state.redirecting) return;
   if (mode === 'register' && !state.registerEnabled) mode = 'login';
   state.mode = mode;
   const isLogin = mode === 'login';
@@ -164,6 +163,10 @@ function switchMode(mode, focusField) {
 
   el.panelLogin.hidden = !isLogin;
   el.panelRegister.hidden = isLogin;
+  document.querySelector('.auth-card').dataset.mode = mode;
+  el.authHeading.textContent = isLogin ? '欢迎回来' : '从这里开始';
+  el.authSubtitle.textContent = isLogin ? '登录工作台，继续你的工作。' : '创建账号，让工作更有条理。';
+  document.title = `${isLogin ? '登录' : '注册'} · ${config.siteName}`;
 
   hideAlert();
   clearFormErrors(el.loginForm);
@@ -192,17 +195,6 @@ function showAlert(kind, message) {
   el.authAlert.hidden = false;
   el.authAlert.dataset.kind = kind;
   el.authAlert.textContent = message;
-
-  // 失败时让卡片抖一下：即时反馈比一段静态红字更容易被注意到。
-  // 先移除再强制重排，保证连续失败也能重新播放动画。
-  if (kind === 'error') {
-    const card = document.querySelector('.auth-card');
-    if (card) {
-      card.classList.remove('is-shaking');
-      void card.offsetWidth;
-      card.classList.add('is-shaking');
-    }
-  }
 }
 
 function hideAlert() {
@@ -237,7 +229,9 @@ function setBusy(which, busy, label) {
 
   btn.disabled = busy;
   btn.classList.toggle('btn-loading', busy);
-  btn.textContent = busy ? label : isLogin ? '登录' : '创建账号';
+  btn.textContent = busy ? label : isLogin ? '登录工作台' : '创建账号';
+  for (const button of [el.tabLogin, el.tabRegister, el.switchToLogin, el.switchToRegister]) button.disabled = busy;
+  for (const input of form.querySelectorAll('input')) input.readOnly = busy;
 
   if (busy) form.setAttribute('aria-busy', 'true');
   else form.removeAttribute('aria-busy');
@@ -346,7 +340,6 @@ async function submitRegister() {
       body: {
         username: el.regUsername.value.trim(),
         password: el.regPassword.value,
-        display_name: el.regDisplayName.value.trim(),
         invite_code: el.regInvite.value.trim(),
       },
     });
@@ -430,7 +423,7 @@ function updateStrength() {
   const level = scorePassword(value);
   el.regStrength.hidden = false;
   el.regStrength.dataset.level = String(level);
-  el.regStrengthLabel.textContent = level === 1 ? '强度 弱' : level === 2 ? '强度 中' : '强度 强';
+  el.regStrengthLabel.textContent = `密码强度：${level === 1 ? '弱' : level === 2 ? '中' : '强'}`;
 }
 
 /* ---------------- 事件绑定 ---------------- */
@@ -456,7 +449,9 @@ function bind() {
     if (!state.registerEnabled) return;
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'Home' && event.key !== 'End') return;
     event.preventDefault();
-    switchMode(state.mode === 'login' ? 'register' : 'login', false);
+    const mode = event.key === 'Home' ? 'login' : event.key === 'End' ? 'register' : state.mode === 'login' ? 'register' : 'login';
+    switchMode(mode, false);
+    (state.mode === 'login' ? el.tabLogin : el.tabRegister).focus();
   });
 
   for (const btn of document.querySelectorAll('.pw-toggle')) {
