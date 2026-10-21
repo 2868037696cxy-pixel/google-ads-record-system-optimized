@@ -1,0 +1,49 @@
+services:
+  - type: web
+    name: adsworkbench-persistent
+    runtime: node
+    plan: 0.5c-512mb
+    region: singapore
+    repo: https://github.com/2868037696cxy-pixel/google-ads-record-system-optimized
+    branch: deploy/render-workbench
+    autoDeployTrigger: checksPass
+    numInstances: 1
+    buildCommand: >-
+      npm ci --omit=dev --ignore-scripts &&
+      env -u DATA_DIR -u DB_FILE -u ADS_SECRETS_KEY_FILE -u ADS_SECRETS_KEY_HEX
+      -u PUBLIC_ORIGIN -u REGISTRATION -u INVITE_CODE -u BACKUP_DIR -u BACKUP_KEEP
+      NODE_ENV=test npm test
+    startCommand: node scripts/start-render.cjs
+    healthCheckPath: /api/healthz
+    maxShutdownDelaySeconds: 120
+    disk:
+      name: workbench-data
+      mountPath: /var/data
+      sizeGB: 5
+    envVars:
+      - key: NODE_VERSION
+        value: 22.22.2
+      - key: NODE_ENV
+        value: production
+      - key: HOST
+        value: 0.0.0.0
+      - key: DATA_DIR
+        value: /var/data/workbench
+      - key: DB_FILE
+        value: /var/data/workbench/workbench.sqlite
+      - key: ADS_SECRETS_KEY_FILE
+        value: /var/data/private/secret.key
+      # Copy the ORIGINAL 64-character hex key privately in Render, never into Git.
+      - key: ADS_SECRETS_KEY_HEX
+        sync: false
+      # Keep registration closed until the original database has been migrated.
+      - key: REGISTRATION
+        value: closed
+      - key: SESSION_SECURE
+        value: "1"
+      - key: TRUST_CLOUDFLARE
+        value: "0"
+      - key: BACKUP_DIR
+        value: /var/data/backups
+      - key: BACKUP_KEEP
+        value: "7"
