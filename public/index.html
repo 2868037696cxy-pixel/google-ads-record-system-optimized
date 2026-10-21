@@ -7,10 +7,10 @@
   <meta name="theme-color" content="#eef1f6">
   <title>账号工作台 · Ads Operations Console</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23f2f4f8'/%3E%3Cg fill='%23465a78'%3E%3Crect x='7' y='7' width='7' height='7' rx='2'/%3E%3Crect x='18' y='7' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='7' y='18' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='18' y='18' width='7' height='7' rx='2'/%3E%3C/g%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/design-tokens.css?v=20261021glass2">
-  <link rel="stylesheet" href="/styles.css?v=20261021glass2">
-  <link rel="stylesheet" href="/ui-foundations.css?v=20261021glass2">
-  <link rel="stylesheet" href="/ui-components.css?v=20261021glass2">
+  <link rel="stylesheet" href="/design-tokens.css?v=20261021settings1">
+  <link rel="stylesheet" href="/styles.css?v=20261021settings1">
+  <link rel="stylesheet" href="/ui-foundations.css?v=20261021settings1">
+  <link rel="stylesheet" href="/ui-components.css?v=20261021settings1">
 </head>
 <body class="boot">
   <a class="skip-link" href="#main">跳转到主内容</a>
@@ -41,10 +41,10 @@
         <button class="ghost-btn w-full" id="revealBtn" data-action="toggle-reveal">
           <span class="dot dot-eye"></span><span id="revealLabel">敏感信息：已隐藏</span>
         </button>
-        <div class="sidebar-connection"><p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
-        <button class="ghost-btn" data-action="retry-load" title="重新读取数据（Ctrl+R）">重新连接</button></div>
+        <div class="sidebar-connection" id="connectionNotice" hidden><p class="connection-status disconnected" id="connectionStatus" role="status"></p>
+        <button class="ghost-btn" data-action="retry-load">重试</button></div>
         <details class="sidebar-utilities" id="sidebarUtilities">
-          <summary>工具与设置 <span aria-hidden="true" class="utility-chevron">⌄</span></summary>
+          <summary>快捷工具 <span aria-hidden="true" class="utility-chevron">⌄</span></summary>
           <div class="sidebar-utilities-content">
         <div id="desktopTools" hidden>
           <div class="desktop-actions">
@@ -73,19 +73,19 @@
         <p class="foot-note">资源与记录按账号隔离<br>其他成员看不到，也不会互相覆盖</p>
       </div>
     </aside>
-    <main class="main" id="main" tabindex="-1"><section class="connection-panel" role="status"><h1>正在打开工作台</h1><p>正在加载界面…</p><noscript>请启用 JavaScript 后重试。</noscript></section></main>
+    <main class="main" id="main" tabindex="-1" data-connection="loading" aria-busy="true"><section class="connection-panel" role="status"><h1>正在打开工作台</h1><p>正在加载界面…</p><noscript>请启用 JavaScript 后重试。</noscript></section></main>
   </div>
   <div id="modal-root"></div>
   <div id="toast-root"></div>
-  <script src="/ui-components.js?v=20261020c"></script>
-  <script src="/navigation.js?v=20261021glass2"></script>
+  <script src="/ui-components.js?v=20261021settings1"></script>
+  <script src="/navigation.js?v=20261021settings1"></script>
   <script src="/licenses.js?v=20261020c"></script>
   <script src="/backup-tasks.js?v=20261020e"></script>
   <script src="/record-integrity.js?v=20261020e"></script>
   <script src="/record-query.js?v=20261020f"></script>
   <script src="/record-create.js?v=20261020g"></script>
   <script src="/resource-import.js?v=20261020g"></script>
-  <script src="/app.js?v=20261021glass2"></script>
-  <script src="/security.js?v=20261020e"></script>
+  <script src="/app.js?v=20261021settings1"></script>
+  <script src="/security.js?v=20261021settings1"></script>
 </body>
 </html>

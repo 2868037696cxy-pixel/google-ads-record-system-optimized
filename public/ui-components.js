@@ -14,6 +14,10 @@ globalThis.WorkbenchUI = (() => {
     settings: '<path d="m9 3-1 3-3 1 1 4-2 2 2 4 3-1 3 2 3-2 3 1 2-4-2-2 1-4-3-1-1-3z"/><circle cx="12" cy="11" r="3"/>',
     search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
     import: '<path d="M12 3v12m-4-4 4 4 4-4M4 16v5h16v-5"/>',
+    shield: '<path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6z"/><path d="m8 12 3 3 5-6"/>',
+    archive: '<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v13h14V8M10 12h4"/>',
+    check: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+    chevron: '<path d="m6 9 6 6 6-6"/>',
   });
   function icon(name) {
     return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] || paths.records}</svg>`;

@@ -438,8 +438,6 @@ textarea { line-height: 1.6; }
     .toolbar { padding: 14px; }
     .record-filter-row .tabs { max-width: 100%; }
     .toolbar .search { min-width: 0; max-width: 100%; flex-basis: 100%; }
-    .settings-row { align-items: flex-start; flex-direction: column; gap: 12px; }
-    .settings-facts > div { grid-template-columns: 90px minmax(0,1fr); }
     input:not([type="checkbox"]):not([type="radio"]), select, textarea { font-size: 16px; }
   }
 }

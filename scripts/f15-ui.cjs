@@ -17,7 +17,7 @@ const {_electron}=require('playwright');
     page=await electron.firstWindow();
     const errors=[];
     page.on('pageerror',e=>errors.push(e.message));
-    await page.getByText('已连接',{exact:true}).waitFor();
+    await page.locator('#main[data-connection="ready"]').waitFor();
 
     await page.evaluate(async()=>{
       const domains=Array.from({length:123},(_,i)=>`f15-${i+1}.example`);

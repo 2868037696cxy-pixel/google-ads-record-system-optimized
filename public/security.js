@@ -78,5 +78,10 @@ function showChangePassword() {
   };
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden && state.unlockedUntil) void lockSensitive();});
-window.addEventListener('offline',()=>{if(state.unlockedUntil) void lockSensitive();const el=document.getElementById('connectionStatus');if(el){el.textContent='\u7f51\u7edc\u65ad\u5f00\uff0c\u65b0\u63d0\u4ea4\u5c1a\u672a\u4fdd\u5b58';el.className='connection-status disconnected';}});
+window.addEventListener('offline',()=>{
+  if(state.unlockedUntil) void lockSensitive();
+  state.connectionPhase='error';
+  state.syncError='网络已断开。恢复网络后会自动更新；未确认的提交请先核对结果。';
+  renderSyncNotice();
+});
 window.addEventListener('online',()=>{void connect();});

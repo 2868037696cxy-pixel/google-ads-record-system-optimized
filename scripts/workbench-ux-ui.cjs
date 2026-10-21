@@ -26,7 +26,7 @@ const { DatabaseSync } = require('node:sqlite');
     page = await electron.firstWindow();
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
-    await page.getByText('已连接', { exact: true }).waitFor();
+    await page.locator('#main[data-connection="ready"]').waitFor();
     await page.setViewportSize({ width: 1440, height: 900 });
 
     const system = await page.evaluate(() => ({
@@ -51,6 +51,8 @@ const { DatabaseSync } = require('node:sqlite');
     });
     await ready();
     assert.equal(await page.evaluate(() => Number(state.form.start_seq)), 124, 'automatic start number follows the newly synchronized server sequence');
+
+    await require('./settings-interactions.cjs')(page, shot);
 
     await page.locator('#rec-sort').selectOption('id_asc');
     await page.waitForFunction(() => state.records.length === 50 && state.records[0].id < state.records.at(-1).id);
@@ -431,6 +433,7 @@ const { DatabaseSync } = require('node:sqlite');
       integrityFixture = { first, last };
     } finally { fixtureDb.close(); }
     await nav('settings');
+    await page.locator('#settings-tab-data').click();
     await page.locator('[data-action="check-integrity"]').click();
     await page.getByText('有独立快照但没有关联，可能是历史录入；需人工核对', { exact: true }).waitFor();
     assert.match(await page.locator('#integrity-range').innerText(), /1–100.*124/);
@@ -518,8 +521,7 @@ const { DatabaseSync } = require('node:sqlite');
         await nav(key);
         const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1 || document.getElementById('main').scrollWidth > document.getElementById('main').clientWidth + 1);
         assert.equal(overflow, false, `${key} must not overflow the viewport at ${viewport.width}`);
-        const connectionFits = await page.locator('#connectionStatus').evaluate(element => element.scrollWidth <= element.clientWidth + 1 && element.getBoundingClientRect().height <= 24);
-        assert.equal(connectionFits, true, 'connection status must remain readable on one line beside reconnect');
+        assert.equal(await page.locator('#connectionNotice').isVisible(), false, 'healthy workspaces must not ask users to connect');
         const unlabeled = await page.evaluate(() => [...document.querySelectorAll('input, select, textarea')].filter(element => element.getClientRects().length && !element.labels?.length && !element.getAttribute('aria-label') && !element.getAttribute('aria-labelledby')).map(element => element.id || element.name));
         assert.deepEqual(unlabeled, [], `${key} inputs must have an accessible label`);
         if (viewport.width === 1440 || key === 'records') await shot(`${key}-${viewport.width}`);

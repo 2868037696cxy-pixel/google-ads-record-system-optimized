@@ -68,6 +68,7 @@ async function refreshAfterCommit(warning) {
     return true;
   } catch {
     state.syncError = warning;
+    state.connectionPhase = 'error';
     renderSyncNotice();
     return false;
   }
@@ -138,7 +139,7 @@ function parseFpStart(input) {
 const KINDS = [
   { key: 'emails', label: '邮箱库', ico: '✉' },
   { key: 'proxies', label: '代理库', ico: '⇅' },
-  { key: 'cards', label: '付款工具库', ico: '▤' },
+  { key: 'cards', label: '信用卡', ico: '▤' },
   { key: 'licenses', label: '营业执照', ico: '§' },
 ];
 
@@ -157,6 +158,9 @@ const state = {
   recordQueryReason: '',
   syncError: '',
   lastSyncedAt: null,
+  connectionPhase: 'loading',
+  settingsTab: 'general',
+  settingsAdvanced: false,
   next: null,
   reveal: false,
   unlockedUntil: 0,
@@ -197,7 +201,7 @@ const RECORD_COLUMNS = [
   { key: 'emailPass', label: '邮箱密码', index: 6 },
   { key: 'fakey', label: '2FA', index: 7 },
   { key: 'proxy', label: '代理', index: 8 },
-  { key: 'card', label: '付款工具', index: 9 },
+  { key: 'card', label: '信用卡', index: 9 },
   { key: 'ipreg', label: 'IP注册时间', index: 10 },
   { key: 'license', label: '营业执照', index: 11 },
   { key: 'idcard', label: '身份证', index: 12 },
@@ -220,7 +224,24 @@ function loadTableDensity() {
   catch { return 'comfortable'; }
 }
 function saveTableDensity() {
-  try { localStorage.setItem(densityKey(), state.tableDensity); } catch { /* 非关键显示偏好 */ }
+  try { localStorage.setItem(densityKey(), state.tableDensity); return true; }
+  catch { return false; }
+}
+function setTableDensity(value) {
+  if (!['compact', 'comfortable'].includes(value)) return;
+  state.tableDensity = value;
+  const saved = saveTableDensity();
+  document.body.classList.toggle('table-compact', value === 'compact');
+  document.querySelectorAll('[data-action="toggle-density"]').forEach(button => {
+    button.setAttribute('aria-pressed', String(value === 'compact'));
+    button.textContent = value === 'compact' ? '紧凑模式' : '舒适模式';
+  });
+  document.querySelectorAll('input[name="settings-density"]').forEach(input => { input.checked = input.value === value; });
+  const preview = document.getElementById('densityPreview');
+  if (preview) preview.dataset.density = value;
+  const feedback = document.getElementById('densitySaveStatus');
+  if (feedback) feedback.textContent = saved ? '已保存，下次打开仍然生效。' : '已应用；此浏览器暂时无法保存偏好。';
+  if (!saved) toast('行距已应用，但此浏览器暂时无法保存偏好', 'warn');
 }
 /** 把隐藏列写成一条动态规则；没有隐藏列时规则为空。 */
 function applyColumnVisibility() {
@@ -288,8 +309,8 @@ function renderNav() {
     ${main.map(item).join('')}
     <div class="nav-label">资源库</div>
     ${pools.map(item).join('')}
-    <div class="nav-label">工作空间</div>
-    ${item({ key: 'settings', label: '设置与维护', ico: '⚙', count: '' })}
+    <div class="nav-divider" aria-hidden="true"></div>
+    ${item({ key: 'settings', label: '设置', ico: '⚙', count: '' })}
   `;
   document.getElementById('revealLabel').textContent = state.reveal ? '敏感信息：显示中' : '敏感信息：已隐藏';
   document.querySelector('.dot-eye').classList.toggle('on', state.reveal);
@@ -328,10 +349,40 @@ function render() {
 }
 
 function renderSyncNotice() {
+  renderConnectionState();
   document.getElementById('syncNotice')?.remove();
   if (!state.syncError) return;
   const main = document.getElementById('main');
-  main.insertAdjacentHTML('afterbegin', `<div class="sync-notice" id="syncNotice" role="alert"><div><b>当前显示的是上次读取的数据</b><p>${esc(state.syncError)}</p></div><button class="btn btn-ghost btn-sm" data-action="retry-load">重新连接</button></div>`);
+  main.insertAdjacentHTML('afterbegin', `<div class="sync-notice" id="syncNotice" role="alert"><div><b>当前显示的是上次读取的数据</b><p>${esc(state.syncError)}</p></div><button class="btn btn-ghost btn-sm" data-action="retry-load">重试更新</button></div>`);
+}
+
+// Successful connection is implicit. Only pending actions and real failures need UI.
+function renderConnectionState() {
+  const phase = state.connectionPhase;
+  const pending = phase === 'loading' || phase === 'refreshing';
+  const main = document.getElementById('main');
+  if (main) {
+    main.dataset.connection = phase;
+    main.setAttribute('aria-busy', String(pending));
+  }
+  const notice = document.getElementById('connectionNotice');
+  if (notice) notice.hidden = phase !== 'error';
+  const status = document.getElementById('connectionStatus');
+  if (status) status.textContent = phase === 'error' ? '数据暂未更新' : '';
+  document.querySelectorAll('[data-action="retry-load"]').forEach(button => {
+    WorkbenchUI.busy(button, pending, pending ? (button.dataset.pendingLabel || '正在重试…') : undefined);
+  });
+  const synced = document.getElementById('settingsSyncStatus');
+  if (synced) {
+    synced.textContent = phase === 'error' ? '更新失败，请重试。' : pending ? '正在更新记录与资源…' : lastSyncLabel();
+    synced.dataset.tone = phase === 'error' ? 'warning' : 'neutral';
+  }
+}
+
+function lastSyncLabel() {
+  return state.lastSyncedAt
+    ? `上次更新 ${state.lastSyncedAt.toLocaleString('zh-CN', { hour12: false })}`
+    : '正在读取数据…';
 }
 
 // Explicit adapters keep query ownership independent of page rendering and selection.
@@ -435,12 +486,11 @@ async function refresh() {
   state.loaded = true;
   state.syncError = '';
   state.lastSyncedAt = new Date();
+  state.connectionPhase = 'ready';
   if (state.recordStats.total === 0) state.sel.clear();
 
   render();
   bindLabels();
-  const connection = document.getElementById('connectionStatus');
-  if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
   return true;
 }
 
@@ -453,7 +503,7 @@ function renderOverview() {
   const resources = [
     {kind:'emails', label:'邮箱资源'},
     {kind:'proxies', label:'代理资源'},
-    {kind:'cards', label:'支付资源'},
+    {kind:'cards', label:'信用卡'},
     {kind:'licenses', label:'营业执照'},
   ];
   const resourceRows = resources.map(({kind,label}) => `
@@ -503,31 +553,82 @@ function renderOverview() {
 
 function renderSettings() {
   const local = Boolean(window.desktop);
-  const synced = state.lastSyncedAt ? state.lastSyncedAt.toLocaleString('zh-CN', { hour12: false }) : '尚未完成';
+  const label = state.user?.display_name || state.user?.username || '当前账号';
+  const tabs = [
+    { key: 'general', label: '通用', icon: 'settings' },
+    { key: 'security', label: '账号与安全', icon: 'shield' },
+    { key: 'data', label: '数据管理', icon: 'archive' },
+  ];
+  const panel = (key) => `id="settings-panel-${key}" role="tabpanel" aria-labelledby="settings-tab-${key}" tabindex="0"${state.settingsTab === key ? '' : ' hidden'}`;
   document.getElementById('main').innerHTML = `
-    <div class="page-head"><div><h1>设置与维护</h1><p class="sub">管理工作空间、显示偏好和本人的数据。</p></div></div>
-    <div class="settings-grid">
-      <section class="panel"><div class="panel-head"><h2 class="panel-title">连接与显示</h2></div><div class="panel-body settings-stack">
-        <dl class="settings-facts"><div><dt>运行方式</dt><dd>${local ? '本机桌面工作台' : '服务器工作台'}</dd></div><div><dt>上次成功同步</dt><dd>${esc(synced)}</dd></div><div><dt>数据范围</dt><dd>当前账号的记录与资源</dd></div></dl>
-        <div class="settings-row"><div><b>同步最新数据</b><p>重新读取记录、资源和占用状态。快捷键 Ctrl+R。</p></div><button class="btn btn-ghost" data-action="retry-load">重新连接</button></div>
-        <div class="settings-row"><div><b>表格行距</b><p>按当前账号保存，仅影响显示。</p></div><button class="btn btn-ghost" data-action="toggle-density" aria-pressed="${state.tableDensity === 'compact'}">${state.tableDensity === 'compact' ? '紧凑模式' : '舒适模式'}</button></div>
-        <p class="settings-hint">快捷键：Ctrl+K 搜索当前列表，Esc 关闭弹窗或列菜单。</p>
-      </div></section>
-      <section class="panel"><div class="panel-head"><h2 class="panel-title">数据备份与恢复</h2></div><div class="panel-body settings-stack">
-        <div class="settings-row"><div><b>大文件备份与恢复</b><p>加密任务、分块续传、PDF 校验和恢复范围核对，单包上限 512 MiB。</p></div><button class="btn btn-primary" data-action="backup-tasks">管理备份任务</button></div>
-        <div class="settings-row"><div><b>旧版 JSON 导出</b><p>兼容既有备份格式；大文件请使用上方的备份任务。</p></div><button class="btn btn-ghost" data-action="${local ? 'desktop' : 'web'}-backup">导出备份</button></div>
-        ${local ? '<div class="settings-row"><div><b>本机数据目录</b><p>查看桌面程序保存的数据文件。</p></div><button class="btn btn-ghost" data-action="desktop-data">打开目录</button></div>' : ''}
-        <div class="settings-row settings-danger"><div><b>旧版 JSON 恢复</b><p>恢复既有 JSON 备份，会替换当前账号的数据。请先保存当前备份。</p></div><button class="btn btn-danger" data-action="${local ? 'desktop' : 'web'}-restore">恢复备份</button></div>
-      </div></section>
-      <section class="panel"><div class="panel-head"><h2 class="panel-title">数据一致性</h2></div><div class="panel-body settings-stack">
-        <div class="settings-row"><div><b>记录关联检查</b><p>逐批检查历史关联、字段差异和重复占用，核对后逐项处理。</p></div><button class="btn btn-ghost" data-action="check-integrity">检查本人数据</button></div>
-        <p class="settings-hint">检查不会修改数据；修复需临时授权、核对差异并确认。历史归属不明确时由你重新选择资源。</p>
-      </div></section>
-      <section class="panel"><div class="panel-head"><h2 class="panel-title">账号安全</h2></div><div class="panel-body settings-stack">
-        <div class="settings-row"><div><b>我的安全操作记录</b><p>查看本人最近的解锁、导出与数据操作。</p></div><button class="btn btn-ghost" data-action="my-audit">查看记录</button></div>
-        ${local ? '<p class="settings-hint">敏感信息通过左侧入口临时显示，离开窗口或授权过期后自动隐藏。</p>' : '<div class="settings-row"><div><b>登录密码</b><p>修改后所有设备需要重新登录。</p></div><button class="btn btn-ghost" data-action="change-password">修改密码</button></div>'}
-      </div></section>
+    <div class="settings-page">
+      <div class="page-head"><div><h1>设置</h1><p class="sub">你的偏好、账号与数据。</p></div></div>
+      <div class="settings-tabs" role="tablist" aria-label="设置分类">
+        ${tabs.map(tab => `<button type="button" id="settings-tab-${tab.key}" role="tab" aria-selected="${state.settingsTab === tab.key}" aria-controls="settings-panel-${tab.key}" tabindex="${state.settingsTab === tab.key ? 0 : -1}" data-action="settings-tab" data-tab="${tab.key}">${WorkbenchUI.icon(tab.icon)}<span>${tab.label}</span></button>`).join('')}
+      </div>
+      <div class="settings-content" ${panel('general')}>
+        <section class="panel settings-section" aria-labelledby="settings-display-title">
+          <div class="settings-section-head"><h2 id="settings-display-title">显示偏好</h2><p>选择适合你的表格行距，即时应用。</p></div>
+          <div class="settings-section-body">
+            <fieldset class="density-options"><legend class="sr-only">表格行距</legend>
+              ${[{value:'comfortable',name:'舒适',hint:'留白更充足，适合日常浏览'},{value:'compact',name:'紧凑',hint:'同屏查看更多记录'}].map(option => `<label class="density-option"><input type="radio" name="settings-density" value="${option.value}" ${state.tableDensity === option.value ? 'checked' : ''}><span><strong>${option.name}</strong><small>${option.hint}</small></span></label>`).join('')}
+            </fieldset>
+            <p class="density-preview-label" id="densityPreviewLabel">行距预览</p>
+            <div class="density-preview" id="densityPreview" data-density="${state.tableDensity}" aria-labelledby="densityPreviewLabel">
+              <div class="density-preview-head"><span>名称</span><span>状态</span><span>更新时间</span></div>
+              ${['账号记录 01','账号记录 02'].map(name => `<div class="density-preview-row"><span>${name}</span><span><i aria-hidden="true"></i>正常</span><span>今天</span></div>`).join('')}
+            </div>
+            <p class="settings-save-note" id="densitySaveStatus" role="status">偏好按账号保存在此设备。</p>
+          </div>
+        </section>
+        <section class="panel settings-section" aria-labelledby="settings-sync-title">
+          <div class="settings-section-head"><h2 id="settings-sync-title">数据更新</h2><p>打开工作台时自动读取，操作后自动更新。</p></div>
+          <div class="settings-section-body"><div class="settings-row"><div><b>获取最新数据</b><p id="settingsSyncStatus" role="status">${esc(lastSyncLabel())}</p></div><button class="btn btn-ghost" id="settingsRefresh" data-action="retry-load" data-pending-label="正在刷新…">刷新数据</button></div></div>
+        </section>
+        <div class="settings-shortcuts" aria-label="键盘快捷键"><span><kbd>Ctrl / ⌘ K</kbd> 搜索列表</span><span><kbd>Ctrl R</kbd> 刷新数据</span><span><kbd>Esc</kbd> 关闭弹窗</span></div>
+      </div>
+      <div class="settings-content" ${panel('security')}>
+        <section class="panel settings-section" aria-labelledby="settings-account-title">
+          <div class="settings-account"><span class="settings-avatar" aria-hidden="true">${esc(label.slice(0, 1).toUpperCase())}</span><div><h2 id="settings-account-title">${esc(label)}</h2><p>${state.user?.display_name ? `@${esc(state.user.username)} · ` : ''}记录与资源仅本人可见</p></div></div>
+          <div class="settings-section-body">
+            ${local ? '<div class="settings-row"><div><b>本机工作台</b><p>当前使用本机数据，可在数据管理中备份。</p></div></div>' : '<div class="settings-row"><div><b>登录密码</b><p>修改后，所有设备需要重新登录。</p></div><button class="btn btn-ghost" id="settingsPassword" data-action="change-password">修改密码</button></div>'}
+            <div class="settings-row"><div><b>敏感信息</b><p>临时查看密码等资料，离开窗口或授权过期后自动隐藏。</p></div><button class="btn btn-ghost" id="settingsSensitive" data-action="toggle-reveal">${state.reveal ? '立即隐藏' : '临时显示'}</button></div>
+            <div class="settings-row"><div><b>安全操作记录</b><p>查看你的解锁、导出与数据操作。</p></div><button class="btn btn-ghost" id="settingsAudit" data-action="my-audit">查看记录</button></div>
+          </div>
+        </section>
+      </div>
+      <div class="settings-content" ${panel('data')}>
+        <section class="panel settings-section" aria-labelledby="settings-data-title">
+          <div class="settings-section-head"><h2 id="settings-data-title">管理你的数据</h2><p>备份、恢复与核对当前账号的记录和资源。</p></div>
+          <div class="settings-section-body">
+            <div class="settings-row"><div class="settings-action-info"><span class="settings-action-icon" aria-hidden="true">${WorkbenchUI.icon('archive')}</span><div><b>备份与恢复</b><p>保存加密备份，或查看备份内容后恢复。</p></div></div><button class="btn btn-primary" id="settingsBackup" data-action="backup-tasks">管理备份</button></div>
+            <div class="settings-row"><div class="settings-action-info"><span class="settings-action-icon" aria-hidden="true">${WorkbenchUI.icon('check')}</span><div><b>数据检查</b><p>核对记录关联与资源占用。检查不会修改数据。</p></div></div><button class="btn btn-ghost" id="settingsIntegrity" data-action="check-integrity">开始检查</button></div>
+            ${local ? '<div class="settings-row"><div><b>本机数据目录</b><p>查看桌面程序保存的数据文件。</p></div><button class="btn btn-ghost" data-action="desktop-data">打开目录</button></div>' : ''}
+          </div>
+        </section>
+        <details class="panel settings-advanced" id="settingsAdvanced" ${state.settingsAdvanced ? 'open' : ''}>
+          <summary><span><strong>兼容与高级选项</strong><small>导出或恢复旧版 JSON 备份</small></span><span class="settings-chevron" aria-hidden="true">${WorkbenchUI.icon('chevron')}</span></summary>
+          <div class="settings-section-body">
+            <div class="settings-row"><div><b>导出旧版备份</b><p>用于兼容已有流程。大文件建议使用上方的加密备份。</p></div><button class="btn btn-ghost" id="settingsLegacyExport" data-action="${local ? 'desktop' : 'web'}-backup">导出 JSON</button></div>
+            <div class="settings-row settings-danger"><div><b>恢复旧版备份</b><p>将替换当前账号的数据。请先备份，再选择恢复文件。</p></div><button class="btn btn-ghost" id="settingsLegacyRestore" data-action="${local ? 'desktop' : 'web'}-restore">选择备份…</button></div>
+          </div>
+        </details>
+      </div>
     </div>`;
+}
+
+function selectSettingsTab(key, focus = false) {
+  if (!['general', 'security', 'data'].includes(key)) return;
+  state.settingsTab = key;
+  document.querySelectorAll('.settings-tabs [role="tab"]').forEach(tab => {
+    const active = tab.dataset.tab === key;
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus({ preventScroll: true });
+  });
+  document.querySelectorAll('.settings-content[role="tabpanel"]').forEach(panel => {
+    panel.hidden = panel.id !== `settings-panel-${key}`;
+  });
 }
 
 function renderWorkbench() {
@@ -597,7 +698,7 @@ function renderWorkbench() {
     <div class="stat-strip">
       <div class="strip-item hi"><span class="v">${state.recordStats.total}</span><span class="k">记录总数</span></div>
       <div class="strip-item"><span class="v">${avail.emails}<em>/${state.pools.emails.length}</em></span><span class="k"><span class="dot green"></span>可用邮箱</span></div>
-      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用付款工具</span></div>
+      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用信用卡</span></div>
       <div class="strip-item"><span class="v">${avail.licenses}<em>/${state.pools.licenses.length}</em></span><span class="k"><span class="dot amber"></span>可用营业执照</span></div>
       <div class="strip-item"><span class="v">${poolCount('proxies')}<em>/${state.pools.proxies.length}</em></span><span class="k"><span class="dot"></span>可用代理</span></div>
     </div>
@@ -608,7 +709,7 @@ function renderWorkbench() {
             ${[
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
-              { n: '03', t: '导入付款工具', d: '工具别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
+              { n: '03', t: '导入信用卡', d: '信用卡别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
               { n: '04', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
             ]
               .map(
@@ -624,7 +725,7 @@ function renderWorkbench() {
     <div class="panel" id="createPanel">
       <div class="panel-head">
         <div class="panel-title">快速创建 <span class="tag">指纹名称自动生成</span></div>
-        <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 付款工具 / 营业执照自动按顺序分配并标记已使用</span>
+        <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 信用卡 / 营业执照自动按顺序分配并标记已使用</span>
       </div>
       <div class="panel-body">
         <form id="createForm" class="form-grid" autocomplete="off">
@@ -661,7 +762,7 @@ function renderWorkbench() {
                 <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="emails">选择</button>
               </div>
               <div class="assign-row">
-                <span class="assign-info">▤ 付款工具：<span id="info-cards">${assignInfo('cards')}</span></span>
+                <span class="assign-info">▤ 信用卡：<span id="info-cards">${assignInfo('cards')}</span></span>
                 <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="cards">选择</button>
               </div>
               <div class="assign-row">
@@ -685,7 +786,7 @@ function renderWorkbench() {
         <div class="create-preview">
           <span>本次将创建 <b>${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
             ${count > avail.emails ? `<span class="warn">⚠ 邮箱仅剩 ${avail.emails} 条</span>` : ''}
-            ${count > avail.cards ? `<span class="warn">⚠ 付款工具仅剩 ${avail.cards} 张</span>` : ''}
+            ${count > avail.cards ? `<span class="warn">⚠ 信用卡仅剩 ${avail.cards} 张</span>` : ''}
           </span>
           <button class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `核对并创建 ${count > 0 ? count + ' 条' : ''}`}</button>
         </div>
@@ -698,7 +799,7 @@ function renderWorkbench() {
       </div>
       <div class="toolbar record-toolbar">
         <div class="record-filter-row">
-        <input class="search" id="rec-q" maxlength="200" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 付款工具…" value="${esc(state.q)}">
+        <input class="search" id="rec-q" maxlength="200" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 信用卡…" value="${esc(state.q)}">
         <div class="tabs">
           ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" aria-pressed="${state.rstatus === s}" data-action="rstatus" data-v="${s}">${s}<i class="n">${s === '全部' ? state.recordStats.total : state.recordStats[s]}</i></button>`).join('')}
         </div>
@@ -771,7 +872,7 @@ function renderRecordsTable(list) {
     <thead><tr>
       <th><input type="checkbox" data-action="sel-all" aria-label="全选当前页" ${allChecked ? 'checked' : ''}></th>
       <th>指纹名称</th><th>名称</th><th>域名</th><th>谷歌邮箱</th><th>邮箱密码</th><th>2FA</th>
-      <th>代理</th><th>付款工具</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
+      <th>代理</th><th>信用卡</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
       <th>状态</th><th style="width:110px">操作</th>
     </tr></thead>
     <tbody>
@@ -792,7 +893,7 @@ function renderRecordsTable(list) {
             <td class="mono copyable" data-copy="${esc(r.email_pass)}" title="点击复制">${sens(r.email_pass)}</td>
             <td class="mono copyable" data-copy="${esc(r.email_fakey)}" title="点击复制">${sens(r.email_fakey)}</td>
             <td class="mono copyable" data-sensitive="${Boolean(r.proxy_user || r.proxy_pass)}" data-copy="${esc(r.proxy_host ? `${r.proxy_host}:${r.proxy_port}:${r.proxy_user}:${r.proxy_pass}` : '')}" title="点击复制完整代理">${proxy}</td>
-            <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_last4}` : '')}" title="复制付款工具信息">${card}</td>
+            <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_last4}` : '')}" title="复制信用卡信息">${card}</td>
             <td class="dim">${esc(r.ip_reg_time) || '<span class="faint">—</span>'}</td>
             <td>${r.license_id ? `<button class="license-link" data-action="view-license" data-id="${r.license_id}">${esc(r.license_name)}</button>` : '<span class="faint">—</span>'}</td>
             <td class="dim">${sens(r.id_card)}</td>
@@ -924,7 +1025,7 @@ const POOL_TABLE = {
     ],
   },
   cards: {
-    cols: ['ID', '工具别名', '有效期', '末四位', '状态', '导入时间', '操作'],
+    cols: ['ID', '信用卡别名', '有效期', '末四位', '状态', '导入时间', '操作'],
     widths: ['60px', '220px', '90px', '80px', '100px', '170px', '70px'],
     row: (c) => [
       `<span class="faint mono">${c.id}</span>`,
@@ -963,7 +1064,7 @@ host:port:user:pass
 host,port,user,pass`,
   },
   cards: {
-    rule: '一行一条：付款工具别名|末四位|有效期。不接收完整卡号和 CVV。',
+    rule: '一行一条：信用卡别名|末四位|有效期。不接收完整卡号和 CVV。',
     sample: 'Finance-card-A|1234|06/29\nFinance-card-B|5678|12/29',
   },
   licenses: {
@@ -1148,7 +1249,7 @@ function openEditRecord(id) {
         </div>
         <div class="field col-6"><label>谷歌邮箱（更换后自动释放原邮箱）</label>${poolSelect('emails', r.email_id, 'email_id')}</div>
         <div class="field col-6"><label>代理</label>${poolSelect('proxies', r.proxy_id, 'proxy_id')}</div>
-        <div class="field col-6"><label>付款工具</label>${poolSelect('cards', r.card_id, 'card_id')}</div>
+        <div class="field col-6"><label>信用卡</label>${poolSelect('cards', r.card_id, 'card_id')}</div>
         <div class="field col-6"><label>营业执照</label>${poolSelect('licenses', r.license_id, 'license_id')}</div>
       </div>
     </div>
@@ -1375,7 +1476,10 @@ document.addEventListener('click', async (e) => {
   try {
     switch (action) {
       case 'retry-load':
-        await connect();
+        await connect({ manual: true });
+        break;
+      case 'settings-tab':
+        selectSettingsTab(t.dataset.tab);
         break;
       case 'retry-records':
         await loadRecordsPage({ renderMode: 'table' });
@@ -1509,11 +1613,7 @@ document.addEventListener('click', async (e) => {
         refreshSelectionUI();
         break;
       case 'toggle-density':
-        state.tableDensity = state.tableDensity === 'compact' ? 'comfortable' : 'compact';
-        saveTableDensity();
-        document.body.classList.toggle('table-compact', state.tableDensity === 'compact');
-        t.setAttribute('aria-pressed', String(state.tableDensity === 'compact'));
-        t.textContent = state.tableDensity === 'compact' ? '紧凑模式' : '舒适模式';
+        setTableDensity(state.tableDensity === 'compact' ? 'comfortable' : 'compact');
         break;
       case 'reset-cols':
         state.hiddenCols = [];
@@ -1566,7 +1666,7 @@ document.addEventListener('click', async (e) => {
       }
       case 'del-record': {
         const id = Number(t.dataset.id);
-        confirmModal('删除记录', '删除后关联的邮箱 / 付款工具 / 营业执照会自动释放回「未使用」。', async () => {
+        confirmModal('删除记录', '删除后关联的邮箱 / 信用卡 / 营业执照会自动释放回「未使用」。', async () => {
           await api(`/api/records/${id}`, { method: 'DELETE' });
           state.sel.delete(id);
           toast('已删除');
@@ -1730,7 +1830,7 @@ function updateCreatePreview() {
   preview.querySelectorAll('.warn').forEach((w) => w.remove());
   const warns = [];
   if (count > avail.emails) warns.push(`⚠ 邮箱仅剩 ${avail.emails} 条`);
-  if (count > avail.cards) warns.push(`⚠ 付款工具仅剩 ${avail.cards} 张`);
+  if (count > avail.cards) warns.push(`⚠ 信用卡仅剩 ${avail.cards} 张`);
   const span = preview.querySelector('span');
   warns.forEach((w) => {
     const el = document.createElement('span');
@@ -1799,6 +1899,10 @@ function refreshSelectionUI() {
 }
 
 document.addEventListener('change', (e) => {
+  if (e.target.matches('input[name="settings-density"]')) {
+    setTableDensity(e.target.value);
+    return;
+  }
   if (e.target.id === 'f-proxy') {
     state.form.proxy_id = e.target.value;
     return;
@@ -1833,25 +1937,34 @@ document.addEventListener('change', (e) => {
 
 let connecting = false;
 
-async function connect() {
+async function connect({ manual = false } = {}) {
   if (connecting) return;
   connecting = true;
+  const opener = document.activeElement;
+  const startingPage = state.page;
+  const startingTab = state.settingsTab;
   const main = document.getElementById('main');
-  const status = document.getElementById('connectionStatus');
-  if (status) { status.textContent = '正在连接…'; status.className = 'connection-status'; }
+  state.connectionPhase = state.loaded ? 'refreshing' : 'loading';
   if (!state.loaded) main.innerHTML = '<section class="connection-panel" role="status"><span class="connection-spinner" aria-hidden="true"></span><h1>正在打开工作台</h1><p>正在读取你的记录和资源</p></section>';
-  document.querySelectorAll('[data-action="retry-load"]').forEach(retry => WorkbenchUI.busy(retry, true, '正在连接…'));
+  renderConnectionState();
   try {
-    await refresh();
+    const updated = await refresh();
+    if (updated && manual && state.page !== 'settings') toast('数据已更新');
   } catch (error) {
-    if (status) { status.textContent = '连接未完成'; status.className = 'connection-status disconnected'; }
+    state.connectionPhase = 'error';
     // Keep existing records and form input visible if a later refresh fails.
-    if (state.loaded) { state.syncError = error.message; renderSyncNotice(); toast(error.message, 'error'); }
-    else main.innerHTML = `<section class="connection-panel" role="alert"><span class="empty-ico">⚠</span><h1>暂时无法打开工作台</h1><p>${esc(error.message)}</p><button class="btn btn-primary" data-action="retry-load">重新连接</button></section>`;
+    if (state.loaded) { state.syncError = error.message; renderSyncNotice(); }
+    else main.innerHTML = `<section class="connection-panel" role="alert"><span class="empty-ico">⚠</span><h1>暂时无法打开工作台</h1><p>${esc(error.message)}</p><button class="btn btn-primary" data-action="retry-load">重试</button></section>`;
   } finally {
     connecting = false;
-    document.querySelectorAll('[data-action="retry-load"]').forEach(retry => WorkbenchUI.busy(retry, false, '重新连接'));
+    // A superseded refresh leaves the newer query in charge; never strand controls.
+    if (state.loaded && state.connectionPhase === 'refreshing') state.connectionPhase = state.syncError ? 'error' : 'ready';
+    renderConnectionState();
     document.body.classList.remove('boot');
+    if (opener?.id && document.activeElement === document.body && state.page === startingPage && state.settingsTab === startingTab && !document.querySelector('#modal-root .modal')) {
+      const replacement = document.getElementById(opener.id);
+      if (replacement && !replacement.disabled && replacement.getClientRects().length) replacement.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -1859,6 +1972,7 @@ function bindLabels() { WorkbenchUI.enhance(); }
 new MutationObserver(bindLabels).observe(document.getElementById('main'), { childList: true, subtree: true });
 new MutationObserver(bindLabels).observe(document.getElementById('modal-root'), { childList: true, subtree: true });
 document.addEventListener('toggle', event => {
+  if (event.target.id === 'settingsAdvanced' && state.page === 'settings') state.settingsAdvanced = event.target.open;
   if (event.target.matches('.col-menu[open]')) WorkbenchUI.positionMenu(event.target);
 }, true);
 document.addEventListener('pointerdown', event => {
@@ -1877,6 +1991,14 @@ if (window.desktop) {
 }
 document.addEventListener('keydown', (event) => {
   const modalOpen = Boolean(document.querySelector('#modal-root .modal'));
+  if (!modalOpen && event.target.matches('.settings-tabs [role="tab"]') && ['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {
+    event.preventDefault();
+    const keys = ['general', 'security', 'data'];
+    const index = keys.indexOf(state.settingsTab);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
+    selectSettingsTab(keys[next], true);
+    return;
+  }
   if (!modalOpen && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
     const search = document.querySelector('.page-records #rec-q, #pool-q');
     if (search) { event.preventDefault(); search.focus(); search.select(); }
@@ -1889,7 +2011,7 @@ document.addEventListener('keydown', (event) => {
   }
   if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'r') {
     event.preventDefault();
-    if (!modalOpen && !event.repeat) connect();
+    if (!modalOpen && !event.repeat) connect({ manual: true });
   }
 });
 connect();

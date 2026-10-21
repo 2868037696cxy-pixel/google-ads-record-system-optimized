@@ -48,7 +48,7 @@ const largePdf=require('../tests/large-pdf-fixture');
       assert.equal(new URL(page.url()).origin,fixture.remote,'packaged test must stay on the isolated HTTPS origin');
       assert.equal(fs.existsSync(path.join(directory,'userdata','workbench.sqlite')),false,'packaged remote client never creates a local database');
     }
-    await page.getByText('已连接',{exact:true}).waitFor();await page.setViewportSize({width:1280,height:800});
+    await page.locator('#main[data-connection="ready"]').waitFor();await page.setViewportSize({width:1280,height:800});
     await electron.evaluate(({BrowserWindow},filename)=>{
       globalThis.packageDownloadStatus='waiting';globalThis.packageWorkerErrors=[];
       process.on('worker',worker=>worker.on('error',error=>packageWorkerErrors.push(error.message)));
@@ -68,7 +68,7 @@ const largePdf=require('../tests/large-pdf-fixture');
       await page.locator(selector).click();
       if(needs){await page.locator('#unlock-password').fill(fixture.password);await page.locator('#unlock-form [type="submit"]').click();}
     };
-    await page.locator('#nav [data-page="settings"]').click();await page.locator('[data-action="backup-tasks"]').click();
+    await page.locator('#nav [data-page="settings"]').click();await page.locator('#settings-tab-data').click();await page.locator('[data-action="backup-tasks"]').click();
     await authorizedClick('#package-export');await page.locator('[data-package-action="download"]').waitFor();
     const exported=await page.evaluate(async()=>(await api('/api/backup-jobs')).jobs.find(job=>job.kind==='export'));
     assert.equal(exported.counts.records,1);assert.equal(exported.counts.documents,1);

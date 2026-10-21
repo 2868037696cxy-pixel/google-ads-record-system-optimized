@@ -19,7 +19,7 @@ const { _electron } = require('playwright');
       },
     });
     page = await electron.firstWindow();
-    await page.getByText('已连接', { exact: true }).waitFor();
+    await page.locator('#main[data-connection="ready"]').waitFor();
 
     const styles = await page.evaluate(() => {
       const numeric = (selector, property) => Number.parseFloat(getComputedStyle(document.querySelector(selector))[property]);

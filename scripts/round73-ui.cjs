@@ -21,7 +21,7 @@ const {certificate}=require('../tests/pdf-fixture');
     page=await electron.firstWindow();
     page.setDefaultTimeout(15000);
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
-    await page.getByText('已连接',{exact:true}).waitFor();
+    await page.locator('#main[data-connection="ready"]').waitFor();
     await page.evaluate(async()=>{
       await api('/api/import/emails',{method:'POST',body:{items:[{user:'picker-a@example.test'},{user:'picker-b@example.test'}]}});
       await refresh();
