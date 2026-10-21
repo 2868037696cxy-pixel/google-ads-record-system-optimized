@@ -79,7 +79,7 @@ const {certificate}=require('../tests/pdf-fixture');
     const file=path.join(directory,'refresh-probe.pdf');
     fs.writeFileSync(file,certificate());
     await page.locator('#license-file').setInputFiles(file);
-    await page.getByText('已提取信息，请核对后保存。原 PDF 将一并保存。',{exact:true}).waitFor();
+    await page.locator('#license-duplicate-status[data-state="clear"]').waitFor();
     failRefresh=true;
     await page.locator('#license-import').click();
     await page.getByText('资料已保存，但列表刷新失败；请重新连接，不要重复导入',{exact:true}).waitFor();

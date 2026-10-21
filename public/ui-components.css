@@ -321,3 +321,57 @@
 #package-file-message, #package-resume-message { overflow-wrap: anywhere; }
 @media (max-width: 700px) { .backup-create { align-items: stretch; flex-direction: column; } .backup-upload-new { grid-template-columns: minmax(0, 1fr); } }
 }
+.license-check {
+  margin-top: -6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: var(--font-caption, 12px);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.license-check[data-state="clear"] { color: var(--green); border-color: var(--green); }
+.license-check[data-state="duplicate"] { color: var(--red); border-color: var(--red); }
+.license-check[data-state="error"] { color: var(--amber); }
+.license-check[data-state="pending"] { color: var(--accent); }
+.license-form input[aria-invalid="true"] { border-color: var(--red); }
+.license-form .field { min-width: 0; }
+.license-batch-layout { display: grid; grid-template-columns: minmax(170px, .7fr) minmax(0, 1.3fr); gap: 20px; align-items: start; }
+.license-batch-files { display: flex; flex-direction: column; gap: 8px; max-height: 420px; overflow-y: auto; }
+.batch-file { display: flex; align-items: flex-start; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); }
+.batch-file.active { border-color: var(--accent); }
+.batch-file > input { margin-top: 5px; }
+.batch-file > button { flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
+.batch-file strong, .batch-file span { display: block; overflow-wrap: anywhere; }
+.batch-file strong { font-size: 13px; font-weight: 600; }
+.batch-file span { margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.batch-file[data-phase="duplicate"] span { color: var(--red); }
+.batch-file[data-phase="saved"] span { color: var(--green); }
+.batch-auto, .bundle-choice { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.7; }
+.bundle-choice { margin-top: 18px; }
+.batch-auto input, .bundle-choice input { flex-shrink: 0; margin-top: 5px; }
+#batch-summary { color: var(--muted); font-size: 13px; }
+#batch-editor h4 { margin: 0 0 8px; overflow-wrap: anywhere; }
+.batch-entry-status { color: var(--muted); font-size: 12px; line-height: 1.7; }
+#batch-save-one { margin-top: 16px; }
+.setup-readiness { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); font-size: 13px; line-height: 1.7; }
+.setup-fields { display: flex; flex-direction: column; margin: 12px 0 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+.setup-field { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 14px; background: var(--surface); }
+.setup-field + .setup-field { border-top: 1px solid var(--line); }
+.setup-field > div { min-width: 0; }
+.setup-field dt { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.setup-field dd { margin: 4px 0 0; color: var(--text); font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; white-space: pre-wrap; }
+.setup-field button { flex-shrink: 0; }
+.setup-manual { padding: 14px; border-radius: 12px; background: var(--surface-2); }
+.setup-manual h4 { margin: 0 0 8px; }
+.setup-manual p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.8; }
+.modal:has(#resource-preview) { width: min(1120px, 100%); }
+#resource-preview table { min-width: 880px; }
+#resource-preview td:nth-child(3) { white-space: nowrap; }
+@media (max-width: 700px) {
+  .license-batch-layout { grid-template-columns: minmax(0, 1fr); }
+  .license-batch-files { max-height: 190px; }
+}
+@media (max-width: 640px) { .license-form { grid-template-columns: minmax(0, 1fr); } }

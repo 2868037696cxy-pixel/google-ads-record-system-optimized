@@ -19,14 +19,16 @@ globalThis.WorkbenchRecordCreate = (() => {
     else if (!Number.isSafeInteger(fp.seq) || fp.seq < 1 || !Number.isSafeInteger(fp.seq + domains.length)) { error = '指纹起始编号必须是有效的正整数。'; field = 'f-start'; }
     for (const kind of ['emails', 'cards', 'licenses', ...(form.proxy_mode === 'auto' ? ['proxies'] : [])]) {
       const resource = resources[kind];
-      if (!error && resource.total && resource.available < domains.length) error = `${resource.label}可用资源不足：需要 ${domains.length} 条，当前可用 ${resource.available} 条。请先补充资源或减少创建数量。`;
+      if (!error && (resource.total || form.require_complete) && resource.available < domains.length) error = `${resource.label}可用资源不足：需要 ${domains.length} 条，当前可用 ${resource.available} 条。请先补充资源或减少创建数量。`;
     }
+    if (!error && form.require_complete && form.proxy_mode !== 'auto') error = '完整组合需要为每条记录独立分配一个 IP，请选择自动分配。';
     return { error, field, fp, body: {
       country: form.country, product: form.product, domains,
       start_seq: fp.seq, fp_prefix: fp.prefix, date_key: dateKey,
       ip_reg_time: form.ip_reg_time, id_card: form.id_card, proxy_mode: form.proxy_mode,
       proxy_id: form.proxy_mode === 'shared' && form.proxy_id ? Number(form.proxy_id) : undefined,
       email_ids: [...picked.emails].map(Number), card_ids: [...picked.cards].map(Number), license_ids: [...picked.licenses].map(Number),
+      proxy_ids: [...(picked.proxies || [])].map(Number), require_complete: Boolean(form.require_complete),
     } };
   }
   const digest = async text => {

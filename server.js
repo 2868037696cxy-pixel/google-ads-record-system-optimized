@@ -31,6 +31,7 @@ const { openDatabase, transaction } = require('./lib/db');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
 const dedup = require('./lib/dedup');
+const licenseIdentifiers = require('./lib/license-identifiers');
 const { SNAP } = require('./lib/resource-snapshots');
 const recordIntegrity = require('./lib/record-integrity');
 
@@ -542,13 +543,21 @@ function decodePdf(base64) {
 }
 
 function parseCertificate(text) {
+  const native = licenseIdentifiers.businessIdentifier(text);
+  if (native.identity && !/certifies and attests that:/i.test(text)) {
+    const structured = parseLicenses(text);
+    const first = structured.length === 1 ? structured[0] : {};
+    const name = licenseIdentifiers.businessName(text) || first.name || '';
+    return [{ ...first, ...licenseIdentifiers.businessFields(text), name, legal_name: first.legal_name || name, ...native.identity }];
+  }
+  if (native.ambiguous) return [];
   const lines = String(text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const start = lines.findIndex((line) => /certifies and attests that:/i.test(line));
   if (start >= 0) {
     const name = lines[start + 1] || '';
     const address = lines[start + 2] || '';
     const city = (lines[start + 3] || '').match(/^(?:DK-)?(\d{4})\s+(.+)$/);
-    if (name && city) return [{ name, legal_name: name, address, apt: '', zip: city[1], city: city[2], type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '' }];
+    if (name && city) return [{ name, legal_name: name, address, apt: '', zip: city[1], city: city[2], type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '', jurisdiction: 'DK', registration_type: 'CVR' }];
   }
   const structured = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(text);
   return structured ? parseLicenses(text) : [];
@@ -569,7 +578,7 @@ const LIC_LABELS = {
   jurisdiction: '注册国家(?:/地区)?|注册地区|登记地区|司法辖区|(?:registration\\s+)?jurisdiction|country\\s+of\\s+registration',
   regtype: '注册号类型|编号类型|登记号类型|registration\\s*(?:number\\s*)?type|identifier\\s*type',
   regauthority: '登记机关|注册机关|登记机构|注册机构|registration\\s*(?:authority|registry)|register',
-  cvr: '公司注册号|企业注册号|商业注册号|注册号|登记号|统一社会信用代码|CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?|(?:company\\s+|business\\s+)?registration\\s*(?:number|no\\.?|nr\\.?)',
+  cvr: '公司注册号|企业注册号|商业注册号|注册号|登记号|统一社会信用代码|CNPJ|OIB|CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?|(?:company\\s+|business\\s+)?registration\\s*(?:number|no\\.?|nr\\.?)',
   type: '资料类型|(?:entity|business|organization)\\s*type|类型|type',
 };
 const LIC_STOP = Object.values(LIC_LABELS).join('|');
@@ -584,6 +593,15 @@ function parseLicenses(text) {
   if (text != null && typeof text !== 'string') return reply400('待解析内容必须为文本');
   const raw = String(text || '').trim();
   if (!raw) return [];
+  const native = licenseIdentifiers.businessIdentifier(raw);
+  if (native.identity) {
+    const flat = raw.replace(/\s+/g, ' ');
+    const fields = licenseIdentifiers.businessFields(raw);
+    for (const [field, label] of Object.entries({ address: 'address', apt: 'apt', zip: 'zip', city: 'city', registration_authority: 'regauthority' })) fields[field] ||= licGrab(flat, LIC_LABELS[label]);
+    const name = fields.name || licGrab(flat, LIC_LABELS.name) || licGrab(flat, LIC_LABELS.legal) || '';
+    return [{ ...fields, name, legal_name: licGrab(flat, LIC_LABELS.legal) || name, ...native.identity }];
+  }
+  if (native.ambiguous) return [];
 
   // 检测是否为带标签的结构化文本
   const hasLabel = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(raw);
@@ -634,7 +652,7 @@ const IMPORT_FIELDS = {
   emails: ['user', 'pass', 'fakey'],
   proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
   cards: ['number', 'expiry', 'last4'],
-  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr', 'jurisdiction', 'registration_type', 'registration_authority'],
+  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'region', 'type', 'cvr', 'jurisdiction', 'registration_type', 'registration_authority'],
 };
 
 // 同一账号内的重复判定（营业执照另外走跨用户全局判重）
@@ -692,7 +710,7 @@ function normalizeImport(type, item) {
     row.jurisdiction = dedup.normalizeJurisdiction(row.jurisdiction);
     row.registration_type = dedup.normalizeRegistrationType(row.registration_type);
     if (row.registration_authority.length > 160) return reply400('登记机关名称过长');
-    if (row.cvr && row.registration_type === 'CVR' && !row.jurisdiction) row.jurisdiction = 'DK';
+    if (row.cvr && !row.jurisdiction) row.jurisdiction = licenseIdentifiers.TYPE_COUNTRIES[row.registration_type] || '';
     const hasScope = !!(row.jurisdiction || row.registration_type || row.registration_authority);
     if (!row.cvr && hasScope) return reply400('填写注册国家、编号类型或登记机关时必须同时填写注册号');
     if (row.cvr && (!!row.jurisdiction !== !!row.registration_type)) {
@@ -701,6 +719,8 @@ function normalizeImport(type, item) {
     if (row.registration_authority && !(row.jurisdiction && row.registration_type)) {
       return reply400('填写登记机关前，请先填写注册国家/地区和注册号类型');
     }
+    const identifierError = licenseIdentifiers.identifierError(row);
+    if (identifierError) return reply400(identifierError);
   }
   return row;
 }
@@ -860,7 +880,9 @@ function pickPool(pool, ids, count, label) {
   return { items: chosen };
 }
 
-function createRecords(ownerId, body) {
+function createRecords(ownerId, body, { preview = false } = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: '请求体必须是一个 JSON 对象' };
+  if (body.require_complete !== undefined && typeof body.require_complete !== 'boolean') return { error: '完整组合选项必须为布尔值' };
   for (const key of ['country','product','date_key','fp_prefix','ip_reg_time','id_card','proxy_mode']) {
     if (Object.hasOwn(body, key) && body[key] != null && typeof body[key] !== 'string') {
       return { error: `${key} 必须为文本` };
@@ -904,10 +926,18 @@ function createRecords(ownerId, body) {
     if (store.fingerprintExists(db, ownerId, `${fpPrefix}${seq + i}`)) return { error: '指纹名称已存在，请调整起始编号' };
   }
 
-  const emails = store.listPool(db, ownerId, 'emails');
-  const cards = store.listPool(db, ownerId, 'cards');
-  const licenses = store.listPool(db, ownerId, 'licenses');
-  const proxies = store.listPool(db, ownerId, 'proxies');
+  const availablePool = kind => store.listPool(db, ownerId, kind, { includeUsage: true }).map(item => item.linked_record_count && item.status === '未使用' ? { ...item, status: '已使用' } : item);
+  const emails = availablePool('emails');
+  const cards = availablePool('cards');
+  const licenses = availablePool('licenses');
+  const proxies = availablePool('proxies');
+
+  if (body.require_complete === true) {
+    if (body.proxy_mode !== 'auto') return { error: '完整组合需要为每条记录独立分配一个 IP，请选择自动分配' };
+    for (const [label, pool] of [['邮箱', emails], ['信用卡', cards], ['企业文件', licenses], ['IP', proxies]]) {
+      if (pool.filter(item => item.status === '未使用').length < count) return { error: `${label}池不足，完整组合需要 ${count} 条未使用资源` };
+    }
+  }
 
   const pickedEmails = pickPool(emails, body.email_ids, count, '可用邮箱');
   if (pickedEmails.error) return { error: pickedEmails.error };
@@ -934,6 +964,17 @@ function createRecords(ownerId, body) {
     const pickedProxies = pickPool(proxies, body.proxy_ids, count, '可用代理');
     if (pickedProxies.error) return { error: pickedProxies.error };
     autoProxies = pickedProxies.items;
+  }
+
+  if (body.resource_plan !== undefined) {
+    if (!Array.isArray(body.resource_plan) || body.resource_plan.length !== count) return { error: '资源预览已失效，请重新核对组合' };
+    for (let i = 0; i < count; i++) {
+      const expected = body.resource_plan[i];
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)) return { error: '资源预览格式无效，请重新核对' };
+      for (const [prefix, resource] of [['email', pickedEmails.items[i]], ['card', pickedCards.items[i]], ['license', pickedLic.items[i]], ['proxy', proxyMode === 'auto' ? autoProxies[i] : sharedProxy]]) {
+        if (expected[prefix + '_id'] !== (resource?.id || null) || expected[prefix + '_version'] !== (resource?.version ?? null)) return { error: '预览中的资源已被使用或修改，请返回重新核对组合；未创建任何记录' };
+      }
+    }
   }
 
   const created = [];
@@ -972,6 +1013,11 @@ function createRecords(ownerId, body) {
       status: '正常',
       created_at: nowLocal(),
     };
+    if (preview) {
+      created.push({ fingerprint: rec.fingerprint, domain, email_id: rec.email_id, email_version: email?.version ?? null, email_user: rec.email_user, proxy_id: rec.proxy_id, proxy_version: proxy?.version ?? null, proxy_host: rec.proxy_host, proxy_port: rec.proxy_port, card_id: rec.card_id, card_version: card?.version ?? null, card_number: rec.card_number, card_last4: rec.card_last4, license_id: rec.license_id, license_version: lic?.version ?? null, license_name: rec.license_name });
+      seq++;
+      continue;
+    }
     const id = store.insertRecord(db, ownerId, rec);
     rec.id = id;
     if (email) store.setPoolStatus(db, ownerId, 'emails', email.id, '已使用');
@@ -1454,6 +1500,22 @@ fastify.get('/api/records', async (req, reply) => {
     sort: Object.hasOwn(store.RECORD_SORTS, requestedSort) ? requestedSort : 'id_desc' };
 });
 
+fastify.get('/api/records/:id/setup', async (req) => {
+  const ownerId = currentUserId(req);
+  const id = Number(req.params.id);
+  const record = Number.isSafeInteger(id) && id > 0 ? store.getRecord(db, ownerId, id) : null;
+  if (!record) { const error = new Error('记录不存在或不可访问'); error.statusCode = 404; throw error; }
+  const safeRecord = Object.fromEntries(['id','fingerprint','country','domain','email_user','proxy_host','proxy_port','card_number','card_last4','card_expiry','license_id'].map(key => [key, record[key]]));
+  const license = record.license_id ? store.toPublic(store.findPoolItem(db, ownerId, 'licenses', record.license_id)) : null;
+  return { record: safeRecord, license: license || null };
+});
+
+fastify.post('/api/records/preview', async (req) => {
+  const result = createRecords(currentUserId(req), req.body, { preview: true });
+  if (result.error) return reply400(result.error);
+  return { items: result.created };
+});
+
 fastify.post('/api/parse/auto', async (req) => {
   if (req.body?.text !== undefined && typeof req.body.text !== 'string') return reply400('text 必须为文本');
   return parseAuto(req.body?.text);
@@ -1477,6 +1539,31 @@ fastify.post('/api/parse/:type', async (req) => {
   return { items: PARSERS[type](req.body?.text) };
 });
 
+// Live, read-only lookup while typing. Never return another member's record,
+// username, dates, original identifier or document. Saving rechecks in a transaction.
+fastify.post('/api/licenses/check-duplicate', { bodyLimit: 12 * 1024 }, async (req) => {
+  currentUserId(req);
+  const source = req.body?.item;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return reply400('请提供待核对的营业执照信息');
+  const item = {};
+  for (const field of IMPORT_FIELDS.licenses) {
+    if (source[field] != null && typeof source[field] !== 'string') return reply400('查重字段必须为文本');
+    if (String(source[field] || '').length > 512) return reply400('查重字段过长');
+    item[field] = String(source[field] || '').trim();
+  }
+  item.registration_type = dedup.normalizeRegistrationType(item.registration_type);
+  item.jurisdiction = dedup.normalizeJurisdiction(item.jurisdiction);
+  const keys = dedup.licenseKeys(item);
+  const error = licenseIdentifiers.identifierError(item);
+  if (error) return { state: 'incomplete', message: error };
+  if (item.cvr && (!!keys.jurisdiction !== !!keys.registration_type)) return { state: 'incomplete', message: '请同时填写注册国家 / 地区和企业编号类型' };
+  const conflict = dedup.findLicenseConflict(db, keys);
+  if (conflict) return { state: 'duplicate', conflict: conflictDetail(conflict, item) };
+  if (!keys.dup_cvr) return { state: 'incomplete', message: '请填写证书上的完整企业编号，以完成全员查重' };
+  if (!keys.registration_scoped) return { state: 'incomplete', message: '请填写注册国家 / 地区和企业编号类型，系统会按国家区分编号' };
+  return { state: 'clear', message: '未发现重复，保存时将再次核对', identity: { jurisdiction: keys.jurisdiction, registration_type: keys.registration_type } };
+});
+
 // 只解析不保存；只有确认导入后才会保存原件。
 fastify.post('/api/parse/licenses-pdf', async (req) => {
   const bytes = decodePdf(req.body?.pdf);
@@ -1486,7 +1573,7 @@ fastify.post('/api/parse/licenses-pdf', async (req) => {
     const text = await extractPdfText(bytes);
     const items = parseCertificate(text);
     const enriched = items.map((item) => ({ ...item, ...probeDuplicate(item, req) }));
-    return { items: enriched, text };
+    return { items: enriched, text, extraction: { mode: text.trim() ? 'text' : 'unreadable', review_required: true, missing_fields: licenseIdentifiers.missingFields(items[0] || {}), ambiguous: licenseIdentifiers.businessIdentifier(text).ambiguous } };
   } catch (error) {
     // 审计 F17：原来只放行 statusCode===400，于是 extractPdfText 抛出的 **429**
     // （并发解析超限："识别任务较多，请稍后重试"）被这里吞掉，改写成
@@ -1504,11 +1591,9 @@ fastify.post('/api/parse/licenses-pdf', async (req) => {
  * 这里只读不写。
  */
 function probeDuplicate(item, req) {
-  const ownerId = currentUserId(req);
+  currentUserId(req);
   const keys = dedup.licenseKeys(item);
-  // 自己已有的同一条属于「更新」，识别阶段不当作重复提醒
-  const mine = ownerId ? store.listLicenses(db, ownerId).find((l) => dedup.rowMatchesKeys(l, keys)) : null;
-  const conflict = dedup.findLicenseConflict(db, keys, { excludeId: mine ? mine.id : null });
+  const conflict = dedup.findLicenseConflict(db, keys);
   if (!conflict) return {};
   return {
     duplicate: {
@@ -1525,22 +1610,42 @@ fastify.post('/api/import/:type', async (req, reply) => {
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
   const hasPdf = Object.hasOwn(req.body || {}, 'pdf');
+  const creatingLicense = type === 'licenses' && req.body?.intent === 'create';
+  const checkNewLicense = (item) => {
+    const keys = dedup.licenseKeys(item);
+    if (!keys.dup_cvr) return reply400('请填写证书上的完整企业编号后再保存');
+    if (!keys.registration_scoped) return reply400('请同时填写注册国家 / 地区和企业编号类型，以区分不同国家的企业');
+    const error = licenseIdentifiers.identifierError(item);
+    if (error) return reply400(error);
+    const conflict = dedup.findLicenseConflict(db, keys);
+    if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, item)]);
+  };
   if (hasPdf && type !== 'licenses') return reply400('PDF 只能导入到营业执照资料库');
 
   if (hasPdf) {
     if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
     const bytes = decodePdf(req.body.pdf);
     if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
+    let extractedIdentity;
     try {
-      await extractPdfText(bytes);
+      extractedIdentity = licenseIdentifiers.businessIdentifier(await extractPdfText(bytes)).identity;
     } catch (error) {
       if (error.statusCode) throw error;
       return reply400('PDF 结构无效、已损坏或需要密码，未保存原件');
     }
     const item = normalizeImport('licenses', items[0]);
+    if (creatingLicense && extractedIdentity) {
+      const original = dedup.licenseKeys(extractedIdentity);
+      const entered = dedup.licenseKeys(item);
+      if (original.dup_cvr !== entered.dup_cvr || (entered.registration_scoped && original.dup_reg !== entered.dup_reg)) {
+        return reply400('填写的企业编号或国家 / 类型与 PDF 识别结果不一致，请核对原件');
+      }
+      Object.assign(item, { jurisdiction: extractedIdentity.jurisdiction, registration_type: extractedIdentity.registration_type });
+    }
     const documentId = checkDuplicatePdf(bytes).sha256;
     const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
     return mutate(() => {
+      if (creatingLicense) checkNewLicense(item);
       // 再次校验并在单个 SQLite 写事务里拒绝重复，防止两人同时保存。
       if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
       const mine = store.listLicenses(db, ownerId);
@@ -1588,6 +1693,10 @@ fastify.post('/api/import/:type', async (req, reply) => {
   }
 
   return mutate(() => {
+    if (creatingLicense) {
+      if (!Array.isArray(items) || items.length !== 1) return reply400('请一次保存一份营业执照');
+      checkNewLicense(normalizeImport('licenses', items[0]));
+    }
     const result = importItems(ownerId, type, items);
     // 营业执照出现全局重复时，整批拒绝，避免「悄悄少导一条」
     if (type === 'licenses' && result.conflicts.length) {

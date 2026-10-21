@@ -82,7 +82,7 @@ function dupNote(res) {
   return `，跳过重复 ${res.skipped} 条（${list}${more}）`;
 }
 
-async function copyText(t) {
+async function copyText(t, { quiet = false } = {}) {
   const opener = document.activeElement;
   try {
     await navigator.clipboard.writeText(t);
@@ -103,9 +103,10 @@ async function copyText(t) {
       ta.remove();
       if (opener?.isConnected) opener.focus({ preventScroll: true });
     }
-    if (!copied) return toast('复制未完成，请检查剪贴板权限或手动复制', 'warn');
+    if (!copied) { toast('复制未完成，请检查剪贴板权限或手动复制', 'warn'); return false; }
   }
-  toast('已复制到剪贴板');
+  if (!quiet) toast('已复制到剪贴板');
+  return true;
 }
 
 function download(filename, text, type = 'text/plain;charset=utf-8') {
@@ -127,7 +128,7 @@ function fmtCard(num) {
 }
 
 function poolCount(kind, status = '未使用') {
-  return state.pools[kind].filter((x) => x.status === status).length;
+  return state.pools[kind].filter((x) => x.status === status && (status !== '未使用' || !x.linked_record_count)).length;
 }
 
 function parseFpStart(input) {
@@ -171,8 +172,8 @@ const state = {
   poolQ: '',
   poolStatus: '全部',
   poolFilters: Object.fromEntries(['emails','proxies','cards','licenses'].map(kind => [kind, {q:'',status:'全部',page:1}])),
-  picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
-  form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
+  picked: { emails: new Set(), cards: new Set(), licenses: new Set(), proxies: new Set() },
+  form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'auto', proxy_id: '', require_complete: false },
   loaded: false,
   user: null,
   creating: false,
@@ -642,6 +643,7 @@ function renderWorkbench() {
     : `${fp.prefix}${fp.seq}`;
 
   const avail = {
+    proxies: poolCount('proxies'),
     emails: poolCount('emails'),
     cards: poolCount('cards'),
     licenses: poolCount('licenses'),
@@ -730,7 +732,7 @@ function renderWorkbench() {
       <div class="panel-body">
         <form id="createForm" class="form-grid" autocomplete="off">
           <div class="field col-3">
-            <label>国家 <span class="mini">如：奥地利</span></label>
+            <label>投放国家 <span class="mini">与企业注册国家分别记录</span></label>
             <input id="f-country" value="${esc(f.country)}" placeholder="奥地利">
           </div>
           <div class="field col-3">
@@ -777,11 +779,13 @@ function renderWorkbench() {
                     <option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>不使用</option>
                   </select>
                   <span id="proxy-mode-extra" style="flex:1">${proxyModeExtra(f)}</span>
+                  <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="proxies" ${f.proxy_mode === 'auto' ? '' : 'hidden'}>选择 IP</button>
                 </span>
               </div>
             </div>
           </div>
         </form>
+        <label class="bundle-choice"><input id="f-require-complete" type="checkbox" ${f.require_complete ? 'checked' : ''}>每条必须包含 1 个邮箱 + 1 个 IP + 1 张信用卡 + 1 份企业文件；缺项不创建</label>
         <p class="field-error" id="create-validation" role="alert" tabindex="-1" hidden></p>
         <div class="create-preview">
           <span>本次将创建 <b>${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
@@ -903,6 +907,7 @@ function renderRecordsTable(list) {
               </select>
             </td>
             <td><div class="row-actions">
+              <button class="icon-btn" data-action="record-setup" data-id="${r.id}">开户资料</button>
               <button class="icon-btn" data-action="edit-record" data-id="${r.id}">编辑</button>
               <button class="icon-btn danger" data-action="del-record" data-id="${r.id}">删除</button>
             </div></td>
@@ -933,7 +938,7 @@ function showCreateValidation(draft, focus = false) {
   if (focus) (document.getElementById(draft.field) || box)?.focus();
 }
 
-function openCreateReview() {
+async function openCreateReview() {
   if (state.creating) return;
   const draft = createDraft();
   showCreateValidation(draft, true);
@@ -949,10 +954,22 @@ function openCreateReview() {
     <div class="modal-body"><p class="review-intro">将创建 <b>${count}</b> 条记录。确认后分配资源；最终结果以服务端校验为准。</p>
       <dl class="review-facts"><div><dt>国家 / 产品</dt><dd>${esc(draft.body.country || '未填写')} / ${esc(draft.body.product || '未填写')}</dd></div><div><dt>指纹范围</dt><dd class="mono">${esc(draft.fp.prefix + draft.fp.seq)}${count > 1 ? ' ～ ' + esc(draft.fp.prefix + (draft.fp.seq + count - 1)) : ''}</dd></div></dl>
       <table class="review-table"><caption>资源分配</caption><tbody>${resourceRows}<tr><th>代理</th><td>${proxy}</td></tr></tbody></table>
-      <table class="review-table"><caption>记录预览${count > 8 ? `（前 8 条，共 ${count} 条）` : ''}</caption><thead><tr><th>指纹名称</th><th>域名</th></tr></thead><tbody>${draft.body.domains.slice(0,8).map((domain,index) => `<tr><td class="mono">${esc(draft.fp.prefix + (draft.fp.seq + index))}</td><td>${esc(domain)}</td></tr>`).join('')}</tbody></table>
+      <div id="resource-preview" role="status">正在核对实际资源组合…</div>
       <p class="field-error" id="create-submit-error" role="alert" hidden></p>
-    </div><div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">返回修改</button><button class="btn btn-primary" id="create-confirm">确认创建 ${count} 条</button></div>`, { large: true });
-  document.getElementById('create-confirm').onclick = () => doCreate(draft.body);
+    </div><div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">返回修改</button><button class="btn btn-primary" id="create-confirm" disabled>确认创建 ${count} 条</button></div>`, { large: true });
+  const confirm = document.getElementById('create-confirm'), preview = document.getElementById('resource-preview');
+  confirm.onclick = () => doCreate(draft.body);
+  try {
+    const result = await api('/api/records/preview', { method: 'POST', body: draft.body, signal: WorkbenchUI.dialog.signal() });
+    if (!confirm.isConnected) return;
+    if (!Array.isArray(result.items) || result.items.length !== count) throw new Error('资源组合响应异常，请重新核对');
+    // Pin the resources and their versions to what the user actually reviewed.
+    // A concurrent change must fail rather than silently substitute another set.
+    draft.body.resource_plan = result.items.map(item => Object.fromEntries(['email','card','license','proxy'].flatMap(prefix => [[prefix + '_id', item[prefix + '_id']], [prefix + '_version', item[prefix + '_version']]])));
+    for (const [key, prefix] of [['email_ids','email'],['card_ids','card'],['license_ids','license'],['proxy_ids','proxy']]) draft.body[key] = result.items.map(item => item[prefix + '_id']).filter(Boolean);
+    preview.innerHTML = `<div class="table-wrap"><table class="review-table"><caption>实际组合预览${count > 20 ? '（前 20 条）' : ''} · 确认后才占用资源</caption><thead><tr><th>指纹 / 域名</th><th>邮箱</th><th>IP</th><th>信用卡</th><th>企业文件</th></tr></thead><tbody>${result.items.slice(0,20).map(item => `<tr><td>${esc(item.fingerprint)}<br>${esc(item.domain)}</td><td>${esc(item.email_user || '未关联')}</td><td>${esc(item.proxy_host ? `${item.proxy_host}:${item.proxy_port}` : '未关联')}</td><td>${esc(item.card_number || '未关联')}${item.card_last4 ? ' · ' + esc(item.card_last4) : ''}</td><td>${esc(item.license_name || '未关联')}</td></tr>`).join('')}</tbody></table></div>`;
+    confirm.disabled = false;
+  } catch (error) { if (preview.isConnected) { preview.textContent = error.message; preview.className = 'field-error'; } }
 }
 
 async function doCreate(body = createDraft().body) {
@@ -975,7 +992,7 @@ async function doCreate(body = createDraft().body) {
     if (!res) return;
     const list = res.created;
     toast(`✅ 已创建 ${list.length} 条记录：${list[0].fingerprint}${list.length > 1 ? ' ~ ' + list[list.length - 1].fingerprint : ''}`);
-    if (confirm?.isConnected) state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
+    if (confirm?.isConnected) state.picked = { emails: new Set(), cards: new Set(), licenses: new Set(), proxies: new Set() };
     if (state.form.domains === submittedInput.domains) state.form.domains = '';
     if (state.form.start_seq === submittedInput.start) state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
     await refreshAfterCommit('记录已保存，但列表刷新失败；请重新连接，不要重复创建');
@@ -1149,7 +1166,7 @@ function openAutoImport() { return resourceImports.openAuto(); }
 function openPicker(kind) {
   const conf = KINDS.find((k) => k.key === kind);
   const picked = new Set(state.picked[kind]);
-  const items = [...state.pools[kind]]
+  const items = state.pools[kind].map(item => item.linked_record_count && item.status === '未使用' ? { ...item, status: '已使用' } : item)
     .sort((a, b) => (a.status === '未使用' ? -1 : 1) - (b.status === '未使用' ? -1 : 1) || a.id - b.id);
 
   const mainVal = (it) =>
@@ -1205,7 +1222,7 @@ function openPicker(kind) {
     countEl.textContent = 0;
   };
   document.getElementById('picker-ok').onclick = async () => {
-    const available = new Set(state.pools[kind].filter(item => item.status === '未使用').map(item => item.id));
+    const available = new Set(state.pools[kind].filter(item => item.status === '未使用' && !item.linked_record_count).map(item => item.id));
     state.picked[kind] = new Set([...picked].filter(id => available.has(id)));
     closeModal();
     render();
@@ -1593,6 +1610,9 @@ document.addEventListener('click', async (e) => {
       case 'open-picker':
         openPicker(t.dataset.kind);
         break;
+      case 'record-setup':
+        openAccountSetup(Number(t.dataset.id));
+        break;
       case 'create':
         openCreateReview();
         break;
@@ -1899,6 +1919,7 @@ function refreshSelectionUI() {
 }
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'f-require-complete') { state.form.require_complete = e.target.checked; showCreateValidation(createDraft()); return; }
   if (e.target.matches('input[name="settings-density"]')) {
     setTableDensity(e.target.value);
     return;
@@ -1909,6 +1930,7 @@ document.addEventListener('change', (e) => {
   }
   if (e.target.id === 'f-proxy-mode') {
     state.form.proxy_mode = e.target.value;
+    document.querySelector('[data-action="open-picker"][data-kind="proxies"]').hidden = e.target.value !== 'auto';
     const extra = document.getElementById('proxy-mode-extra');
     if (extra) {
       const proxyOptions = [`<option value="">共享上次使用的代理</option>`]
