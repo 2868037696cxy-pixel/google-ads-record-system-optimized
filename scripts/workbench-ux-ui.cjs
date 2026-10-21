@@ -38,7 +38,7 @@ const { DatabaseSync } = require('node:sqlite');
     }));
     assert.ok(system.tokens && system.components);
     assert.ok(system.body >= 14 && system.button >= 40);
-    assert.equal(system.color, '#88bcff');
+    assert.equal(system.color, '#2476c8');
     await shot('empty-records');
 
     await page.evaluate(async () => {
@@ -556,8 +556,27 @@ const { DatabaseSync } = require('node:sqlite');
       await page.keyboard.press('Escape');
     }
     await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
+    // The web app can be narrower than Electron's normal desktop minimum.
+    await electron.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setMinimumSize(280, 360));
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      const toggle = page.locator('#mobileNavToggle');
+      await toggle.click();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#workspaceSidebar').isVisible(), false);
+      assert.equal(await toggle.evaluate(element => document.activeElement === element), true, 'native disclosure restores its opener');
+      for (const key of ['records','create','overview','emails','proxies','cards','licenses','settings']) {
+        await toggle.click();
+        await nav(key);
+        assert.equal(await page.locator('#workspaceSidebar').isVisible(), false, 'navigation closes after a page is selected');
+        const overflow = await page.evaluate(() => document.getElementById('main').scrollWidth > document.getElementById('main').clientWidth + 1);
+        assert.equal(overflow, false, `${key} must fit the narrow web workspace at ${width}`);
+      }
+      await shot(`mobile-settings-${width}`);
+    }
     assert.deepEqual(errors, []);
-    console.log('PASS eight pages, three desktop sizes, sticky columns, dialog keyboard loop and 125/150% zoom');
+    console.log('PASS eight pages, desktop and mobile sizes, native disclosure, sticky columns, dialog keyboard loop and 125/150% zoom');
   } catch (error) {
     if (page) console.error('UX failure state:', await page.evaluate(() => ({ phase: state.recordsPhase, queryError: state.recordError, syncError: state.syncError, modalTitle: document.querySelector('.modal h3')?.textContent, submitError: document.getElementById('create-submit-error')?.textContent })).catch(() => ({})));
     if (page) await shot('failure').catch(() => {});

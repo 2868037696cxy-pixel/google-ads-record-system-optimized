@@ -3,30 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#090c11">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef1f6">
   <title>账号工作台 · Ads Operations Console</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2388BCFF'/%3E%3Cpath d='M10 23V9h6.5a4.5 4.5 0 0 1 0 9H10' fill='none' stroke='%2311233B' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/design-tokens.css?v=20261020b">
-  <link rel="stylesheet" href="/styles.css?v=20261020b">
-  <link rel="stylesheet" href="/ui-foundations.css?v=20261020b">
-  <link rel="stylesheet" href="/ui-components.css?v=20261020g">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23f2f4f8'/%3E%3Cg fill='%23465a78'%3E%3Crect x='7' y='7' width='7' height='7' rx='2'/%3E%3Crect x='18' y='7' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='7' y='18' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='18' y='18' width='7' height='7' rx='2'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/design-tokens.css?v=20261021glass2">
+  <link rel="stylesheet" href="/styles.css?v=20261021glass2">
+  <link rel="stylesheet" href="/ui-foundations.css?v=20261021glass2">
+  <link rel="stylesheet" href="/ui-components.css?v=20261021glass2">
 </head>
 <body class="boot">
   <a class="skip-link" href="#main">跳转到主内容</a>
   <div class="app">
-    <aside class="sidebar">
+    <header class="mobile-topbar">
+      <button type="button" class="icon-btn" id="mobileNavToggle" popovertarget="workspaceSidebar" aria-label="打开工作台导航" aria-expanded="false"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <strong>账号工作台</strong>
+      <button type="button" class="ghost-btn" data-action="nav" data-page="settings">设置</button>
+    </header>
+    <aside class="sidebar" id="workspaceSidebar" popover="auto" aria-label="工作台导航">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
-            <path d="M5 19V5h7a5 5 0 0 1 0 10H5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="18.4" cy="18.4" r="2.1" fill="currentColor"/>
+            <rect x="3.5" y="3.5" width="7" height="7" rx="2" fill="currentColor"/>
+            <rect x="13.5" y="3.5" width="7" height="7" rx="2" fill="currentColor" opacity=".42"/>
+            <rect x="3.5" y="13.5" width="7" height="7" rx="2" fill="currentColor" opacity=".42"/>
+            <rect x="13.5" y="13.5" width="7" height="7" rx="2" fill="currentColor"/>
           </svg>
         </span>
         <div class="brand-text">
           <strong>账号工作台</strong>
-          <span>ADS CONSOLE</span>
+          <span>ADS WORKSPACE</span>
         </div>
+        <button type="button" class="icon-btn mobile-nav-close" popovertarget="workspaceSidebar" popovertargetaction="hide" aria-label="关闭工作台导航">✕</button>
       </div>
       <nav class="nav" id="nav" aria-label="主导航"></nav>
       <div class="sidebar-foot">
@@ -70,13 +78,14 @@
   <div id="modal-root"></div>
   <div id="toast-root"></div>
   <script src="/ui-components.js?v=20261020c"></script>
+  <script src="/navigation.js?v=20261021glass2"></script>
   <script src="/licenses.js?v=20261020c"></script>
   <script src="/backup-tasks.js?v=20261020e"></script>
   <script src="/record-integrity.js?v=20261020e"></script>
   <script src="/record-query.js?v=20261020f"></script>
   <script src="/record-create.js?v=20261020g"></script>
   <script src="/resource-import.js?v=20261020g"></script>
-  <script src="/app.js?v=20261020g"></script>
+  <script src="/app.js?v=20261021glass2"></script>
   <script src="/security.js?v=20261020e"></script>
 </body>
 </html>

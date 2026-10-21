@@ -451,14 +451,14 @@ function renderOverview() {
   const paused = state.recordStats['停用'];
   const recent = state.recentRecords;
   const resources = [
-    {kind:'emails', label:'邮箱资源', ico:'✉'},
-    {kind:'proxies', label:'代理资源', ico:'⇅'},
-    {kind:'cards', label:'支付资源', ico:'▤'},
-    {kind:'licenses', label:'营业执照', ico:'§'},
+    {kind:'emails', label:'邮箱资源'},
+    {kind:'proxies', label:'代理资源'},
+    {kind:'cards', label:'支付资源'},
+    {kind:'licenses', label:'营业执照'},
   ];
-  const resourceRows = resources.map(({kind,label,ico}) => `
+  const resourceRows = resources.map(({kind,label}) => `
     <button type="button" class="overview-resource" data-action="nav" data-page="${kind}">
-      <span class="overview-resource-icon" aria-hidden="true">${ico}</span>
+      <span class="overview-resource-icon" aria-hidden="true">${WorkbenchUI.icon(kind)}</span>
       <span class="overview-resource-name">${label}<small>管理和导入资源</small></span>
       <b class="overview-resource-count ${poolCount(kind) === 0 ? 'overview-danger' : ''}">${poolCount(kind)}<small>可用</small></b>
       <span class="overview-arrow" aria-hidden="true">↗</span>
@@ -491,7 +491,7 @@ function renderOverview() {
     <section class="panel overview-recent">
       <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="records">查看全部 →</button></div>
       ${recent.length ? recent.map(r => `<div class="overview-recent-row">
-        <span class="overview-recent-icon" aria-hidden="true">◧</span>
+        <span class="overview-recent-icon" aria-hidden="true">${WorkbenchUI.icon('records')}</span>
         <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
         ${WorkbenchUI.status(r.status, r.status === '正常' ? 'success' : r.status === '异常' ? 'danger' : 'neutral')}
         <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>

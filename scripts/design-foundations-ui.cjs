@@ -31,6 +31,7 @@ const { _electron } = require('playwright');
         titleSize: numeric('.page-head h1', 'fontSize'),
         navHeight: numeric('#nav .nav-item', 'height'),
         accent: getComputedStyle(document.documentElement).getPropertyValue('--accent').trim(),
+        scheme: getComputedStyle(document.documentElement).colorScheme,
         mainScroll: getComputedStyle(document.querySelector('#main')).overflowY,
       };
     });
@@ -40,7 +41,8 @@ const { _electron } = require('playwright');
     assert.ok(styles.bodyLineHeight / styles.bodySize >= 1.45);
     assert.ok(styles.titleSize >= 24 && styles.titleSize <= 32);
     assert.ok(styles.navHeight >= 40, 'desktop navigation must have a stable click target');
-    assert.equal(styles.accent, '#88bcff');
+    assert.equal(styles.accent, '#2476c8');
+    assert.equal(styles.scheme, 'light', 'native controls and scrollbars must use the light theme');
     assert.equal(styles.mainScroll, 'auto');
     console.log('PASS desktop visual foundations: typography, density, color and navigation');
 
