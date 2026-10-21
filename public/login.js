@@ -82,13 +82,43 @@ async function failureMessage(res) {
 async function checkSession() {
   try {
     const res = await request(AUTH_API.me);
-    if (res.ok) {
+    if (res.ok && authenticatedUser(await readJson(res)) && !state.busy && !state.redirecting) {
       state.redirecting = true;
       location.replace('/');
     }
   } catch {
     /* 未登录或服务暂时不可用：停留在登录页 */
   }
+}
+
+function authenticatedUser(data) {
+  const user = data?.user;
+  return Number.isSafeInteger(user?.id) && user.id > 0 && typeof user.username === 'string' && user.username.trim() ? user : null;
+}
+
+async function confirmedSession(expected) {
+  try {
+    const response = await request(AUTH_API.me);
+    if (!response.ok) return false;
+    const current = authenticatedUser(await readJson(response));
+    return Boolean(current && current.id === expected.id && current.username === expected.username);
+  } catch {
+    return false;
+  }
+}
+
+function registrationUncertain(username, message) {
+  // A timed-out/invalid response does not prove the write failed. Offer login
+  // with the same name instead of encouraging another registration attempt.
+  setBusy('register', false);
+  switchMode('login', false);
+  el.loginUsername.value = username;
+  el.loginPassword.value = '';
+  el.regPassword.value = '';
+  el.regConfirm.value = '';
+  updateStrength();
+  showAlert('info', message);
+  el.loginPassword.focus();
 }
 
 /* ---------------- 服务端配置 ---------------- */
@@ -311,6 +341,11 @@ async function submitLogin() {
     });
 
     if (res.ok) {
+      const user = authenticatedUser(await readJson(res));
+      if (!user || !await confirmedSession(user)) {
+        showAlert('error', '登录状态尚未确认，请稍后重试。');
+        return;
+      }
       finish();
       return;
     }
@@ -333,25 +368,31 @@ async function submitRegister() {
   if (!validateRegister()) return;
 
   hideAlert();
+  const username = el.regUsername.value.trim();
   setBusy('register', true, '正在注册…');
   try {
     const res = await request(AUTH_API.register, {
       method: 'POST',
       body: {
-        username: el.regUsername.value.trim(),
+        username,
         password: el.regPassword.value,
         invite_code: el.regInvite.value.trim(),
       },
     });
 
     if (res.ok) {
+      const user = authenticatedUser(await readJson(res));
+      if (!user || !await confirmedSession(user)) {
+        registrationUncertain(username, '注册结果尚未确认。请先尝试登录，不要重复注册。');
+        return;
+      }
       finish();
       return;
     }
 
     showAlert('error', await failureMessage(res));
   } catch {
-    showAlert('error', '无法连接服务，请确认工作台服务正在运行后重试。');
+    registrationUncertain(username, '暂时无法确认注册结果。请先尝试登录，不要重复注册。');
   } finally {
     if (!state.redirecting) setBusy('register', false);
   }
