@@ -33,7 +33,12 @@ async function api(path, opts = {}) {
     location.replace('/login.html');
     throw new Error('登录状态已失效，请重新登录');
   }
-  const data = await res.json().catch(() => { throw new Error('服务响应异常，请重新连接'); });
+  let data;
+  try { data = await res.json(); } catch {
+    const messages = {403:'访问被拦截，可能处于维护期或当前出口 IP 未获放行，请联系管理员',413:'请求过大，请减少文件或批次大小',429:'请求过于频繁，请稍后重试',502:'后台暂时不可用，请稍后重试',503:'服务维护中，请稍后重试',504:'后台响应超时，提交结果待确认，请勿重复新建'};
+    const error = new Error(messages[res.status] || '服务响应格式异常，请重新连接或联系管理员');
+    error.status = res.status; throw error;
+  }
   if (!res.ok) {
     const error = new Error(data.message || data.error || `请求失败 (${res.status})`);
     // 判重被拒绝时携带冲突明细（谁在什么时候导入的），供界面逐条展示
@@ -57,6 +62,18 @@ function toast(msg, type = 'ok') {
   }, type === 'error' ? 4200 : 2600);
 }
 
+async function refreshAfterCommit(warning) {
+  try {
+    await refresh();
+    return true;
+  } catch {
+    state.syncError = warning;
+    state.connectionPhase = 'error';
+    renderSyncNotice();
+    return false;
+  }
+}
+
 // 导入结果中重复项的提示文案：跳过 N 条（列出前几个具体值）
 function dupNote(res) {
   if (!res || !res.skipped) return '';
@@ -65,18 +82,31 @@ function dupNote(res) {
   return `，跳过重复 ${res.skipped} 条（${list}${more}）`;
 }
 
-async function copyText(t) {
+async function copyText(t, { quiet = false } = {}) {
+  const opener = document.activeElement;
   try {
     await navigator.clipboard.writeText(t);
   } catch {
     const ta = document.createElement('textarea');
-    ta.value = t;
-    document.body.appendChild(ta);
-    ta.select();
-    document.execCommand('copy');
-    ta.remove();
+    let copied = false;
+    try {
+      ta.value = t;
+      ta.readOnly = true;
+      ta.style.cssText = 'position:fixed;inset:0 auto auto 0;opacity:0';
+      // Keep the fallback within the dialog when the app background is inert.
+      (document.querySelector('#modal-root .modal') || document.body).appendChild(ta);
+      ta.select();
+      copied = document.execCommand('copy');
+    } catch {
+      copied = false;
+    } finally {
+      ta.remove();
+      if (opener?.isConnected) opener.focus({ preventScroll: true });
+    }
+    if (!copied) { toast('复制未完成，请检查剪贴板权限或手动复制', 'warn'); return false; }
   }
-  toast('已复制到剪贴板');
+  if (!quiet) toast('已复制到剪贴板');
+  return true;
 }
 
 function download(filename, text, type = 'text/plain;charset=utf-8') {
@@ -97,28 +127,14 @@ function fmtCard(num) {
   return num ? num.replace(/^(.{6})(.+?)(.{4})$/, '$1 $2 $3') : '';
 }
 
+function proxySlots() { return state.pools.proxies.reduce((sum, item) => sum + WorkbenchProxyCapacity.remaining(item), 0); }
+
 function poolCount(kind, status = '未使用') {
-  return state.pools[kind].filter((x) => x.status === status).length;
+  return state.pools[kind].filter((x) => x.status === status && (status !== '未使用' || !x.linked_record_count)).length;
 }
 
-// 解析「起始编号」输入：支持纯数字（如 6）或完整指纹名（如 10.8ads6）
-// 纯数字 → 前缀取今日日期 + "ads"，序号为该数字
-// 完整指纹名 → 提取末尾数字为序号，前面的部分为前缀
 function parseFpStart(input) {
-  const raw = String(input || '').trim();
-  const dk = todayKey();
-  const defaultPrefix = `${dk}ads`;
-  if (!raw) return { prefix: defaultPrefix, seq: state.next?.seq || 1, display: defaultPrefix + (state.next?.seq || 1) };
-  if (/^\d+$/.test(raw)) {
-    const seq = parseInt(raw, 10);
-    return { prefix: defaultPrefix, seq, display: defaultPrefix + seq };
-  }
-  const m = raw.match(/^(.+?)(\d+)$/);
-  if (m) {
-    return { prefix: m[1], seq: parseInt(m[2], 10), display: raw };
-  }
-  // 没有数字结尾，当作纯前缀，序号自动取下一个
-  return { prefix: raw, seq: state.next?.seq || 1, display: raw + (state.next?.seq || 1) };
+  return WorkbenchRecordCreate.parseStart(input, { dateKey: todayKey(), nextSeq: state.next?.seq || 1 });
 }
 
 /* ============ 状态 ============ */
@@ -126,36 +142,54 @@ function parseFpStart(input) {
 const KINDS = [
   { key: 'emails', label: '邮箱库', ico: '✉' },
   { key: 'proxies', label: '代理库', ico: '⇅' },
-  { key: 'cards', label: '付款工具库', ico: '▤' },
+  { key: 'cards', label: '信用卡', ico: '▤' },
   { key: 'licenses', label: '营业执照', ico: '§' },
 ];
 
 const state = {
   page: 'records',
   pools: { emails: [], proxies: [], cards: [], licenses: [] },
+  // records 只保存当前服务端分页，不再缓存当前账号的全部记录。
   records: [],
+  recordFilteredTotal: 0,
+  recordStats: { total: 0, 正常: 0, 异常: 0, 停用: 0 },
+  recentRecords: [],
+  recordLimit: 50,
+  recordSort: 'id_desc',
+  recordsPhase: 'ready',
+  recordError: '',
+  recordQueryReason: '',
+  syncError: '',
+  lastSyncedAt: null,
+  connectionPhase: 'loading',
+  settingsTab: 'general',
+  settingsAdvanced: false,
+  createAdvanced: false,
   next: null,
   reveal: false,
   unlockedUntil: 0,
-  submission: null,
+  sensitiveEpoch: 0,
   sel: new Set(),
   q: '',
   rstatus: '全部',
   poolQ: '',
   poolStatus: '全部',
   poolFilters: Object.fromEntries(['emails','proxies','cards','licenses'].map(kind => [kind, {q:'',status:'全部',page:1}])),
-  picked: { emails: new Set(), cards: new Set(), licenses: new Set() },
-  form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'shared', proxy_id: '' },
+  picked: { emails: new Set(), cards: new Set(), licenses: new Set(), proxies: new Set() },
+  form: { country: '', product: '', domains: '', start_seq: '', ip_reg_time: '', id_card: '', proxy_mode: 'auto', proxy_id: '', require_complete: false },
   loaded: false,
   user: null,
   creating: false,
+  startSeqAutomatic: true,
   recordPage: 1,
   poolPage: 1,
   // 列显隐偏好（方案工作包 06）：只存「哪些列被隐藏」这类列名，不存任何字段值。
   hiddenCols: [],
+  tableDensity: 'comfortable',
 };
 
 const MASK = '••••••';
+let refreshRequestSeq = 0;
 
 /* ============ 记录表列显隐（方案工作包 06：列显隐 + 按用户保存的表格偏好） ============
    本地偏好里只写「哪些列被隐藏」这类列名，不写任何字段值 —— 方案要求
@@ -171,7 +205,7 @@ const RECORD_COLUMNS = [
   { key: 'emailPass', label: '邮箱密码', index: 6 },
   { key: 'fakey', label: '2FA', index: 7 },
   { key: 'proxy', label: '代理', index: 8 },
-  { key: 'card', label: '付款工具', index: 9 },
+  { key: 'card', label: '信用卡', index: 9 },
   { key: 'ipreg', label: 'IP注册时间', index: 10 },
   { key: 'license', label: '营业执照', index: 11 },
   { key: 'idcard', label: '身份证', index: 12 },
@@ -186,6 +220,32 @@ function loadHiddenCols() {
 }
 function saveHiddenCols() {
   try { localStorage.setItem(hiddenColKey(), JSON.stringify(state.hiddenCols)); } catch { /* 无痕模式下不可写，忽略 */ }
+}
+
+const densityKey = () => `wb.tableDensity.${state.user?.username || 'anonymous'}`;
+function loadTableDensity() {
+  try { return localStorage.getItem(densityKey()) === 'compact' ? 'compact' : 'comfortable'; }
+  catch { return 'comfortable'; }
+}
+function saveTableDensity() {
+  try { localStorage.setItem(densityKey(), state.tableDensity); return true; }
+  catch { return false; }
+}
+function setTableDensity(value) {
+  if (!['compact', 'comfortable'].includes(value)) return;
+  state.tableDensity = value;
+  const saved = saveTableDensity();
+  document.body.classList.toggle('table-compact', value === 'compact');
+  document.querySelectorAll('[data-action="toggle-density"]').forEach(button => {
+    button.setAttribute('aria-pressed', String(value === 'compact'));
+    button.textContent = value === 'compact' ? '紧凑模式' : '舒适模式';
+  });
+  document.querySelectorAll('input[name="settings-density"]').forEach(input => { input.checked = input.value === value; });
+  const preview = document.getElementById('densityPreview');
+  if (preview) preview.dataset.density = value;
+  const feedback = document.getElementById('densitySaveStatus');
+  if (feedback) feedback.textContent = saved ? '已保存，下次打开仍然生效。' : '已应用；此浏览器暂时无法保存偏好。';
+  if (!saved) toast('行距已应用，但此浏览器暂时无法保存偏好', 'warn');
 }
 /** 把隐藏列写成一条动态规则；没有隐藏列时规则为空。 */
 function applyColumnVisibility() {
@@ -206,43 +266,8 @@ function sens(value) {
 
 /* ============ 弹窗 ============ */
 
-let modalOpener = null;
-
-function openModal(html, { large = false } = {}) {
-  closeModal();
-  modalOpener = document.activeElement;
-  const root = document.getElementById('modal-root');
-  root.innerHTML = `<div class="modal-overlay" data-action="modal-overlay">
-    <div class="modal ${large ? 'modal-lg' : ''}" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1">
-      ${html}
-    </div>
-  </div>`;
-  const title = root.querySelector('h3');
-  if (title) title.id = 'modal-title';
-  const focus = root.querySelector('input:not([type=file]):not([type=checkbox]), textarea, select') || root.querySelector('button') || root.querySelector('.modal');
-  focus.focus();
-  document.addEventListener('keydown', escListener);
-}
-
-function escListener(e) {
-  if (e.key === 'Escape') closeModal();
-  if (e.key === 'Tab') {
-    const modal = document.querySelector('#modal-root .modal');
-    if (!modal) return;
-    const inputs = [...modal.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter((input) => !input.disabled && input.getClientRects().length);
-    if (!inputs.length) { e.preventDefault(); modal.focus(); return; }
-    const first = inputs[0]; const last = inputs.at(-1);
-    if (e.shiftKey && (document.activeElement === first || document.activeElement === modal)) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && (document.activeElement === last || document.activeElement === modal)) { e.preventDefault(); first.focus(); }
-  }
-}
-
-function closeModal() {
-  document.getElementById('modal-root').innerHTML = '';
-  document.removeEventListener('keydown', escListener);
-  if (modalOpener?.isConnected) modalOpener.focus();
-  modalOpener = null;
-}
+function openModal(html, options) { WorkbenchUI.dialog.open(html, options); }
+function closeModal() { WorkbenchUI.dialog.close(); }
 
 function confirmModal(title, text, onOk, okLabel = '确认删除') {
   openModal(`
@@ -254,15 +279,18 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
       <button class="btn btn-danger" id="confirm-ok-btn">${esc(okLabel)}</button>
     </div>`);
   const confirm = document.getElementById('confirm-ok-btn');
+  // 删除确认默认停在取消，避免打开后按 Enter 直接执行危险操作。
+  document.querySelector('#modal-root [data-action="close-modal"].btn')?.focus();
   confirm.onclick = async () => {
     if (confirm.disabled) return;
-    confirm.disabled = true;
+    WorkbenchUI.dialog.pending(confirm, true, '正在处理…');
     try {
       await onOk();
       if (confirm.isConnected) closeModal();
     } catch (err) {
-      toast(err.message || '操作失败', 'error');
-      confirm.disabled = false;
+      WorkbenchUI.dialog.error(confirm, err.message || '操作失败');
+    } finally {
+      WorkbenchUI.dialog.pending(confirm, false);
     }
   };
 }
@@ -271,20 +299,22 @@ function confirmModal(title, text, onOk, okLabel = '确认删除') {
 
 function renderNav() {
   const main = [
-    { key: 'records', label: '我的记录', ico: '▤', count: state.records.length },
+    { key: 'records', label: '我的记录', ico: '▤', count: state.recordStats.total },
     { key: 'create', label: '新建记录', ico: '＋', count: '' },
     { key: 'overview', label: '运营总览', ico: '◈', count: '' },
   ];
   const pools = KINDS.map((k) => ({ key: k.key, label: k.label, ico: k.ico, count: state.pools[k.key].length }));
   const item = (it) => `<button class="nav-item ${state.page === it.key ? 'active' : ''}" data-action="nav" data-page="${it.key}" ${state.page === it.key ? 'aria-current="page"' : ''}>
-        <span class="ico">${it.ico}</span>${it.label}
+        <span class="ico">${WorkbenchUI.icon(it.key)}</span>${it.label}
         ${it.count !== '' ? `<span class="count">${it.count}</span>` : ''}
       </button>`;
   document.getElementById('nav').innerHTML = `
-    <div class="nav-label">总览</div>
+    <div class="nav-label">工作台</div>
     ${main.map(item).join('')}
     <div class="nav-label">资源库</div>
     ${pools.map(item).join('')}
+    <div class="nav-divider" aria-hidden="true"></div>
+    ${item({ key: 'settings', label: '设置', ico: '⚙', count: '' })}
   `;
   document.getElementById('revealLabel').textContent = state.reveal ? '敏感信息：显示中' : '敏感信息：已隐藏';
   document.querySelector('.dot-eye').classList.toggle('on', state.reveal);
@@ -297,88 +327,257 @@ function renderAccount() {
   const user = state.user;
   const label = user ? (user.display_name || user.username) : '未登录';
   name.textContent = label;
-  document.getElementById('accountAvatar').textContent = user ? label.slice(0, 1).toUpperCase() : '—';
+  document.getElementById('accountAvatar').textContent = user ? Array.from(label)[0].toUpperCase() : '—';
   document.getElementById('accountHint').textContent = user && user.display_name ? `@${user.username}` : '数据仅本人可见';
 }
 
 function render() {
   const main = document.getElementById('main');
+  const restoreView = WorkbenchUI.preserveView(main);
   // 页面键写到 main 上：「我的记录」与「新建记录」共用同一份渲染与统计条，
   // 由 CSS 决定露出哪一块面板，避免把资源统计复制成两份、后续改漏一边。
   if (main) main.className = `main page-${state.page}`;
   renderNav();
   renderAccount();
   if (state.page === 'overview') renderOverview();
+  else if (state.page === 'settings') renderSettings();
   else if (state.page === 'records' || state.page === 'create') { renderWorkbench(); refreshSelectionUI(); }
   else renderPool(state.page);
   // 列偏好是全局样式规则，与记录表是否刚被重建无关
   applyColumnVisibility();
+  document.body.classList.toggle('table-compact', state.tableDensity === 'compact');
+  renderSyncNotice();
+  updateRecordsChrome();
+  bindLabels();
+  updateCreateProgress();
+  restoreView();
+}
+
+function renderSyncNotice() {
+  renderConnectionState();
+  document.getElementById('syncNotice')?.remove();
+  if (!state.syncError) return;
+  const main = document.getElementById('main');
+  main.insertAdjacentHTML('afterbegin', `<div class="sync-notice" id="syncNotice" role="alert"><div><b>当前显示的是上次读取的数据</b><p>${esc(state.syncError)}</p></div><button class="btn btn-ghost btn-sm" data-action="retry-load">重试更新</button></div>`);
+}
+
+// Successful connection is implicit. Only pending actions and real failures need UI.
+function renderConnectionState() {
+  const phase = state.connectionPhase;
+  const pending = phase === 'loading' || phase === 'refreshing';
+  const main = document.getElementById('main');
+  if (main) {
+    main.dataset.connection = phase;
+    main.setAttribute('aria-busy', String(pending));
+  }
+  const notice = document.getElementById('connectionNotice');
+  if (notice) notice.hidden = phase !== 'error';
+  const status = document.getElementById('connectionStatus');
+  if (status) status.textContent = phase === 'error' ? '数据暂未更新' : '';
+  document.querySelectorAll('[data-action="retry-load"]').forEach(button => {
+    WorkbenchUI.busy(button, pending, pending ? (button.dataset.pendingLabel || '正在重试…') : undefined);
+  });
+  const synced = document.getElementById('settingsSyncStatus');
+  if (synced) {
+    synced.textContent = phase === 'error' ? '更新失败，请重试。' : pending ? '正在更新记录与资源…' : lastSyncLabel();
+    synced.dataset.tone = phase === 'error' ? 'warning' : 'neutral';
+  }
+}
+
+function lastSyncLabel() {
+  return state.lastSyncedAt
+    ? `上次更新 ${state.lastSyncedAt.toLocaleString('zh-CN', { hour12: false })}`
+    : '正在读取数据…';
+}
+
+// Explicit adapters keep query ownership independent of page rendering and selection.
+const recordQuery = WorkbenchRecordQuery.create({
+  readQuery: () => ({
+    page: state.recordPage, limit: state.recordLimit, sort: state.recordSort,
+    q: state.q, status: state.rstatus, reveal: state.reveal, sensitiveEpoch: state.sensitiveEpoch,
+  }),
+  request: (path, options) => api(path, options),
+  onPhase(phase, error, reason) {
+    state.recordsPhase = phase;
+    state.recordError = error;
+    state.recordQueryReason = reason;
+    updateRecordsChrome();
+  },
+  onResult({ items, total, page }) {
+    state.records = items;
+    state.recordFilteredTotal = total;
+    state.recordPage = page;
+  },
+  onRender(mode) {
+    if (mode === 'table' && state.page === 'records') renderRecordsTableInto();
+    else if (mode === 'full') render();
+  },
+  onError: error => toast(error.message, 'error'),
+});
+function invalidateRecordQuery(options) { recordQuery.invalidate(options); }
+function loadRecordsPage(options) { return recordQuery.load(options); }
+
+function updateRecordsChrome() {
+  const panel = document.querySelector('.page-records #recordsPanel');
+  if (!panel) return;
+  const pending = state.recordsPhase === 'loading';
+  const unavailable = state.recordsPhase !== 'ready';
+  panel.setAttribute('aria-busy', String(pending));
+  panel.classList.toggle('records-stale', unavailable);
+  const feedback = panel.querySelector('#recordsFeedback');
+  if (feedback) {
+    feedback.hidden = !unavailable;
+    feedback.classList.toggle('query-error', state.recordsPhase === 'error');
+    feedback.dataset.pending = state.recordQueryReason;
+    feedback.querySelector('[data-feedback-text]').textContent = state.recordsPhase === 'error'
+      ? `查询失败：${state.recordError}。下方仍为上次结果。`
+      : state.recordQueryReason === 'composition'
+        ? '确认输入后自动查询，下方仍为上次结果。'
+        : '正在查询最新记录，下方结果更新前暂不可操作…';
+    feedback.querySelector('button').hidden = state.recordsPhase !== 'error';
+  }
+  panel.querySelectorAll('.table-wrap').forEach(wrap => { wrap.inert = unavailable; });
+  panel.querySelectorAll('[data-action="rstatus"]').forEach(button => {
+    const active = button.dataset.v === state.rstatus;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+  const reset = panel.querySelector('[data-action="clear-record-filter"]');
+  if (reset) reset.disabled = !state.q && state.rstatus === '全部';
+  panel.querySelectorAll('.table-pagination button').forEach(button => {
+    button.disabled = unavailable || button.dataset.disabled === 'true';
+  });
+  panel.querySelectorAll('[data-action^="export-"]').forEach(button => {
+    button.disabled = unavailable || !state.recordStats.total;
+  });
+  const del = panel.querySelector('[data-action="delete-selected"]');
+  if (del) del.disabled = unavailable || !state.sel.size;
 }
 
 async function refresh() {
+  const requestId = ++refreshRequestSeq;
   if(state.reveal && state.unlockedUntil<=Date.now()) state.reveal=false;
-  const data = await api('/api/bootstrap' + (state.reveal ? '?reveal=1' : ''));
-  if (!data?.pools || !Array.isArray(data.records) || !data.next || !KINDS.every((k) => Array.isArray(data.pools[k.key]))) {
+  const query = new URLSearchParams({ summary: '1' });
+  if (state.reveal) query.set('reveal', '1');
+  const reveal = state.reveal;
+  const data = await api('/api/bootstrap?' + query.toString());
+  if (requestId !== refreshRequestSeq || reveal !== state.reveal) return false;
+  if (!data?.pools || !data.next || !data.record_stats || !Array.isArray(data.recent_records)
+      || !KINDS.every((k) => Array.isArray(data.pools[k.key]))) {
     throw new Error('数据格式不正确，请检查备份或重启工作台');
   }
   state.pools = data.pools;
-  state.records = data.records;
   state.user = data.user || null;
-  // 列偏好按账号分别保存，账号就绪后再读；saveHiddenCols 写的就是这个键，重读不会丢改动
+  state.recordStats = {
+    total: Number(data.record_stats.total || 0),
+    正常: Number(data.record_stats['正常'] || 0),
+    异常: Number(data.record_stats['异常'] || 0),
+    停用: Number(data.record_stats['停用'] || 0),
+  };
+  state.recentRecords = data.recent_records;
   state.hiddenCols = loadHiddenCols();
-  const recordIds = new Set(data.records.map((record) => record.id));
-  state.sel = new Set([...state.sel].filter((id) => recordIds.has(id)));
+  state.tableDensity = loadTableDensity();
+
   for (const kind of Object.keys(state.picked)) {
-    const available = new Set(data.pools[kind].filter((item) => item.status === '未使用').map((item) => item.id));
+    const available = new Set(data.pools[kind].filter((item) => kind === 'proxies' ? WorkbenchProxyCapacity.remaining(item) > 0 : item.status === '未使用').map((item) => item.id));
     state.picked[kind] = new Set([...state.picked[kind]].filter((id) => available.has(id)));
   }
   if (state.form.proxy_id && !data.pools.proxies.some((proxy) => String(proxy.id) === String(state.form.proxy_id) && proxy.status !== '停用')) state.form.proxy_id = '';
   state.next = data.next;
+  if (state.startSeqAutomatic || !state.form.start_seq) state.form.start_seq = data.next.seq;
+
+  const current = await loadRecordsPage();
+  if (!current || requestId !== refreshRequestSeq || reveal !== state.reveal) return false;
   state.loaded = true;
-  if (!state.form.start_seq) state.form.start_seq = data.next.seq;
+  state.syncError = '';
+  state.lastSyncedAt = new Date();
+  state.connectionPhase = 'ready';
+  if (state.recordStats.total === 0) state.sel.clear();
+
   render();
   bindLabels();
-  const connection = document.getElementById('connectionStatus');
-  if (connection) { connection.textContent = '已连接'; connection.className = 'connection-status connected'; }
+  return true;
 }
 
-
 /* ============ 运营总览：当前账号授权数据，不代表团队共享已上线 ============ */
+function openWorkspaceCommands() {
+  WorkbenchExperience.openCommands({
+    open: openModal, close: closeModal, signal: WorkbenchUI.dialog.signal,
+    select: command => {
+      if (command.type === 'nav') document.querySelector(`#nav [data-page="${command.key}"]`)?.click();
+      else openImportModal(command.key);
+    },
+  });
+}
+
+function renderInventorySummary() {
+  const inventory = WorkbenchExperience.inventory(state.pools);
+  return `<section class="inventory-summary" aria-labelledby="inventory-title">
+    <div class="inventory-summary-intro"><span class="section-kicker">资源准备度</span><h2 id="inventory-title">${inventory.capacity ? `可组合 ${inventory.capacity} 组完整资料` : '准备资源，开始下一组'}</h2><p>${inventory.missing.length ? `待补充：${inventory.missing.map(item => item.label).join('、')}` : '四类资源均有可用库存，可前往创建并核对实际组合。'}</p><small>按库存与 IP 剩余次数估算上限，实际分配以创建核对为准。</small></div>
+    <div class="inventory-summary-items">${inventory.items.map(item => `<button type="button" class="inventory-item" data-action="nav" data-page="${item.key}"><span class="inventory-icon">${WorkbenchUI.icon(item.key)}</span><span class="inventory-label">${item.label}</span><strong>${item.available}<small>${item.unit}</small></strong><span class="inventory-hint">${item.available ? `共 ${item.total} · 已占用 ${item.occupied}` : '补充资源 →'}</span></button>`).join('')}</div>
+  </section>`;
+}
+
+function renderCreateReadiness() {
+  const inventory = WorkbenchExperience.inventory(state.pools);
+  const count = createDraft().body.domains.length;
+  return inventory.items.map(item => {
+    const omitted = item.key === 'proxies' ? state.form.proxy_mode === 'none' || (state.form.proxy_mode === 'auto' && !item.total && !state.form.require_complete) : !item.total && !state.form.require_complete;
+    const shared = item.key === 'proxies' && state.form.proxy_mode === 'shared';
+    const shortage = !omitted && !shared && count > item.available;
+    const manual = state.picked[item.key].size;
+    const text = omitted ? '本次不关联' : shared ? '共享模式 · 核对时确认' : shortage ? `缺少 ${count - item.available} ${item.unit}` : count ? `可满足 ${count} 条记录` : '等待填写域名';
+    return `<div class="creation-resource-check" data-tone="${shortage ? 'warning' : omitted ? 'neutral' : 'ready'}"><span>${WorkbenchUI.icon(item.key)}<b>${item.label}</b><small>${manual && !omitted && !shared ? `手动 ${manual} · 其余自动` : shared ? '共享分配' : omitted ? '留空' : '自动补齐'}</small></span><strong>${text}</strong></div>`;
+  }).join('');
+}
+
+function updateCreateProgress() {
+  const steps = [...document.querySelectorAll('.creation-steps > button')];
+  if (!steps.length) return;
+  const draft = createDraft();
+  const current = !draft.body.domains.length || draft.field ? 0 : draft.error ? 1 : 2;
+  steps.forEach((step, index) => {
+    step.dataset.phase = index < current ? 'complete' : index === current ? 'current' : 'waiting';
+    if (index === current) step.setAttribute('aria-current', 'step');
+    else step.removeAttribute('aria-current');
+    step.querySelector('span').textContent = index < current ? '✓' : String(index + 1);
+  });
+}
+
 function renderOverview() {
-  const records = state.records;
-  const normal = records.filter(r => r.status === '正常').length;
-  const abnormal = records.filter(r => r.status === '异常').length;
-  const paused = records.filter(r => r.status === '停用').length;
-  const recent = [...records].sort((a,b) => b.id - a.id).slice(0,6);
+  const normal = state.recordStats['正常'];
+  const abnormal = state.recordStats['异常'];
+  const paused = state.recordStats['停用'];
+  const recent = state.recentRecords;
   const resources = [
-    {kind:'emails', label:'邮箱资源', ico:'✉'},
-    {kind:'proxies', label:'代理资源', ico:'⇅'},
-    {kind:'cards', label:'支付资源', ico:'▤'},
-    {kind:'licenses', label:'营业执照', ico:'§'},
+    {kind:'emails', label:'邮箱资源'},
+    {kind:'proxies', label:'IP / 代理'},
+    {kind:'cards', label:'信用卡'},
+    {kind:'licenses', label:'营业执照'},
   ];
-  const resourceRows = resources.map(({kind,label,ico}) => `
+  const resourceRows = resources.map(({kind,label}) => `
     <button type="button" class="overview-resource" data-action="nav" data-page="${kind}">
-      <span class="overview-resource-icon" aria-hidden="true">${ico}</span>
-      <span class="overview-resource-name">${label}<small>管理和导入资源</small></span>
-      <b class="overview-resource-count ${poolCount(kind) === 0 ? 'overview-danger' : ''}">${poolCount(kind)}<small>可用</small></b>
+      <span class="overview-resource-icon" aria-hidden="true">${WorkbenchUI.icon(kind)}</span>
+      <span class="overview-resource-name">${label}<small>${kind === 'licenses' ? '预览原件、校对与查重' : '批量导入与管理资源'}</small></span>
       <span class="overview-arrow" aria-hidden="true">↗</span>
     </button>`).join('');
   document.getElementById('main').innerHTML = `
     <div class="page-head">
       <div><h1>运营总览</h1><p class="sub">账号状态、资源库存、待办事项 · 当前账号可见范围</p></div>
       <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
-      <button class="btn btn-primary" data-action="nav" data-page="create">＋ 创建账号记录</button></div>
+      <button class="btn btn-primary" data-action="nav" data-page="create">创建账号记录</button></div>
     </div>
+    ${renderInventorySummary()}
     <div class="overview-metrics">
-      <div class="overview-metric"><span>账号记录</span><b>${records.length}</b><small>已建档总数</small></div>
+      <div class="overview-metric"><span>账号记录</span><b>${state.recordStats.total}</b><small>已建档总数</small></div>
       <div class="overview-metric"><span>正常</span><b class="overview-good">${normal}</b><small>当前状态正常</small></div>
       <div class="overview-metric"><span>异常</span><b class="${abnormal?'overview-danger':''}">${abnormal}</b><small>建议优先核对</small></div>
       <div class="overview-metric"><span>停用</span><b>${paused}</b><small>检查关联资源</small></div>
     </div>
     <div class="overview-columns">
-      <section class="panel"><div class="panel-head"><div class="panel-title">资源准备度</div><span class="dim">点击管理</span></div>
+      <section class="panel"><div class="panel-head"><div class="panel-title">资源管理</div><span class="dim">独立入池 · 按需组合</span></div>
         <div class="overview-resource-list">${resourceRows}</div>
-        <p class="overview-footnote">此处仅展示当前用户库存。实际批量创建还需服务端分配校验。</p>
+        <p class="overview-footnote">导入后即可前往创建页，自动组合或手动指定资源。</p>
       </section>
       <section class="panel"><div class="panel-head"><div class="panel-title">优先处理</div><span class="dim">账号状态</span></div>
         <div class="overview-todo">
@@ -391,15 +590,95 @@ function renderOverview() {
     <section class="panel overview-recent">
       <div class="panel-head"><div class="panel-title">最近创建的账号</div><button class="btn btn-ghost btn-sm" data-action="nav" data-page="records">查看全部 →</button></div>
       ${recent.length ? recent.map(r => `<div class="overview-recent-row">
-        <span class="overview-recent-icon" aria-hidden="true">◧</span>
+        <span class="overview-recent-icon" aria-hidden="true">${WorkbenchUI.icon('records')}</span>
         <span class="overview-recent-name"><b>${esc(r.fingerprint)}</b><small>${esc(r.country || '未填国家')} · ${esc(r.product || '未填产品')} · ${esc(r.domain || '未填域名')}</small></span>
-        <span class="overview-status">${esc(r.status)}</span>
+        ${WorkbenchUI.status(r.status, r.status === '正常' ? 'success' : r.status === '异常' ? 'danger' : 'neutral')}
         <button class="btn btn-ghost btn-sm" data-action="recent-record" data-id="${r.id}">查看</button>
       </div>`).join('') : '<div class="empty"><h3>还没有账号记录</h3><p>从创建账号记录开始。</p><button class="btn btn-primary" data-action="nav" data-page="create">开始创建</button></div>'}
     </section>`;
 }
 
 /* ============ 工作台 ============ */
+
+function renderSettings() {
+  const local = Boolean(window.desktop);
+  const label = state.user?.display_name || state.user?.username || '当前账号';
+  const tabs = [
+    { key: 'general', label: '通用', icon: 'settings' },
+    { key: 'security', label: '账号与安全', icon: 'shield' },
+    { key: 'data', label: '数据管理', icon: 'archive' },
+  ];
+  const panel = (key) => `id="settings-panel-${key}" role="tabpanel" aria-labelledby="settings-tab-${key}" tabindex="0"${state.settingsTab === key ? '' : ' hidden'}`;
+  document.getElementById('main').innerHTML = `
+    <div class="settings-page">
+      <div class="page-head"><div><h1>设置</h1><p class="sub">你的偏好、账号与数据。</p></div></div>
+      <div class="settings-tabs" role="tablist" aria-label="设置分类">
+        ${tabs.map(tab => `<button type="button" id="settings-tab-${tab.key}" role="tab" aria-selected="${state.settingsTab === tab.key}" aria-controls="settings-panel-${tab.key}" tabindex="${state.settingsTab === tab.key ? 0 : -1}" data-action="settings-tab" data-tab="${tab.key}">${WorkbenchUI.icon(tab.icon)}<span>${tab.label}</span></button>`).join('')}
+      </div>
+      <div class="settings-content" ${panel('general')}>
+        <section class="panel settings-section" aria-labelledby="settings-display-title">
+          <div class="settings-section-head"><h2 id="settings-display-title">显示偏好</h2><p>选择适合你的表格行距，即时应用。</p></div>
+          <div class="settings-section-body">
+            <fieldset class="density-options"><legend class="sr-only">表格行距</legend>
+              ${[{value:'comfortable',name:'舒适',hint:'留白更充足，适合日常浏览'},{value:'compact',name:'紧凑',hint:'同屏查看更多记录'}].map(option => `<label class="density-option"><input type="radio" name="settings-density" value="${option.value}" ${state.tableDensity === option.value ? 'checked' : ''}><span><strong>${option.name}</strong><small>${option.hint}</small></span></label>`).join('')}
+            </fieldset>
+            <p class="density-preview-label" id="densityPreviewLabel">行距预览</p>
+            <div class="density-preview" id="densityPreview" data-density="${state.tableDensity}" aria-labelledby="densityPreviewLabel">
+              <div class="density-preview-head"><span>名称</span><span>状态</span><span>更新时间</span></div>
+              ${['账号记录 01','账号记录 02'].map(name => `<div class="density-preview-row"><span>${name}</span><span><i aria-hidden="true"></i>正常</span><span>今天</span></div>`).join('')}
+            </div>
+            <p class="settings-save-note" id="densitySaveStatus" role="status">偏好按账号保存在此设备。</p>
+          </div>
+        </section>
+        <section class="panel settings-section" aria-labelledby="settings-sync-title">
+          <div class="settings-section-head"><h2 id="settings-sync-title">数据更新</h2><p>打开工作台时自动读取，操作后自动更新。</p></div>
+          <div class="settings-section-body"><div class="settings-row"><div><b>获取最新数据</b><p id="settingsSyncStatus" role="status">${esc(lastSyncLabel())}</p></div><button class="btn btn-ghost" id="settingsRefresh" data-action="retry-load" data-pending-label="正在刷新…">刷新数据</button></div></div>
+        </section>
+        <div class="settings-shortcuts" aria-label="键盘快捷键"><span><kbd>Ctrl / ⌘ K</kbd> 搜索列表</span><span><kbd>Ctrl / ⌘ ⇧ K</kbd> 快捷操作</span><span><kbd>Ctrl R</kbd> 刷新数据</span><span><kbd>Esc</kbd> 关闭弹窗</span></div>
+      </div>
+      <div class="settings-content" ${panel('security')}>
+        <section class="panel settings-section" aria-labelledby="settings-account-title">
+          <div class="settings-account"><span class="settings-avatar" aria-hidden="true">${esc(Array.from(label)[0].toUpperCase())}</span><div><h2 id="settings-account-title">${esc(label)}</h2><p>${state.user?.display_name ? `@${esc(state.user.username)} · ` : ''}记录与资源仅本人可见</p></div></div>
+          <div class="settings-section-body">
+            ${local ? '<div class="settings-row"><div><b>本机工作台</b><p>当前使用本机数据，可在数据管理中备份。</p></div></div>' : '<div class="settings-row"><div><b>登录密码</b><p>修改后，所有设备需要重新登录。</p></div><button class="btn btn-ghost" id="settingsPassword" data-action="change-password">修改密码</button></div>'}
+            <div class="settings-row"><div><b>敏感信息</b><p>临时查看密码等资料，离开窗口或授权过期后自动隐藏。</p></div><button class="btn btn-ghost" id="settingsSensitive" data-action="toggle-reveal">${state.reveal ? '立即隐藏' : '临时显示'}</button></div>
+            <div class="settings-row"><div><b>安全操作记录</b><p>查看你的解锁、导出与数据操作。</p></div><button class="btn btn-ghost" id="settingsAudit" data-action="my-audit">查看记录</button></div>
+          </div>
+        </section>
+      </div>
+      <div class="settings-content" ${panel('data')}>
+        <section class="panel settings-section" aria-labelledby="settings-data-title">
+          <div class="settings-section-head"><h2 id="settings-data-title">管理你的数据</h2><p>备份、恢复与核对当前账号的记录和资源。</p></div>
+          <div class="settings-section-body">
+            <div class="settings-row"><div class="settings-action-info"><span class="settings-action-icon" aria-hidden="true">${WorkbenchUI.icon('archive')}</span><div><b>备份与恢复</b><p>保存加密备份，或查看备份内容后恢复。</p></div></div><button class="btn btn-primary" id="settingsBackup" data-action="backup-tasks">管理备份</button></div>
+            <div class="settings-row"><div class="settings-action-info"><span class="settings-action-icon" aria-hidden="true">${WorkbenchUI.icon('check')}</span><div><b>数据检查</b><p>核对记录关联与资源占用。检查不会修改数据。</p></div></div><button class="btn btn-ghost" id="settingsIntegrity" data-action="check-integrity">开始检查</button></div>
+            ${local ? '<div class="settings-row"><div><b>本机数据目录</b><p>查看桌面程序保存的数据文件。</p></div><button class="btn btn-ghost" data-action="desktop-data">打开目录</button></div>' : ''}
+          </div>
+        </section>
+        <details class="panel settings-advanced" id="settingsAdvanced" ${state.settingsAdvanced ? 'open' : ''}>
+          <summary><span><strong>兼容与高级选项</strong><small>导出或恢复旧版 JSON 备份</small></span><span class="settings-chevron" aria-hidden="true">${WorkbenchUI.icon('chevron')}</span></summary>
+          <div class="settings-section-body">
+            <div class="settings-row"><div><b>导出旧版备份</b><p>用于兼容已有流程。大文件建议使用上方的加密备份。</p></div><button class="btn btn-ghost" id="settingsLegacyExport" data-action="${local ? 'desktop' : 'web'}-backup">导出 JSON</button></div>
+            <div class="settings-row settings-danger"><div><b>恢复旧版备份</b><p>将替换当前账号的数据。请先备份，再选择恢复文件。</p></div><button class="btn btn-ghost" id="settingsLegacyRestore" data-action="${local ? 'desktop' : 'web'}-restore">选择备份…</button></div>
+          </div>
+        </details>
+      </div>
+    </div>`;
+}
+
+function selectSettingsTab(key, focus = false) {
+  if (!['general', 'security', 'data'].includes(key)) return;
+  state.settingsTab = key;
+  document.querySelectorAll('.settings-tabs [role="tab"]').forEach(tab => {
+    const active = tab.dataset.tab === key;
+    tab.setAttribute('aria-selected', String(active));
+    tab.tabIndex = active ? 0 : -1;
+    if (active && focus) tab.focus({ preventScroll: true });
+  });
+  document.querySelectorAll('.settings-content[role="tabpanel"]').forEach(panel => {
+    panel.hidden = panel.id !== `settings-panel-${key}`;
+  });
+}
 
 function renderWorkbench() {
   const f = state.form;
@@ -412,6 +691,7 @@ function renderWorkbench() {
     : `${fp.prefix}${fp.seq}`;
 
   const avail = {
+    proxies: proxySlots(),
     emails: poolCount('emails'),
     cards: poolCount('cards'),
     licenses: poolCount('licenses'),
@@ -427,8 +707,8 @@ function renderWorkbench() {
     .concat(
       state.pools.proxies
         .map(
-          (p) => `<option value="${p.id}" ${String(f.proxy_id) === String(p.id) ? 'selected' : ''} ${p.status === '停用' ? 'disabled' : ''}>${esc(
-            `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（${p.status}）`
+          (p) => `<option value="${p.id}" ${String(f.proxy_id) === String(p.id) ? 'selected' : ''} ${!WorkbenchProxyCapacity.remaining(p) ? 'disabled' : ''}>${esc(
+            `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（剩余 ${WorkbenchProxyCapacity.remaining(p)} 次）`
           )}</option>`
         )
         .join('')
@@ -437,15 +717,15 @@ function renderWorkbench() {
 
   const proxyModeExtra = (fm) => {
     if (fm.proxy_mode === 'shared') {
-      return `<select id="f-proxy">${proxyOptions}</select>`;
+      return `<select id="f-proxy" aria-label="共享代理">${proxyOptions}</select>`;
     }
     if (fm.proxy_mode === 'auto') {
-      return `<span class="mini">每条记录从代理库按顺序取一个 · 可用 <b>${poolCount('proxies')}</b> 条</span>`;
+      return `<span class="mini">按 IP 次数上限自动分配 · 剩余 <b>${proxySlots()}</b> 次</span>`;
     }
     return `<span class="mini">记录中代理字段留空</span>`;
   };
 
-  const filtered = state.page === 'create' ? [] : getFilteredRecords();
+  const filtered = state.page === 'create' ? [] : state.records;
 
   const todayCN = new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', month: 'long', day: 'numeric', weekday: 'short' }).format(new Date());
 
@@ -454,33 +734,34 @@ function renderWorkbench() {
       <div>
         <h1>${state.page === 'create' ? '新建记录' : '我的记录'}</h1>
         <p class="sub">${state.page === 'create'
-          ? '指纹名称按今日日期自动生成，资源按状态分组、自动分配'
-          : '查记录、看状态、处理异常优先；需要录入新记录时走「新建记录」'}</p>
+          ? '填写域名，选择资源，核对每一组开户资料。'
+          : '查找账号、核对开户资料，集中处理状态变化。'}</p>
       </div>
       <div class="head-actions">
         ${state.page === 'create'
-          ? '<button class="btn btn-primary" data-action="open-auto-import">⚡ 智能导入</button>'
-          : '<button class="btn btn-primary" data-action="nav" data-page="create">＋ 新建记录</button><button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>'}
+          ? '<button class="btn btn-primary" data-action="open-auto-import">智能导入</button>'
+          : '<button class="btn btn-primary" data-action="nav" data-page="create">新建记录</button><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>'}
         <span class="date-chip"><span class="dot"></span>今天 · ${todayCN}</span>
       </div>
     </div>
 
     <div class="stat-strip">
-      <div class="strip-item hi"><span class="v">${state.records.length}</span><span class="k">记录总数</span></div>
+      <div class="strip-item hi"><span class="v">${state.recordStats.total}</span><span class="k">记录总数</span></div>
       <div class="strip-item"><span class="v">${avail.emails}<em>/${state.pools.emails.length}</em></span><span class="k"><span class="dot green"></span>可用邮箱</span></div>
-      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用付款工具</span></div>
+      <div class="strip-item"><span class="v">${avail.cards}<em>/${state.pools.cards.length}</em></span><span class="k"><span class="dot blue"></span>可用信用卡</span></div>
       <div class="strip-item"><span class="v">${avail.licenses}<em>/${state.pools.licenses.length}</em></span><span class="k"><span class="dot amber"></span>可用营业执照</span></div>
       <div class="strip-item"><span class="v">${poolCount('proxies')}<em>/${state.pools.proxies.length}</em></span><span class="k"><span class="dot"></span>可用代理</span></div>
     </div>
 
     ${
-      state.records.length === 0
+      state.recordStats.total === 0 && state.page === 'records'
         ? `<div class="panel"><div class="panel-body"><div class="steps">
             ${[
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
-              { n: '03', t: '导入付款工具', d: '工具别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
-              { n: '04', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
+              { n: '03', t: '导入信用卡', d: '信用卡别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
+              { n: '04', t: '导入营业执照', d: '上传 PDF，预览原件并校对企业资料，输入时自动检查重复', k: 'licenses' },
+              { n: '05', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
             ]
               .map(
                 (s) => `<div class="step-card" ${s.k ? `data-action="nav" data-page="${s.k}"` : ''}>
@@ -493,85 +774,54 @@ function renderWorkbench() {
     }
 
     <div class="panel" id="createPanel">
-      <div class="panel-head">
-        <div class="panel-title">快速创建 <span class="tag">指纹名称自动生成</span></div>
-        <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 付款工具 / 营业执照自动按顺序分配并标记已使用</span>
+      <div class="panel-head"><div><span class="section-kicker">资源自动组合</span><div class="panel-title">从资料到记录，一次核对</div></div><span class="creation-safe-note">确认前不占用资源</span></div>
+      <div class="creation-steps" aria-label="创建步骤">
+        <button type="button" data-action="create-section" data-target="creation-basics"><span>1</span><b>填写信息</b><small>域名与基础资料</small></button>
+        <button type="button" data-action="create-section" data-target="creation-resources"><span>2</span><b>分配资源</b><small>自动补齐或手动指定</small></button>
+        <button type="button" data-action="create-section" data-target="creation-check"><span>3</span><b>核对组合</b><small>查看实际组合后创建</small></button>
       </div>
-      <div class="panel-body">
-        <form id="createForm" class="form-grid" autocomplete="off">
-          <div class="field col-3">
-            <label>国家 <span class="mini">如：奥地利</span></label>
-            <input id="f-country" value="${esc(f.country)}" placeholder="奥地利">
-          </div>
-          <div class="field col-3">
-            <label>产品 <span class="mini">如：呼吸机</span></label>
-            <input id="f-product" value="${esc(f.product)}" placeholder="呼吸机">
-          </div>
-          <div class="field col-2">
-            <label>指纹起始 <span class="mini">数字或全名，如 6 或 10.8ads6</span></label>
-            <input id="f-start" class="mono" value="${esc(f.start_seq)}" placeholder="${todayKey()}ads1">
-          </div>
-          <div class="field col-2">
-            <label>IP注册时间</label>
-            <input id="f-ipreg" type="date" value="${esc(f.ip_reg_time)}">
-          </div>
-          <div class="field col-2">
-            <label>身份证 <span class="mini">选填</span></label>
-            <input id="f-idcard" value="${esc(f.id_card)}" placeholder="选填">
-          </div>
-          <div class="field col-3">
-            <label>域名 <span class="mini">一行一个，如 nfjh.shop；名称将自动拼成「国家-产品-域名前缀」</span></label>
-            <textarea id="f-domains" class="mono" rows="4" placeholder="nfjh.shop&#10;mkxd.shop&#10;wnfh.shop">${esc(f.domains)}</textarea>
-          </div>
-          <div class="field col-3">
-            <label>资源分配 <span class="mini">点击「选择」可手动指定，否则自动从未使用中按顺序取用</span></label>
-            <div style="display:flex;flex-direction:column;gap:8px">
-              <div class="assign-row">
-                <span class="assign-info">✉ 谷歌邮箱：<span id="info-emails">${assignInfo('emails')}</span></span>
-                <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="emails">选择</button>
-              </div>
-              <div class="assign-row">
-                <span class="assign-info">▤ 付款工具：<span id="info-cards">${assignInfo('cards')}</span></span>
-                <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="cards">选择</button>
-              </div>
-              <div class="assign-row">
-                <span class="assign-info">§ 营业执照：<span id="info-licenses">${assignInfo('licenses')}</span></span>
-                <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="licenses">选择</button>
-              </div>
-              <div class="assign-row">
-                <span class="assign-info">⇅ 代理：
-                  <select id="f-proxy-mode" style="flex:0 0 auto">
-                    <option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个</option>
-                    <option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>自动分配</option>
-                    <option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>不使用</option>
-                  </select>
-                  <span id="proxy-mode-extra" style="flex:1">${proxyModeExtra(f)}</span>
-                </span>
-              </div>
+      <div class="panel-body creation-body">
+        <form id="createForm" class="creation-form" autocomplete="off">
+          <section class="creation-section" id="creation-basics" aria-labelledby="creation-basics-title">
+            <div class="creation-section-title"><h2 id="creation-basics-title">基础信息</h2><p>每个域名创建一条记录，指纹编号自动递增。</p></div>
+            <div class="creation-fields-grid">
+              <div class="field"><label>投放国家 <span class="mini">与企业注册国家分开</span></label><input id="f-country" value="${esc(f.country)}" placeholder="例如：意大利"></div>
+              <div class="field"><label>产品 <span class="mini">用于识别账号</span></label><input id="f-product" value="${esc(f.product)}" placeholder="例如：影像设备"></div>
+              <div class="field creation-wide"><label>域名 <span class="mini">一行一个，支持直接粘贴网址</span></label><textarea id="f-domains" class="mono" rows="5" aria-describedby="create-domain-error" placeholder="example-one.com&#10;example-two.com">${esc(f.domains)}</textarea><p class="field-error" id="create-domain-error" role="status" hidden></p></div>
+              <div class="field creation-wide"><label>指纹起始 <span class="mini">留空按今日序号生成，可填写数字或完整名称</span></label><input id="f-start" class="mono" value="${esc(f.start_seq)}" placeholder="${todayKey()}ads1"></div>
             </div>
-          </div>
+            <details class="creation-advanced" id="createAdvanced" ${state.createAdvanced ? 'open' : ''}><summary><span>更多记录信息 <small>选填</small></span>${WorkbenchUI.icon('chevron')}</summary><div class="creation-fields-grid"><div class="field"><label>IP 注册时间</label><input id="f-ipreg" type="date" value="${esc(f.ip_reg_time)}"></div><div class="field"><label>身份证 <span class="mini">选填</span></label><input id="f-idcard" value="${esc(f.id_card)}" placeholder="选填"></div></div></details>
+          </section>
+          <section class="creation-section" id="creation-resources" aria-labelledby="creation-resources-title">
+            <div class="creation-section-title"><h2 id="creation-resources-title">资源分配</h2><p>默认从独立资源池取用，也可以指定已有资源。</p></div>
+            <div class="assignment-list">${['emails','cards','licenses'].map(kind => `<div class="assignment-item"><span class="assignment-icon">${WorkbenchUI.icon(kind)}</span><div><strong>${({emails:'邮箱',cards:'信用卡',licenses:'企业文件'})[kind]}</strong><span id="info-${kind}">${assignInfo(kind)}</span></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="${kind}" aria-label="选择${({emails:'邮箱',cards:'信用卡',licenses:'企业文件'})[kind]}">选择</button></div>`).join('')}</div>
+            <div class="assignment-proxy"><div class="assignment-proxy-label"><span class="assignment-icon">${WorkbenchUI.icon('proxies')}</span><label for="f-proxy-mode">IP / 代理</label><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="proxies" ${f.proxy_mode === 'auto' ? '' : 'hidden'}>选择 IP</button></div><select id="f-proxy-mode" aria-label="代理分配方式"><option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>按使用次数自动分配</option><option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个 IP</option><option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>本次不关联</option></select><div id="proxy-mode-extra">${proxyModeExtra(f)}</div></div>
+            <label class="bundle-choice"><input id="f-require-complete" type="checkbox" ${f.require_complete ? 'checked' : ''}><span><strong>必须组成完整的一组</strong><small>每条包含邮箱、IP、信用卡和企业文件，缺项不创建。</small></span></label>
+            <div id="creation-check" class="creation-readiness" aria-labelledby="creation-check-title"><h3 id="creation-check-title">本次资源准备情况</h3><div id="creation-resource-checks">${renderCreateReadiness()}</div><p>下一步查看每条记录的实际组合，再确认创建。</p></div>
+          </section>
         </form>
+        <p class="field-error" id="create-validation" role="alert" tabindex="-1" hidden></p>
         <div class="create-preview">
-          <span>本次将创建 <b>${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
-            ${count > avail.emails ? `<span class="warn">⚠ 邮箱仅剩 ${avail.emails} 条</span>` : ''}
-            ${count > avail.cards ? `<span class="warn">⚠ 付款工具仅剩 ${avail.cards} 张</span>` : ''}
-          </span>
-          <button class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `立即创建 ${count > 0 ? count + ' 条' : ''}`}</button>
+          <span>本次创建 <b>${count}</b> 条记录<small>指纹范围 <span class="fp">${esc(fpPreview)}</span></small></span>
+          <button type="button" class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `核对并创建 ${count > 0 ? count + ' 条' : ''}`}</button>
         </div>
       </div>
     </div>
 
     <div class="panel" id="recordsPanel">
       <div class="panel-head">
-        <div class="panel-title">账号记录 <span class="overview-title-count">${filtered.length} / ${state.records.length} 条</span></div>
+        <div class="panel-title">账号记录 <span class="overview-title-count">${state.recordFilteredTotal} / ${state.recordStats.total} 条</span></div>
       </div>
-      <div class="toolbar">
-        <input class="search" id="rec-q" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 卡号…" value="${esc(state.q)}">
+      <div class="toolbar record-toolbar">
+        <div class="record-filter-row">
+        <input class="search" id="rec-q" maxlength="200" aria-label="搜索记录" placeholder="搜索 指纹 / 名称 / 域名 / 邮箱 / 信用卡…" value="${esc(state.q)}">
         <div class="tabs">
-          ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" data-action="rstatus" data-v="${s}">${s}</button>`).join('')}
+          ${['全部', '正常', '异常', '停用'].map((s) => `<button class="tab ${state.rstatus === s ? 'active' : ''}" aria-pressed="${state.rstatus === s}" data-action="rstatus" data-v="${s}">${s}<i class="n">${s === '全部' ? state.recordStats.total : state.recordStats[s]}</i></button>`).join('')}
         </div>
         <span class="sel-count">已选 <b>${state.sel.size}</b> 条</span>
         <button class="btn btn-ghost btn-sm" data-action="clear-record-filter" ${!state.q && state.rstatus === '全部' ? 'disabled' : ''}>清除筛选</button>
+        </div><div class="record-tools-row">
+        <label class="toolbar-field">排序<select id="rec-sort" aria-label="记录排序">${[['id_desc','最新记录在前'],['id_asc','最早记录在前'],['created_desc','创建时间从新到旧'],['created_asc','创建时间从旧到新']].map(([value,label]) => `<option value="${value}" ${state.recordSort === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label>
         <details class="col-menu">
           <summary class="btn btn-ghost btn-sm" aria-label="选择显示的列">列 <span class="dim">${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}</span></summary>
           <div class="col-menu-body">
@@ -579,60 +829,65 @@ function renderWorkbench() {
             <button class="btn btn-ghost btn-sm" data-action="reset-cols" ${state.hiddenCols.length ? '' : 'disabled'}>恢复默认列</button>
           </div>
         </details>
+        <button class="btn btn-ghost btn-sm" data-action="toggle-density" aria-pressed="${state.tableDensity === 'compact'}" title="切换记录表格行距">${state.tableDensity === 'compact' ? '紧凑模式' : '舒适模式'}</button>
         <span class="toolbar-spacer"></span>
         <button class="btn btn-ghost btn-sm" data-action="export-adspower">导出 AdsPower TXT</button>
         <button class="btn btn-ghost btn-sm" data-action="export-csv">导出 CSV</button>
         <button class="btn btn-danger btn-sm" data-action="delete-selected" ${state.sel.size === 0 ? 'disabled' : ''}>删除所选</button>
+        </div>
       </div>
+      <div class="selection-bar" id="selectionBar" ${state.sel.size ? '' : 'hidden'}><p class="selection-scope" role="status"></p><button class="btn btn-ghost btn-sm" data-action="clear-selection">清空选择</button></div>
+      <div class="query-feedback" id="recordsFeedback" role="status" hidden><span data-feedback-text></span><button class="btn btn-ghost btn-sm" data-action="retry-records">重试查询</button></div>
       ${renderRecordsTable(filtered)}
     </div>
   `;
 }
 
 function getFilteredRecords() {
-  const q = state.q.trim().toLowerCase();
-  return state.records.filter((r) => {
-    if (state.rstatus !== '全部' && r.status !== state.rstatus) return false;
-    if (!q) return true;
-    return [r.fingerprint, r.name, r.domain, r.email_user, r.card_number, r.license_name, r.proxy_host, r.proxy_sn]
-      .some((v) => String(v || '').toLowerCase().includes(q));
-  });
+  // 搜索与状态筛选已经下推到 /api/records；这里只返回当前服务端页。
+  return state.records;
 }
 
 function paginate(items, kind) {
-  const key = kind === 'records' ? 'recordPage' : 'poolPage';
+  if (kind === 'records') {
+    const pages = Math.max(1, Math.ceil(state.recordFilteredTotal / state.recordLimit));
+    state.recordPage = Math.max(1, Math.min(state.recordPage, pages));
+    return { items, total: state.recordFilteredTotal, page: state.recordPage, pages };
+  }
   const pages = Math.max(1, Math.ceil(items.length / 50));
-  state[key] = Math.max(1, Math.min(state[key], pages));
-  return { items: items.slice((state[key] - 1) * 50, state[key] * 50), total: items.length, page: state[key], pages };
+  state.poolPage = Math.max(1, Math.min(state.poolPage, pages));
+  return { items: items.slice((state.poolPage - 1) * 50, state.poolPage * 50), total: items.length, page: state.poolPage, pages };
 }
 
 function renderPagination(kind, page) {
-  if (page.total <= 50) return '';
-  return `<div class="table-pagination"><span role="status">共 ${page.total} 条 · 第 ${page.page} / ${page.pages} 页 · 每页 50 条</span><div>
-    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-page="${page.page - 1}" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
-    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-page="${page.page + 1}" ${page.page >= page.pages ? 'disabled' : ''}>下一页</button>
+  const limit = kind === 'records' ? state.recordLimit : 50;
+  return `<div class="table-pagination"><span role="status">共 ${page.total} 条 · 第 ${page.page} / ${page.pages} 页 · 每页 ${limit} 条</span><div>
+    ${kind === 'records' ? `<label class="toolbar-field">每页<select id="rec-limit" aria-label="每页记录数">${[25,50,100,200].map(value => `<option value="${value}" ${limit === value ? 'selected' : ''}>${value} 条</option>`).join('')}</select></label>` : ''}
+    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-direction="previous" data-page="${page.page - 1}" data-disabled="${page.page <= 1}" ${page.page <= 1 ? 'disabled' : ''}>上一页</button>
+    <button class="btn btn-ghost btn-sm" data-action="table-page" data-kind="${kind}" data-direction="next" data-page="${page.page + 1}" data-disabled="${page.page >= page.pages}" ${page.page >= page.pages ? 'disabled' : ''}>下一页</button>
   </div></div>`;
 }
 
 function renderRecordsTable(list) {
-  if (!state.records.length) {
+  if (state.recordStats.total === 0) {
     return `<div class="empty">
       <div class="empty-ico">◧</div>
       <h3>还没有创建记录</h3>
-      <p>先在上方导入资源，然后填写国家 / 产品 / 域名，点击「立即创建」即可</p>
+      <p>先导入资源，然后到「新建记录」填写国家 / 产品 / 域名。</p>
+      <button class="btn btn-primary" data-action="nav" data-page="create">新建第一条记录</button>
     </div>`;
   }
-  if (!list.length) {
-    return `<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的记录</h3><p>换个关键词或筛选条件试试</p></div>`;
+  if (state.recordFilteredTotal === 0 || !list.length) {
+    return `${WorkbenchUI.emptyState({title:'没有匹配的记录',description:'换个关键词或筛选条件试试。',iconName:'search',action:'reset-record-search',actionLabel:'清除筛选'})}`;
   }
   const page = paginate(list, 'records');
   list = page.items;
   const allChecked = list.length && list.every((r) => state.sel.has(r.id));
-  return `<div class="table-wrap"><table class="rec-table">
+  return `<p class="table-help">横向滚动查看全部字段 · 指纹名称固定在左侧 · 全选仅作用于当前页</p><div class="table-wrap" tabindex="0" role="region" aria-label="账号记录表格，可横向滚动"><table class="rec-table">
     <thead><tr>
-      <th style="width:34px"><input type="checkbox" data-action="sel-all" aria-label="全选当前页" ${allChecked ? 'checked' : ''}></th>
+      <th><input type="checkbox" data-action="sel-all" aria-label="全选当前页" ${allChecked ? 'checked' : ''}></th>
       <th>指纹名称</th><th>名称</th><th>域名</th><th>谷歌邮箱</th><th>邮箱密码</th><th>2FA</th>
-      <th>代理</th><th>付款工具</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
+      <th>代理</th><th>信用卡</th><th>IP注册时间</th><th>营业执照</th><th>身份证</th>
       <th>状态</th><th style="width:110px">操作</th>
     </tr></thead>
     <tbody>
@@ -645,7 +900,7 @@ function renderRecordsTable(list) {
             ? `${esc(r.card_number)}<br><span class="faint mono">${esc(r.card_expiry || '')}${r.card_last4 ? ' · ' + esc(r.card_last4) : ''}</span>`
             : '<span class="faint">—</span>';
           return `<tr class="${state.sel.has(r.id) ? 'selected' : ''}" data-id="${r.id}" style="--i:${i}">
-            <td><input type="checkbox" data-action="sel-row" data-id="${r.id}" ${state.sel.has(r.id) ? 'checked' : ''}></td>
+            <td><input type="checkbox" data-action="sel-row" data-id="${r.id}" aria-label="选择记录 ${esc(r.fingerprint)}" ${state.sel.has(r.id) ? 'checked' : ''}></td>
             <td class="mono cell-fp copyable" data-copy="${esc(r.fingerprint)}" title="点击复制">${esc(r.fingerprint)}</td>
             <td class="cell-name">${esc(r.name)}</td>
             <td class="mono copyable" data-copy="${esc(r.domain)}" title="点击复制">${esc(r.domain) || '<span class="faint">—</span>'}</td>
@@ -653,16 +908,17 @@ function renderRecordsTable(list) {
             <td class="mono copyable" data-copy="${esc(r.email_pass)}" title="点击复制">${sens(r.email_pass)}</td>
             <td class="mono copyable" data-copy="${esc(r.email_fakey)}" title="点击复制">${sens(r.email_fakey)}</td>
             <td class="mono copyable" data-sensitive="${Boolean(r.proxy_user || r.proxy_pass)}" data-copy="${esc(r.proxy_host ? `${r.proxy_host}:${r.proxy_port}:${r.proxy_user}:${r.proxy_pass}` : '')}" title="点击复制完整代理">${proxy}</td>
-            <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_last4}` : '')}" title="复制付款工具信息">${card}</td>
+            <td class="mono copyable" data-copy="${esc(r.card_number ? `${r.card_number} ${r.card_expiry} ${r.card_last4}` : '')}" title="复制信用卡信息">${card}</td>
             <td class="dim">${esc(r.ip_reg_time) || '<span class="faint">—</span>'}</td>
             <td>${r.license_id ? `<button class="license-link" data-action="view-license" data-id="${r.license_id}">${esc(r.license_name)}</button>` : '<span class="faint">—</span>'}</td>
             <td class="dim">${sens(r.id_card)}</td>
             <td>
-              <select class="status-select ${r.status === '正常' ? 's-green' : r.status === '异常' ? 's-red' : 's-blue'}" data-action="rec-status" data-id="${r.id}">
+              <select aria-label="记录 ${esc(r.fingerprint)} 状态" class="status-select ${r.status === '正常' ? 's-green' : r.status === '异常' ? 's-red' : 's-blue'}" data-action="rec-status" data-id="${r.id}">
                 ${['正常', '异常', '停用'].map((s) => `<option ${r.status === s ? 'selected' : ''}>${s}</option>`).join('')}
               </select>
             </td>
             <td><div class="row-actions">
+              <button class="icon-btn" data-action="record-setup" data-id="${r.id}">开户资料</button>
               <button class="icon-btn" data-action="edit-record" data-id="${r.id}">编辑</button>
               <button class="icon-btn danger" data-action="del-record" data-id="${r.id}">删除</button>
             </div></td>
@@ -673,47 +929,97 @@ function renderRecordsTable(list) {
   </table></div>${renderPagination('records', page)}`;
 }
 
-async function doCreate() {
+function createDraft() {
+  return WorkbenchRecordCreate.draft({
+    form: state.form, picked: state.picked, dateKey: todayKey(), nextSeq: state.next?.seq || 1,
+    resources: Object.fromEntries(KINDS.map(kind => [kind.key, { label: kind.label, total: state.pools[kind.key].length, available: kind.key === 'proxies' ? proxySlots() : poolCount(kind.key) }])),
+  });
+}
+const createSubmitter = WorkbenchRecordCreate.createSubmitter({ request: (path, options) => api(path, options) });
+
+function showCreateValidation(draft, focus = false) {
+  for (const id of ['f-domains', 'f-start']) document.getElementById(id)?.removeAttribute('aria-invalid');
+  const domainError = document.getElementById('create-domain-error');
+  const generalError = document.getElementById('create-validation');
+  [domainError, generalError].forEach(element => { if (element) { element.hidden = true; element.textContent = ''; } });
+  if (!draft.error) return;
+  const box = draft.field === 'f-domains' ? domainError : generalError;
+  if (box) { box.textContent = draft.error; box.hidden = false; }
+  if (draft.field) document.getElementById(draft.field)?.setAttribute('aria-invalid', 'true');
+  if (focus) (document.getElementById(draft.field) || box)?.focus();
+}
+
+async function openCreateReview() {
   if (state.creating) return;
-  const domains = state.form.domains.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const draft = createDraft();
+  showCreateValidation(draft, true);
+  if (draft.error) return;
+  const count = draft.body.domains.length;
+  const resourceRows = ['emails','cards','licenses'].map(kind => {
+    const picked = state.picked[kind].size;
+    const mode = !state.pools[kind].length ? '库内为空，本次不关联' : picked ? `手动指定 ${Math.min(picked, count)} 条${picked < count ? `，其余 ${count - picked} 条自动分配` : ''}` : `自动分配 ${count} 条`;
+    return `<tr><th>${KINDS.find(item => item.key === kind).label}</th><td>${mode}</td></tr>`;
+  }).join('');
+  const proxy = draft.body.proxy_mode === 'none' ? '不关联代理' : draft.body.proxy_mode === 'auto' ? (state.pools.proxies.length ? `自动分配 ${count} 条` : '库内为空，本次不关联') : draft.body.proxy_id ? '使用指定的共享代理' : '沿用最近一条记录的代理；无可用历史代理时留空';
+  openModal(`<div class="modal-head"><h3>核对本次创建</h3><button class="modal-close" data-action="close-modal">✕</button></div>
+    <div class="modal-body"><p class="review-intro">将创建 <b>${count}</b> 条记录。确认后分配资源；最终结果以服务端校验为准。</p>
+      <dl class="review-facts"><div><dt>国家 / 产品</dt><dd>${esc(draft.body.country || '未填写')} / ${esc(draft.body.product || '未填写')}</dd></div><div><dt>指纹范围</dt><dd class="mono">${esc(draft.fp.prefix + draft.fp.seq)}${count > 1 ? ' ～ ' + esc(draft.fp.prefix + (draft.fp.seq + count - 1)) : ''}</dd></div></dl>
+      <table class="review-table"><caption>资源分配</caption><tbody>${resourceRows}<tr><th>代理</th><td>${proxy}</td></tr></tbody></table>
+      <div id="resource-preview" role="status">正在核对实际资源组合…</div>
+      <p class="field-error" id="create-submit-error" role="alert" hidden></p>
+    </div><div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">返回修改</button><button class="btn btn-primary" id="create-confirm" disabled>确认创建 ${count} 条</button></div>`, { large: true });
+  const confirm = document.getElementById('create-confirm'), preview = document.getElementById('resource-preview');
+  confirm.onclick = () => doCreate(draft.body);
+  try {
+    const result = await api('/api/records/preview', { method: 'POST', body: draft.body, signal: WorkbenchUI.dialog.signal() });
+    if (!confirm.isConnected) return;
+    if (!Array.isArray(result.items) || result.items.length !== count) throw new Error('资源组合响应异常，请重新核对');
+    // Pin the resources and their versions to what the user actually reviewed.
+    // A concurrent change must fail rather than silently substitute another set.
+    draft.body.resource_plan = result.items.map(item => Object.fromEntries(['email','card','license','proxy'].flatMap(prefix => [[prefix + '_id', item[prefix + '_id']], [prefix + '_version', item[prefix + '_version']]])));
+    for (const [key, prefix] of [['email_ids','email'],['card_ids','card'],['license_ids','license'],['proxy_ids','proxy']]) draft.body[key] = result.items.map(item => item[prefix + '_id']).filter(Boolean);
+    preview.innerHTML = `<div class="table-wrap"><table class="review-table"><caption>实际组合预览${count > 20 ? '（前 20 条）' : ''} · 确认后才占用资源</caption><thead><tr><th>指纹 / 域名</th><th>邮箱</th><th>IP</th><th>信用卡</th><th>企业文件</th></tr></thead><tbody>${result.items.slice(0,20).map(item => `<tr><td>${esc(item.fingerprint)}<br>${esc(item.domain)}</td><td>${esc(item.email_user || '未关联')}</td><td>${esc(item.proxy_host ? `${item.proxy_host}:${item.proxy_port}` : '未关联')}</td><td>${esc(item.card_number || '未关联')}${item.card_last4 ? ' · ' + esc(item.card_last4) : ''}</td><td>${esc(item.license_name || '未关联')}</td></tr>`).join('')}</tbody></table></div>`;
+    confirm.disabled = false;
+  } catch (error) { if (preview.isConnected) { preview.textContent = error.message; preview.className = 'field-error'; } }
+}
+
+async function doCreate(body = createDraft().body) {
+  if (state.creating) return;
+  const domains = body.domains;
   if (!domains.length) return toast('请至少填写一个域名', 'warn');
   if (domains.length > 500) return toast('单次最多创建 500 条记录，请分批创建', 'warn');
   state.creating = true;
+  const confirm = document.getElementById('create-confirm');
+  const submittedInput = { domains: state.form.domains, start: state.form.start_seq };
+  const previousError = confirm?.closest('.modal')?.querySelector('#create-submit-error');
+  if (previousError) { previousError.hidden = true; previousError.textContent = ''; }
+  if (confirm) WorkbenchUI.dialog.pending(confirm, true, '正在创建…');
   const btn = document.querySelector('[data-action="create"]');
   const oldText = btn?.textContent;
   if (btn) { btn.disabled = true; btn.classList.add('btn-loading'); btn.textContent = '创建中'; }
-  const fp = parseFpStart(state.form.start_seq);
-  const body = {
-    country: state.form.country,
-    product: state.form.product,
-    domains,
-    start_seq: fp.seq,
-    fp_prefix: fp.prefix,
-    date_key: todayKey(),
-    ip_reg_time: state.form.ip_reg_time,
-    id_card: state.form.id_card,
-    proxy_mode: state.form.proxy_mode,
-    proxy_id: state.form.proxy_mode === 'shared' && state.form.proxy_id ? Number(state.form.proxy_id) : undefined,
-    email_ids: [...state.picked.emails].map(Number),
-    card_ids: [...state.picked.cards].map(Number),
-    license_ids: [...state.picked.licenses].map(Number),
-  };
+  const fp = { prefix: body.fp_prefix };
   try {
-    const encoded=JSON.stringify(body);
-    if(state.submission?.body !== encoded) state.submission={body:encoded,key:crypto.randomUUID()};
-    const res = await api('/api/records', { method: 'POST', headers:{'idempotency-key':state.submission.key}, body });
-    state.submission=null;
+    const res = await createSubmitter.submit(body, { signal: WorkbenchUI.dialog.signal() });
+    if (!res) return;
     const list = res.created;
     toast(`✅ 已创建 ${list.length} 条记录：${list[0].fingerprint}${list.length > 1 ? ' ~ ' + list[list.length - 1].fingerprint : ''}`);
-    state.picked = { emails: new Set(), cards: new Set(), licenses: new Set() };
-    state.form.domains = '';
-    state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
-    await refresh().catch(error=>toast('已保存，但列表刷新失败；请重新连接','warn'));
+    if (confirm?.isConnected) state.picked = { emails: new Set(), cards: new Set(), licenses: new Set(), proxies: new Set() };
+    if (state.form.domains === submittedInput.domains) state.form.domains = '';
+    if (state.form.start_seq === submittedInput.start) state.form.start_seq = `${fp.prefix}${list[list.length - 1].seq + 1}`;
+    await refreshAfterCommit('记录已保存，但列表刷新失败；请重新连接，不要重复创建');
+    // A lock may have dismissed this task while the committed response was in flight.
+    if (confirm?.isConnected) {
+      closeModal();
+      openModal(`<div class="modal-head"><h3>已创建 ${list.length} 条记录</h3><button class="modal-close" data-action="close-modal">✕</button></div><div class="modal-body"><p>指纹范围：<b class="mono">${esc(list[0].fingerprint)}${list.length > 1 ? ' ～ ' + esc(list[list.length - 1].fingerprint) : ''}</b></p><p>${state.syncError ? '记录已保存。列表需要重新连接后更新，请勿重复创建。' : '记录与资源分配已保存，可以前往「我的记录」查看。'}</p></div><div class="modal-foot"><button class="btn btn-ghost" data-action="close-modal">继续新建</button><span class="grow"></span><button class="btn btn-primary" data-action="created-records">查看我的记录</button></div>`);
+    }
   } catch (e) {
-    toast(e.message, 'error');
+    if (e.name !== 'AbortError') toast(e.message, 'error');
+    const message = confirm?.closest('.modal')?.querySelector('#create-submit-error');
+    if (message) { message.hidden = false; message.textContent = e.message; }
     if (btn) { btn.disabled = false; btn.classList.remove('btn-loading'); btn.textContent = oldText; }
   } finally {
     state.creating = false;
+    if (confirm?.isConnected) WorkbenchUI.dialog.pending(confirm, false, `确认创建 ${domains.length} 条`);
     updateCreatePreview();
   }
 }
@@ -732,8 +1038,8 @@ const POOL_TABLE = {
     ],
   },
   proxies: {
-    cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '状态', '导入时间', '操作'],
-    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '95px', '160px', '65px'],
+    cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '使用次数', '状态', '导入时间', '操作'],
+    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '160px', '95px', '160px', '65px'],
     row: (p) => [
       `<span class="faint mono">${p.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.sn)}" title="点击复制">${esc(p.sn) || '<span class="faint">—</span>'}</span>`,
@@ -744,10 +1050,11 @@ const POOL_TABLE = {
       `<span class="mono copyable" data-copy="${esc(p.pass)}" title="点击复制">${sens(p.pass)}</span>`,
       `<span class="dim copyable" data-copy="${esc(p.country)}" title="点击复制">${esc(p.country) || '<span class="faint">—</span>'}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.ip)}" title="点击复制">${esc(p.ip) || '<span class="faint">—</span>'}</span>`,
+      `<button class="btn btn-ghost btn-sm" data-action="proxy-limits" data-id="${p.id}" aria-label="设置 IP ${p.id} 使用次数">${Number(p.linked_record_count || 0)} / ${WorkbenchProxyCapacity.limit(p)} 次</button><span class="resource-usage">剩余 ${WorkbenchProxyCapacity.remaining(p)} 次</span>`,
     ],
   },
   cards: {
-    cols: ['ID', '工具别名', '有效期', '末四位', '状态', '导入时间', '操作'],
+    cols: ['ID', '信用卡别名', '有效期', '末四位', '状态', '导入时间', '操作'],
     widths: ['60px', '220px', '90px', '80px', '100px', '170px', '70px'],
     row: (c) => [
       `<span class="faint mono">${c.id}</span>`,
@@ -786,7 +1093,7 @@ host:port:user:pass
 host,port,user,pass`,
   },
   cards: {
-    rule: '一行一条：付款工具别名|末四位|有效期。不接收完整卡号和 CVV。',
+    rule: '一行一条：信用卡别名|末四位|有效期。不接收完整卡号和 CVV。',
     sample: 'Finance-card-A|1234|06/29\nFinance-card-B|5678|12/29',
   },
   licenses: {
@@ -809,37 +1116,42 @@ function renderPoolTable(kind, list) {
   if (!state.pools[kind].length) return `<div class="empty">
     <div class="empty-ico">⇩</div><h3>还没有${conf.label}数据</h3>
     <p>${kind === 'licenses' ? '点击右上角「导入营业执照」，上传一份 PDF 并校对资料。' : '点击右上角「批量导入」，支持粘贴以下格式（一行一条）：'}</p>
-    <code>${esc(POOL_FORMAT[kind].sample || POOL_FORMAT[kind].rule)}</code></div>`;
-  if (!list.length) return '<div class="empty"><div class="empty-ico">⌕</div><h3>没有匹配的资源</h3><p>换个关键词或筛选条件试试</p></div>';
+    <code>${esc(POOL_FORMAT[kind].sample || POOL_FORMAT[kind].rule)}</code><button class="btn btn-primary" data-action="open-empty-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div>`;
+  if (!list.length) return WorkbenchUI.emptyState({title:'没有匹配的资源',description:'换个关键词或筛选条件试试。',iconName:'search',action:'reset-pool-search',actionLabel:'清除筛选'});
   const page = paginate(list, 'pools');
-  const reference = { emails: 'email_id', proxies: 'proxy_id', cards: 'card_id', licenses: 'license_id' }[kind];
-  const linkedIds = new Set(state.records.map((record) => record[reference]));
-  return `<div class="table-wrap"><table class="pool-table">
+  return `<p class="table-help">占用数来自本人的全部记录 · 已关联资源需先解除关联再删除</p><div class="table-wrap" tabindex="0" role="region" aria-label="${conf.label}表格，可横向滚动"><table class="pool-table">
     <colgroup>${(table.widths || []).map((width) => `<col${width ? ` style="width:${width}"` : ''}>`).join('')}</colgroup>
     <thead><tr>${table.cols.map((column) => `<th>${column}</th>`).join('')}</tr></thead><tbody>
     ${page.items.map((item, index) => {
       const statusIndex = table.cols.indexOf('状态');
-      const linked = linkedIds.has(item.id);
+      const linked = Number(item.linked_record_count || 0) > 0;
       const status = `<select aria-label="资源 ${item.id} 状态" class="status-select ${item.status === '未使用' ? 's-green' : item.status === '已使用' ? 's-blue' : 's-red'}" data-action="pool-item-status" data-kind="${kind}" data-id="${item.id}">
         ${['未使用', '已使用', '停用'].map((value) => `<option ${item.status === value ? 'selected' : ''} ${value === '未使用' && linked ? 'disabled' : ''}>${value}</option>`).join('')}</select>`;
       const cells = table.row(item).slice(0, statusIndex).map((cell) => `<td>${cell}</td>`);
-      cells.push(`<td>${status}</td>`, `<td class="dim mono" style="font-size:11px">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}" ${linked ? 'disabled title="请先在记录中解除关联"' : ''}>删除</button></div></td>`);
+      cells.push(`<td>${status}<span class="resource-usage">${linked ? `已关联 ${Number(item.linked_record_count)} 条记录` : '尚未关联记录'}</span></td>`, `<td class="dim mono">${esc(item.created_at || '')}</td>`, `<td><div class="row-actions"><button class="icon-btn danger" data-action="del-pool" data-kind="${kind}" data-id="${item.id}" ${linked ? 'disabled title="请先在记录中解除关联"' : ''}>删除</button></div></td>`);
       return `<tr style="--i:${index}">${cells.join('')}</tr>`;
     }).join('')}</tbody></table></div>${renderPagination('pools', page)}`;
 }
 
 function renderPool(kind) {
   const conf = KINDS.find((item) => item.key === kind);
+  const context = {
+    emails: ['独立邮箱池', '批量导入后，在创建页自动取用或手动指定。密码与 2FA 继续按授权隐藏。', '搜索邮箱、备注…'],
+    proxies: ['连接资源独立管理', '每个 IP 可设置 1、3、5 次或自定义上限。按当前关联记录计数，解除关联后释放次数。', '搜索 IP、编号、国家…'],
+    cards: ['轻量信用卡档案', '保存别名、末四位和有效期，便于匹配与核对；请勿填写完整卡号或 CVV。', '搜索别名、末四位…'],
+    licenses: ['原件与企业资料，一处校对', '批量 PDF 逐份预览、校对并自动查重。扫描件可预览，自动提取仍需可读取的文本层。', '搜索企业、注册编号、城市…'],
+  }[kind];
   const list = getFilteredPool(kind);
   // 状态数量直接标在筛选标签上：原来上方另有一排大数字卡片，与这里说的是同一件事，白占一块空间。
   const counts = { 全部: state.pools[kind].length, 未使用: poolCount(kind), 已使用: poolCount(kind, '已使用'), 停用: poolCount(kind, '停用') };
   document.getElementById('main').innerHTML = `
-    <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p></div>
-      <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">⚡ 智能导入</button>' : ''}
+    <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">独立管理，按需组合；占用与分配状态自动同步。</p></div>
+      <div class="head-actions">${kind === 'proxies' ? '<button class="btn btn-ghost" data-action="proxy-limits">批量设置次数</button>' : ''}${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>' : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
+    <section class="pool-context" aria-label="资源使用说明"><span class="pool-context-icon">${WorkbenchUI.icon(kind)}</span><div><strong>${context[0]}</strong><p>${context[1]}</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="nav" data-page="create">去组合资源 ${WorkbenchUI.icon('arrow-right')}</button></section>
     <div class="panel"><div class="toolbar">
-      <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
-      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
+      <input class="search" id="pool-q" aria-label="搜索资源" placeholder="${context[2]}" value="${esc(state.poolQ)}">
+      <div class="tabs" role="group" aria-label="资源状态筛选">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" aria-pressed="${state.poolStatus === status}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
       <span class="sel-count">${list.length} 条</span>
       <button class="btn btn-ghost btn-sm" data-action="clear-pool-filter" ${!state.poolQ && state.poolStatus === '全部' ? 'disabled' : ''}>清除筛选</button></div>${renderPoolTable(kind, list)}</div>`;
 }
@@ -850,7 +1162,7 @@ function renderPoolTableInto() {
   const reset=document.querySelector('[data-action="clear-pool-filter"]');
   if(reset) reset.disabled=!state.poolQ&&state.poolStatus==='全部';
   const list = getFilteredPool(state.page);
-  panel.querySelectorAll('.table-wrap, .empty, .table-pagination').forEach((element) => element.remove());
+  panel.querySelectorAll('.table-wrap, .table-help, .empty, .table-pagination').forEach((element) => element.remove());
   panel.insertAdjacentHTML('beforeend', renderPoolTable(state.page, list));
   const count = panel.querySelector('.sel-count');
   if (count) count.textContent = `${list.length} 条`;
@@ -858,226 +1170,40 @@ function renderPoolTableInto() {
 
 /* ============ 导入弹窗 ============ */
 
-function bindImportPreview(textarea, button, resultBox, route, onResult) {
-  let revision = 0;
-  let timer;
-  let controller;
-  const parse = async () => {
-    const current = ++revision;
-    controller?.abort();
-    controller = new AbortController();
-    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20000)]);
-    const text = textarea.value;
-    button.disabled = true;
-    if (!text.trim()) { resultBox.textContent = '等待粘贴内容…'; return; }
-    resultBox.textContent = '正在识别最新内容…';
-    try {
-      const result = await api(route, { method: 'POST', body: { text }, signal });
-      if (current !== revision || !textarea.isConnected || textarea.value !== text) return;
-      onResult(result);
-    } catch (error) {
-      if (current === revision && textarea.isConnected && error.name !== 'AbortError') resultBox.textContent = error.message;
-    }
-  };
-  const invalidate = () => {
-    ++revision;
-    controller?.abort();
-    button.disabled = true;
-    resultBox.textContent = textarea.value.trim() ? '正在识别最新内容…' : '等待粘贴内容…';
-    clearTimeout(timer);
-  };
-  textarea.addEventListener('input', () => {
-    invalidate();
-    timer = setTimeout(parse, 350);
-  });
-  return { parse, invalidate };
-}
-
-async function openImportModal(kind) {
-  if (kind === 'licenses') return openLicenseImport();
-  const conf = KINDS.find((k) => k.key === kind);
-  openModal(`
-    <div class="modal-head"><h3>批量导入 · ${conf.label}</h3><button class="modal-close" data-action="close-modal">✕</button></div>
-    <div class="modal-body">
-      <div class="format-hint">
-        <p class="format-rule">${esc(POOL_FORMAT[kind].rule)}</p>
-        ${POOL_FORMAT[kind].sample ? `<pre class="format-sample">${esc(POOL_FORMAT[kind].sample)}</pre>` : ''}
-      </div>
-      <textarea id="import-text" class="mono" rows="9" style="width:100%" placeholder="粘贴到此处，一行一条…"></textarea>
-      <div class="parse-result" id="parse-result">等待粘贴内容…</div>
-    </div>
-    <div class="modal-foot">
-      <span class="grow"></span>
-      <button class="btn btn-ghost" data-action="close-modal">取消</button>
-      <button class="btn btn-primary" id="import-ok" disabled>确认导入</button>
-    </div>`, { large: true });
-
-  const ta = document.getElementById('import-text');
-  const resultBox = document.getElementById('parse-result');
-  const okBtn = document.getElementById('import-ok');
-  let parsed = [];
-  let saving = false;
-  bindImportPreview(ta, okBtn, resultBox, `/api/parse/${kind}`, (res) => {
-    parsed = res.items || [];
-    if (!parsed.length) {
-      resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
-      okBtn.disabled = true;
-    } else {
-      const preview = parsed
-        .slice(0, 5)
-        .map((it) => `<li>${esc(Object.entries(it).filter(([k,v])=>v&&!['pass','fakey'].includes(k)).map(([,v])=>v).join(' · '))}</li>`)
-        .join('');
-      resultBox.innerHTML = `识别到 <b>${parsed.length}</b> 条${parsed.length > 5 ? '（预览前 5 条）' : ''}<ul class="parse-preview-list">${preview}</ul>`;
-      okBtn.disabled = false;
-    }
-  });
-
-  okBtn.onclick = async () => {
-    if (saving || okBtn.disabled || !parsed.length) return;
-    saving = true; okBtn.disabled = true; ta.readOnly = true;
-    try {
-      const res = await api(`/api/import/${kind}`, { method: 'POST', body: { items: parsed } });
-      toast(`✅ 导入成功：新增 ${res.added} 条${dupNote(res)}`);
-      if (ta.isConnected) closeModal();
-      await refresh().catch(error=>toast('已保存，但列表刷新失败；请点击重新连接','warn'));
-    } catch (e) {
-      toast(e.message, 'error');
-      okBtn.disabled = false;
-    } finally {
-      saving = false; ta.readOnly = false;
-    }
-  };
-
-  ta.focus();
-}
-
-/* ============ 智能导入（自动识别邮箱 / 代理） ============ */
-
-function openAutoImport() {
-  openModal(`
-    <div class="modal-head"><h3>智能导入 · 邮箱 + 代理</h3><button class="modal-close" data-action="close-modal">✕</button></div>
-    <div class="modal-body">
-      <div class="auto-hint">粘贴任意格式，自动识别并拆分（可混合）：<br>
-        ① <b>AdsPower 导入 TXT</b>（key=value，星号线分块）<br>
-        ② 邮箱：<span class="mono">账号——密码——2FA</span>，分隔符支持 —、|、Tab、冒号、分号、逗号、空格，或「邮箱：xxx 密码：yyy 2FA：zzz」标签形式（顺序任意）<br>
-        ③ 一行代理：<span class="mono">socks5://user:pass@host:port</span>、<span class="mono">user:pass@host:port</span>、<span class="mono">host:port:user:pass</span>、<span class="mono">user:pass:host:port</span>、<span class="mono">host,port,user,pass</span> 等<br>
-        ④ 代理商多行文本块（账号/密码/主机/端口/国家等标签行，中英文均可）<br>
-        识别后邮箱进「邮箱库」、代理进「代理库」，重复自动跳过。</div>
-      <div class="auto-toolbar">
-        <button type="button" class="btn btn-ghost btn-sm" id="auto-file-btn">选择 TXT 文件</button>
-        <input type="file" id="auto-file" accept=".txt,.csv,text/plain" hidden>
-        <span class="mini faint" id="auto-file-name"></span>
-      </div>
-      <textarea id="auto-text" class="mono" rows="9" style="width:100%" placeholder="粘贴 AdsPower TXT / 邮箱 / 代理，任意混合…"></textarea>
-      <div class="parse-result" id="auto-result">等待粘贴内容…</div>
-    </div>
-    <div class="modal-foot">
-      <span class="grow"></span>
-      <button class="btn btn-ghost" data-action="close-modal">取消</button>
-      <button class="btn btn-primary" id="auto-ok" disabled>确认导入</button>
-    </div>`, { large: true });
-
-  const ta = document.getElementById('auto-text');
-  const resultBox = document.getElementById('auto-result');
-  const okBtn = document.getElementById('auto-ok');
-  const fileInput = document.getElementById('auto-file');
-  const fileName = document.getElementById('auto-file-name');
-  let parsed = { emails: [], proxies: [] };
-  let saving = false;
-
-  const renderPreview = () => {
-    const { emails, proxies } = parsed;
-    if (!emails.length && !proxies.length) {
-      resultBox.innerHTML = '⚠ 未识别到有效内容，请检查格式';
-      okBtn.disabled = true;
-      okBtn.textContent = '确认导入';
-      return;
-    }
-    const sec = (title, ico, items, fmt) => (!items.length ? '' : `
-      <div class="auto-section">
-        <div class="auto-sec-head"><span class="ico">${ico}</span>${title} <b>${items.length}</b> 条${items.length > 5 ? '<span class="mini faint">（预览前 5 条）</span>' : ''}</div>
-        <ul class="parse-preview-list">${items.slice(0, 5).map((it) => `<li>${esc(fmt(it))}</li>`).join('')}</ul>
-      </div>`);
-    resultBox.innerHTML =
-      sec('邮箱', '✉', emails, (e) => [e.user,e.pass?'密码已识别':'',e.fakey?'2FA已识别':''].filter(Boolean).join(' · ')) +
-      sec('代理', '⇅', proxies, (p) => [p.host ? `${p.host}:${p.port}` : '', p.user, p.sn, p.ip].filter(Boolean).join(' · '));
-    okBtn.disabled = false;
-    okBtn.textContent = `确认导入（邮箱 ${emails.length} · 代理 ${proxies.length}）`;
-  };
-
-  const preview = bindImportPreview(ta, okBtn, resultBox, '/api/parse/auto', (result) => {
-    parsed = result;
-    renderPreview();
-  });
-
-  document.getElementById('auto-file-btn').onclick = () => fileInput.click();
-  fileInput.addEventListener('change', () => {
-    const f = fileInput.files[0];
-    if (!f) return;
-    preview.invalidate();
-    if (f.size > 10 * 1024 * 1024) { resultBox.textContent = '文本文件不能超过 10 MB'; return; }
-    okBtn.disabled = true;
-    fileName.textContent = f.name;
-    const previousText = ta.value;
-    const rd = new FileReader();
-    rd.onload = () => {
-      if (!ta.isConnected || fileInput.files[0] !== f || ta.value !== previousText) return;
-      ta.value = String(rd.result || '');
-      preview.parse();
-    };
-    rd.onerror = () => { if (ta.isConnected) resultBox.textContent = '文件读取失败，请重新选择'; };
-    rd.readAsText(f);
-  });
-
-  okBtn.onclick = async () => {
-    if (saving || okBtn.disabled || (!parsed.emails.length && !parsed.proxies.length)) return;
-    saving = true; ta.readOnly = true; fileInput.disabled = true;
-    document.getElementById('auto-file-btn').disabled = true;
-    okBtn.disabled = true;
-    try {
-      const res = await api('/api/import/auto', { method: 'POST', body: parsed });
-      const parts = [];
-      if (parsed.emails.length) parts.push(`邮箱 +${res.emails.added}${dupNote(res.emails)}`);
-      if (parsed.proxies.length) parts.push(`代理 +${res.proxies.added}${dupNote(res.proxies)}`);
-      toast(`✅ 导入成功：${parts.join('，')}`);
-      if (ta.isConnected) closeModal();
-      await refresh().catch(error=>toast('已保存，但列表刷新失败；请点击重新连接','warn'));
-    } catch (e) {
-      okBtn.disabled = false;
-      toast(e.message, 'error');
-    } finally {
-      saving = false; ta.readOnly = false; fileInput.disabled = false;
-      const fileButton = document.getElementById('auto-file-btn');
-      if (ta.isConnected && fileButton) fileButton.disabled = false;
-    }
-  };
-
-  ta.focus();
-}
+const resourceImports = WorkbenchResourceImport.create({
+  api: (path, options) => api(path, options), ui: WorkbenchUI,
+  openModal: (...args) => openModal(...args), closeModal: () => closeModal(), esc,
+  kinds: KINDS, formats: POOL_FORMAT, toast, dupNote,
+  refreshAfterCommit: (...args) => refreshAfterCommit(...args),
+  openLicenseImport: () => openLicenseImport(),
+});
+function openImportModal(kind) { return resourceImports.open(kind); }
+function openAutoImport() { return resourceImports.openAuto(); }
 
 /* ============ 资源选择弹窗 ============ */
 
 function openPicker(kind) {
   const conf = KINDS.find((k) => k.key === kind);
-  const picked = state.picked[kind];
-  const items = [...state.pools[kind]]
+  const picked = new Set(state.picked[kind]);
+  const items = state.pools[kind].map(item => item.linked_record_count && item.status === '未使用' ? { ...item, status: '已使用' } : item)
     .sort((a, b) => (a.status === '未使用' ? -1 : 1) - (b.status === '未使用' ? -1 : 1) || a.id - b.id);
 
+  const unavailable = item => kind === 'proxies' ? !WorkbenchProxyCapacity.remaining(item) : item.status !== '未使用';
   const mainVal = (it) =>
     kind === 'emails' ? `${it.user} · ${it.pass ? '有密码' : '无密码'}` :
     kind === 'cards' ? `${it.number} ${it.expiry}` :
     kind === 'licenses' ? it.name :
-    `${it.host}:${it.port} · ${it.sn || ''}`;
+    `${it.host}:${it.port} · 剩余 ${WorkbenchProxyCapacity.remaining(it)} 次 / 上限 ${WorkbenchProxyCapacity.limit(it)} 次`;
 
   openModal(`
     <div class="modal-head"><h3>选择${conf.label.replace('库', '')} <span class="dim" style="font-size:12px;font-weight:400">（多选，不选则自动分配）</span></h3><button class="modal-close" data-action="close-modal">✕</button></div>
     <div class="modal-body">
-      <input id="picker-q" placeholder="搜索…" style="width:100%">
+      <input id="picker-q" aria-label="搜索可选资源" placeholder="搜索…" style="width:100%">
       <div class="picker-list" id="picker-list">
         ${items
           .map(
-            (it) => `<label class="picker-item ${it.status !== '未使用' ? 'disabled' : ''}" data-val="${it.id}" data-text="${esc(mainVal(it))}">
-              <input type="checkbox" ${picked.has(it.id) ? 'checked' : ''} ${it.status !== '未使用' ? 'disabled' : ''}>
+            (it) => `<label class="picker-item ${unavailable(it) ? 'disabled' : ''}" data-val="${it.id}" data-text="${esc(mainVal(it))}">
+              <input type="checkbox" ${picked.has(it.id) ? 'checked' : ''} ${unavailable(it) ? 'disabled' : ''}>
               <span class="mono">${esc(mainVal(it))}</span>
               <span class="pill ${it.status === '未使用' ? 'pill-green' : it.status === '已使用' ? 'pill-blue' : 'pill-red'}"><span class="dot"></span>${it.status}</span>
             </label>`
@@ -1116,6 +1242,8 @@ function openPicker(kind) {
     countEl.textContent = 0;
   };
   document.getElementById('picker-ok').onclick = async () => {
+    const available = new Set(state.pools[kind].filter(item => kind === 'proxies' ? WorkbenchProxyCapacity.remaining(item) > 0 : item.status === '未使用' && !item.linked_record_count).map(item => item.id));
+    state.picked[kind] = new Set([...picked].filter(id => available.has(id)));
     closeModal();
     render();
   };
@@ -1136,7 +1264,7 @@ function openEditRecord(id) {
               : kind === 'cards' ? `${it.number} ${it.expiry}`
               : kind === 'licenses' ? it.name
               : `${it.host}:${it.port} ${it.sn || ''}`;
-            const disabled = it.id !== currentId && (it.status === '停用' || (kind !== 'proxies' && it.status !== '未使用'));
+            const disabled = it.id !== currentId && (kind === 'proxies' ? !WorkbenchProxyCapacity.remaining(it) : it.status !== '未使用');
             return `<option value="${it.id}" ${it.id === currentId ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${esc(label)}（${it.status}）</option>`;
           })
           .join('')
@@ -1158,7 +1286,7 @@ function openEditRecord(id) {
         </div>
         <div class="field col-6"><label>谷歌邮箱（更换后自动释放原邮箱）</label>${poolSelect('emails', r.email_id, 'email_id')}</div>
         <div class="field col-6"><label>代理</label>${poolSelect('proxies', r.proxy_id, 'proxy_id')}</div>
-        <div class="field col-6"><label>付款工具</label>${poolSelect('cards', r.card_id, 'card_id')}</div>
+        <div class="field col-6"><label>信用卡</label>${poolSelect('cards', r.card_id, 'card_id')}</div>
         <div class="field col-6"><label>营业执照</label>${poolSelect('licenses', r.license_id, 'license_id')}</div>
       </div>
     </div>
@@ -1171,7 +1299,7 @@ function openEditRecord(id) {
   const save = document.getElementById('edit-ok');
   save.onclick = async () => {
     if (save.disabled) return;
-    save.disabled = true;
+    WorkbenchUI.dialog.pending(save, true, '正在保存…');
     const form = document.getElementById('edit-form');
     const val = (n) => form.querySelector(`[name="${n}"]`).value;
     const body = {
@@ -1191,11 +1319,11 @@ function openEditRecord(id) {
       await api(`/api/records/${id}`, { method: 'PATCH', body });
       toast('✅ 已保存');
       if (form.isConnected) closeModal();
-      await refresh();
+      await refreshAfterCommit('修改已保存，但列表刷新失败；请重新连接，不要重复提交');
     } catch (e) {
-      toast(e.message, 'error');
+      WorkbenchUI.dialog.error(save, e.message);
     } finally {
-      save.disabled = false;
+      WorkbenchUI.dialog.pending(save, false);
     }
   };
 }
@@ -1258,51 +1386,106 @@ function openRestoreDialog() {
       <div class="license-upload">
         <strong>只恢复你自己的数据</strong>
         <p>恢复会覆盖当前账号下的资源与记录，不会影响其他成员。请选择本工作台导出的备份文件；恢复前建议先「导出备份」留一份当前数据。</p>
-        <input type="file" id="restore-file" accept=".json,application/json">
+        <input type="file" id="restore-file" aria-label="选择个人备份文件" accept=".json,application/json">
         <span id="restore-status" role="status">尚未选择文件</span>
       </div>
+      <label class="restore-confirm"><input type="checkbox" id="restore-confirm" disabled><span>我已核对备份文件，确认替换当前账号的数据</span></label>
     </div>
     <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-danger" id="restore-go" disabled>确认恢复</button></div>`);
   const input = document.getElementById('restore-file');
   const status = document.getElementById('restore-status');
   const go = document.getElementById('restore-go');
+  const confirmation = document.getElementById('restore-confirm');
   let parsed = null;
+  let revision = 0;
+  let saving = false;
+  confirmation.onchange = () => { go.disabled = !parsed || !confirmation.checked || saving; };
   input.onchange = async () => {
+    if (saving) return;
+    const current = ++revision;
     parsed = null;
     go.disabled = true;
+    confirmation.checked = false;
+    confirmation.disabled = true;
     const file = input.files[0];
     if (!file) { status.textContent = '尚未选择文件'; return; }
     if (file.size > 64 * 1024 * 1024) { status.textContent = '文件超过 64 MB，无法恢复'; input.value = ''; return; }
     try {
-      parsed = JSON.parse(await file.text());
-      if(parsed.format!=='adsworkbench-backup'||parsed.version!==2) throw new Error('Invalid backup format');
-      const records = Number(parsed.counts?.records)||0;
-      const licenses = Number(parsed.counts?.licenses)||0;
-      status.textContent = `已读取：记录 ${records} 条 · 营业执照 ${licenses} 条，确认后将覆盖当前账号数据`;
-      go.disabled = false;
+      const candidate = JSON.parse(await file.text());
+      if (current !== revision || !input.isConnected) return;
+      if(candidate?.format!=='adsworkbench-backup'||candidate.version!==2) throw new Error('Invalid backup format');
+      parsed = candidate;
+      status.textContent = `已选择：${file.name}。这是加密备份，内容与归属将在恢复时由服务端校验；勾选下方确认后可恢复。`;
+      confirmation.disabled = false;
     } catch {
-      status.textContent = '这个文件不是有效的备份（JSON 解析失败）';
+      if (current !== revision || !input.isConnected) return;
+      parsed = null;
+      status.textContent = '无法读取有效备份，请选择本工作台导出的 JSON 备份文件';
       input.value = '';
     }
   };
   go.onclick = async () => {
-    if (!parsed || go.disabled) return;
-    go.disabled = true;
-    go.textContent = '正在恢复…';
+    if (!parsed || go.disabled || !confirmation.checked || saving) return;
+    saving = true;
+    WorkbenchUI.dialog.pending(go, true, '正在恢复…');
     try {
       const result = await api('/api/backup/restore', { method: 'POST', body: parsed });
       toast(`恢复完成：记录 ${result.records} 条、营业执照 ${result.licenses} 条`);
       if (go.isConnected) closeModal();
-      await refresh();
+      await refreshAfterCommit('恢复已完成，但列表刷新失败；请重新连接，不要重复恢复');
     } catch (error) {
-      toast(error.message, 'error');
-      go.disabled = false;
-      go.textContent = '确认恢复';
+      WorkbenchUI.dialog.error(go, error.message);
+    } finally {
+      saving = false;
+      WorkbenchUI.dialog.pending(go, false);
     }
   };
 }
 
 /* ============ 事件 ============ */
+
+async function openExportDialog(format) {
+  if (format !== 'csv' && !await ensureSensitive('此导出包含邮箱和代理凭据，请安全保存文件。')) return;
+  const selected = [...state.sel];
+  const total = state.recordStats.total;
+  const currentSelected = state.records.filter(record => state.sel.has(record.id)).length;
+  const title = format === 'csv' ? '导出 CSV' : '导出 AdsPower TXT';
+  openModal(`<div class="modal-head"><h3>${title}</h3><button class="modal-close" data-action="close-modal">✕</button></div><div class="modal-body">
+    <fieldset class="export-options"><legend>选择导出范围</legend>
+      <label><input type="radio" name="export-scope" value="selected" ${selected.length ? 'checked' : 'disabled'}><span><b>所选 ${selected.length} 条</b><small>本页 ${currentSelected} 条，其他页或筛选外 ${selected.length - currentSelected} 条</small></span></label>
+      <label><input type="radio" name="export-scope" value="all" ${selected.length ? '' : 'checked'}><span><b>本人全部 ${total} 条记录</b><small>包含所有页面，当前搜索和状态筛选不会缩小这个范围</small></span></label>
+    </fieldset><p class="settings-hint">${format === 'csv' ? 'CSV 不包含密码、2FA、代理密码和身份证原文。' : 'AdsPower 文件包含邮箱与代理凭据，需要临时授权。请安全保管。'}</p><p class="field-error" id="export-error" role="alert" hidden></p>
+    </div><div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="export-confirm">确认导出</button></div>`);
+  const button = document.getElementById('export-confirm');
+  const signal = WorkbenchUI.dialog.signal();
+  button.onclick = async () => {
+    if (button.disabled) return;
+    const ids = document.querySelector('[name="export-scope"]:checked')?.value === 'selected' ? selected : [];
+    WorkbenchUI.busy(button, true, '正在导出…');
+    const epoch = state.sensitiveEpoch;
+    try {
+      if (format !== 'csv' && state.unlockedUntil <= Date.now()) throw new Error('敏感授权已过期，请关闭后重新导出');
+      const result = await api(`/api/export/${format}`, { method: 'POST', body: { ids }, signal: AbortSignal.any([signal, AbortSignal.timeout(60000)]) });
+      if (signal.aborted || !button.isConnected) return;
+      if (format !== 'csv' && (epoch !== state.sensitiveEpoch || state.unlockedUntil <= Date.now())) throw new Error('敏感授权已结束，请重新授权后导出');
+      closeModal();
+      download(format === 'csv' ? `记录_${todayKey().replace('.', '_')}.csv` : `adspower_${todayKey().replace('.', '_')}.txt`, result.text, format === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8');
+      toast(`已导出 ${result.count} 条${format === 'csv' ? ' CSV' : ' AdsPower 导入文件'}`);
+    } catch (error) {
+      if (signal.aborted || !button.isConnected) return;
+      const box = button.closest('.modal').querySelector('#export-error');
+      if (box) { box.hidden = false; box.textContent = error.message; }
+      else toast(error.message, 'error');
+    } finally { WorkbenchUI.busy(button, false); }
+  };
+}
+
+function focusPageHeading() {
+  const main = document.getElementById('main');
+  main.scrollTop = 0;
+  const heading = main.querySelector('h1');
+  if (heading) { heading.tabIndex = -1; heading.focus({ preventScroll: true }); }
+}
 
 document.addEventListener('click', async (e) => {
   const t = e.target.closest('[data-action]');
@@ -1329,8 +1512,27 @@ document.addEventListener('click', async (e) => {
 
   try {
     switch (action) {
+      case 'proxy-limits':
+        openProxyLimits(Number(t.dataset.id) || null);
+        break;
+      case 'workspace-commands':
+        openWorkspaceCommands();
+        break;
+      case 'create-section': {
+        const section = document.getElementById(t.dataset.target);
+        section?.scrollIntoView({ block: 'start', behavior: 'auto' });
+        const target = section?.querySelector('input, textarea, select, button, h3');
+        if (target) { if (target.matches('h3')) target.tabIndex = -1; target.focus({ preventScroll: true }); }
+        break;
+      }
       case 'retry-load':
-        await connect();
+        await connect({ manual: true });
+        break;
+      case 'settings-tab':
+        selectSettingsTab(t.dataset.tab);
+        break;
+      case 'retry-records':
+        await loadRecordsPage({ renderMode: 'table' });
         break;
       case 'desktop-backup': {
         const result = await window.desktop.backup();
@@ -1353,33 +1555,43 @@ document.addEventListener('click', async (e) => {
           state.poolQ = f.q; state.poolStatus = f.status; state.poolPage = f.page;
         }
         render();
+        focusPageHeading();
         break;
       }
       case 'jump-status':
         state.page = 'records'; state.rstatus = t.dataset.status; state.q = ''; state.recordPage = 1;
         render();
+        await loadRecordsPage({ renderMode: 'table' });
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
-      case 'recent-record':
-        state.q = state.records.find(r => r.id === Number(t.dataset.id))?.fingerprint || '';
+      case 'recent-record': {
+        const recent = state.recentRecords.find(r => r.id === Number(t.dataset.id));
+        state.q = recent?.fingerprint || '';
         state.rstatus = '全部'; state.recordPage = 1; state.page = 'records';
         render();
+        await loadRecordsPage({ renderMode: 'table' });
         document.querySelector('#rec-q')?.focus({preventScroll:true});
         break;
+      }
+      case 'reset-record-search':
       case 'clear-record-filter':
-        state.q = ''; state.rstatus = '全部'; state.recordPage = 1; render();
+        state.q = ''; state.rstatus = '全部'; state.recordPage = 1;
+        if (document.getElementById('rec-q')) document.getElementById('rec-q').value = '';
+        await loadRecordsPage({ renderMode: 'table' });
+        document.getElementById('rec-q')?.focus();
         break;
+      case 'reset-pool-search':
       case 'clear-pool-filter':
         state.poolQ = ''; state.poolStatus = '全部'; state.poolPage = 1;
         state.poolFilters[state.page] = {q:'',status:'全部',page:1};
         render();
         break;
       case 'modal-overlay': {
-        if (e.target === t) closeModal();
+        if (e.target === t && !document.querySelector('.modal[data-submitting]')) closeModal();
         break;
       }
       case 'close-modal':
-        closeModal();
+        if (!document.querySelector('.modal[data-submitting]')) closeModal();
         break;
       case 'toggle-reveal':
         if(state.reveal) await lockSensitive();
@@ -1387,6 +1599,10 @@ document.addEventListener('click', async (e) => {
         break;
       case 'my-audit':
         await showMyAudit();break;
+      case 'backup-tasks':
+        BackupTasks.open();break;
+      case 'check-integrity':
+        RecordIntegrity.open();break;
       case 'change-password':
         showChangePassword();break;
       case 'duplicate-audit':
@@ -1395,9 +1611,15 @@ document.addEventListener('click', async (e) => {
       case 'web-backup':
         // 走一次同源导航触发下载：Cookie 会自动带上，浏览器停留在当前页面
         if(!await ensureSensitive()) break;
+        const backupEpoch = state.sensitiveEpoch;
         const backupResponse=await fetch('/api/backup',{headers:{'x-workbench':'1'},signal:AbortSignal.timeout(60000)});
-        if(!backupResponse.ok) throw new Error('备份导出失败，请重新解锁后重试');
-        download('AdsWorkbench-'+todayKey()+'.json',await backupResponse.text(),'application/json');
+        if(!backupResponse.ok) {
+          const detail = await backupResponse.json().catch(() => ({}));
+          throw new Error(detail.message || detail.error || '备份导出失败，请重新解锁后重试');
+        }
+        const backupText = await backupResponse.text();
+        if (backupEpoch !== state.sensitiveEpoch || state.unlockedUntil <= Date.now()) throw new Error('敏感授权已结束，请重新导出备份');
+        download('AdsWorkbench-'+todayKey()+'.json',backupText,'application/json');
         toast('正在导出备份…');
         break;
       case 'web-restore':
@@ -1411,6 +1633,7 @@ document.addEventListener('click', async (e) => {
         location.replace('/login.html');
         break;
       }
+      case 'open-empty-import':
       case 'open-import':
         openImportModal(t.dataset.kind);
         break;
@@ -1420,13 +1643,30 @@ document.addEventListener('click', async (e) => {
       case 'open-picker':
         openPicker(t.dataset.kind);
         break;
+      case 'record-setup':
+        openAccountSetup(Number(t.dataset.id));
+        break;
       case 'create':
-        await doCreate();
+        openCreateReview();
+        break;
+      case 'created-records':
+        closeModal();
+        state.page = 'records'; state.q = ''; state.rstatus = '全部'; state.recordPage = 1; state.recordSort = 'id_desc';
+        if (state.syncError) await connect();
+        else await loadRecordsPage({ renderMode: 'full' });
+        focusPageHeading();
         break;
       case 'rstatus':
         state.rstatus = t.dataset.v;
         state.recordPage = 1;
-        render();
+        await loadRecordsPage({ renderMode: 'table' });
+        break;
+      case 'clear-selection':
+        state.sel.clear();
+        refreshSelectionUI();
+        break;
+      case 'toggle-density':
+        setTableDensity(state.tableDensity === 'compact' ? 'comfortable' : 'compact');
         break;
       case 'reset-cols':
         state.hiddenCols = [];
@@ -1440,42 +1680,50 @@ document.addEventListener('click', async (e) => {
         render();
         break;
       case 'table-page':
-        if (t.dataset.kind === 'records') { state.recordPage = Number(t.dataset.page); renderRecordsTableInto(); }
-        else { state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto(); }
+        if (t.dataset.kind === 'records') {
+          if (state.recordsPhase !== 'ready') break;
+          const restoreFocus = document.activeElement === t;
+          state.recordPage = Number(t.dataset.page);
+          if (!await loadRecordsPage({ renderMode: 'table' })) break;
+          if (restoreFocus && state.page === 'records' && !document.querySelector('#modal-root .modal')
+              && (document.activeElement === document.body || document.activeElement === t)) {
+            const next = document.querySelector(`#recordsPanel [data-action="table-page"][data-direction="${t.dataset.direction}"]:not(:disabled)`)
+              || document.querySelector('#recordsPanel [data-action="table-page"]:not(:disabled)')
+              || document.querySelector('#recordsPanel .table-wrap');
+            next?.focus({ preventScroll: true });
+          }
+        } else {
+          state.poolPage = Number(t.dataset.page); state.poolFilters[state.page].page = state.poolPage; renderPoolTableInto();
+        }
         break;
       case 'export-adspower': {
-        if(!await ensureSensitive('此导出包含邮箱和代理凭据，请安全保存文件。')) break;
-        const ids = [...state.sel];
-        const res = await api('/api/export/adspower', { method: 'POST', body: { ids } });
-        download(`adspower_${todayKey().replace('.', '_')}.txt`, res.text);
-        toast(`✅ 已导出 ${res.count} 条 AdsPower 导入文件`);
+        if (state.recordsPhase === 'ready') await openExportDialog('adspower');
         break;
       }
       case 'export-csv': {
-        const ids = [...state.sel];
-        const res = await api('/api/export/csv', { method: 'POST', body: { ids } });
-        download(`记录_${todayKey().replace('.', '_')}.csv`, res.text, 'text/csv;charset=utf-8');
-        toast(`✅ 已导出 ${res.count} 条 CSV`);
+        if (state.recordsPhase === 'ready') await openExportDialog('csv');
         break;
       }
       case 'delete-selected': {
+        if (state.recordsPhase !== 'ready') break;
         const ids = [...state.sel];
         if (!ids.length) return;
-        confirmModal('删除所选记录', `将删除 <b>${ids.length}</b> 条记录，不再被其他记录使用的资源会自动释放回「未使用」。`, async () => {
+        const onPage = state.records.filter(record => state.sel.has(record.id)).length;
+        confirmModal('删除所选记录', `将删除 <b>${ids.length}</b> 条记录：本页 <b>${onPage}</b> 条，其他页或筛选外 <b>${ids.length - onPage}</b> 条。<br>不再被其他记录使用的资源会自动释放回「未使用」。`, async () => {
           await api('/api/records/batch-delete', { method: 'POST', body: { ids } });
           state.sel.clear();
           toast('已删除');
-          await refresh();
+          await refreshAfterCommit('记录已删除，但列表刷新失败；请重新连接，不要重复删除');
         });
         break;
       }
       case 'del-record': {
         const id = Number(t.dataset.id);
-        confirmModal('删除记录', '删除后关联的邮箱 / 付款工具 / 营业执照会自动释放回「未使用」。', async () => {
+        confirmModal('删除记录', '删除后关联的邮箱 / 信用卡 / 营业执照会自动释放回「未使用」。', async () => {
           await api(`/api/records/${id}`, { method: 'DELETE' });
           state.sel.delete(id);
           toast('已删除');
-          await refresh();
+          await refreshAfterCommit('记录已删除，但列表刷新失败；请重新连接，不要重复删除');
         });
         break;
       }
@@ -1507,7 +1755,7 @@ document.addEventListener('click', async (e) => {
         confirmModal('删除资源', '请先解除关联后再删除。删除后的原 PDF 仍可从历史完整备份恢复。', async () => {
           await api(`/api/pool/${kind}/${id}`, { method: 'DELETE' });
           toast('已删除');
-          await refresh();
+          await refreshAfterCommit('资源已删除，但列表刷新失败；请重新连接，不要重复删除');
         });
         break;
       }
@@ -1518,19 +1766,29 @@ document.addEventListener('click', async (e) => {
 });
 
 document.addEventListener('change', async (e) => {
+  if (e.target.id === 'rec-sort' || e.target.id === 'rec-limit') {
+    if (e.target.id === 'rec-sort') state.recordSort = e.target.value;
+    else state.recordLimit = Number(e.target.value);
+    state.recordPage = 1;
+    try { await loadRecordsPage({ renderMode: 'table' }); }
+    catch (error) { toast(error.message, 'error'); }
+    return;
+  }
   const t = e.target.closest('[data-action]');
   if (!t) return;
   const action = t.dataset.action;
   if (action === 'pool-item-status' || action === 'rec-status') t.disabled = true;
   try {
     if (action === 'pool-item-status') {
-      await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
+      const item = state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id));
+      await api(`/api/pool/${t.dataset.kind}/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: item?.version } });
       toast('状态已更新');
-      await refresh();
+      await refreshAfterCommit('状态已更新，但列表刷新失败；请重新连接，不要重复修改');
     } else if (action === 'rec-status') {
-      await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: (action==='rec-status' ? state.records.find(r=>r.id===Number(t.dataset.id)) : state.pools[t.dataset.kind].find(r=>r.id===Number(t.dataset.id)))?.version } });
+      const record = state.records.find(r=>r.id===Number(t.dataset.id));
+      await api(`/api/records/${t.dataset.id}`, { method: 'PATCH', body: { status: t.value, version: record?.version } });
       toast('状态已更新');
-      await refresh();
+      await refreshAfterCommit('状态已更新，但列表刷新失败；请重新连接，不要重复修改');
     } else if (action === 'toggle-col') {
       const key = t.dataset.col;
       if (RECORD_COLUMNS.some((column) => column.key === key)) {
@@ -1540,6 +1798,8 @@ document.addEventListener('change', async (e) => {
         applyColumnVisibility();
         const counter = document.querySelector('.col-menu summary .dim');
         if (counter) counter.textContent = `${RECORD_COLUMNS.length - state.hiddenCols.length}/${RECORD_COLUMNS.length}`;
+        const reset = document.querySelector('[data-action="reset-cols"]');
+        if (reset) reset.disabled = !state.hiddenCols.length;
       }
     } else if (action === 'sel-row') {
       const id = Number(t.dataset.id);
@@ -1547,7 +1807,7 @@ document.addEventListener('change', async (e) => {
       else state.sel.delete(id);
       refreshSelectionUI();
     } else if (action === 'sel-all') {
-      const list = paginate(getFilteredRecords(), 'records').items;
+      const list = state.records;
       if (t.checked) list.forEach((r) => state.sel.add(r.id));
       else list.forEach((r) => state.sel.delete(r.id));
       refreshSelectionUI();
@@ -1561,27 +1821,42 @@ document.addEventListener('change', async (e) => {
   }
 });
 
+// A WeakSet follows the actual input node, so a replaced page cannot leave a
+// global composition flag stuck. compositionend + the final input share a timer.
+const composingRecordInputs = new WeakSet();
+document.addEventListener('compositionstart', event => {
+  if (event.target.id !== 'rec-q') return;
+  composingRecordInputs.add(event.target);
+  invalidateRecordQuery({ reason: 'composition' });
+});
+document.addEventListener('compositionend', event => {
+  if (event.target.id !== 'rec-q') return;
+  composingRecordInputs.delete(event.target);
+  if (!event.target.isConnected) return;
+  state.q = event.target.value;
+  state.recordPage = 1;
+  recordQuery.schedule({ renderMode: 'table' });
+});
+
 document.addEventListener('input', (e) => {
   if (e.target.id === 'rec-q') {
     state.q = e.target.value;
     state.recordPage = 1;
-    const el = document.getElementById('rec-q');
-    renderRecordsTableInto(e.target);
-    el.setSelectionRange(el.value.length, el.value.length);
+    if (e.isComposing || composingRecordInputs.has(e.target)) {
+      invalidateRecordQuery({ reason: 'composition' });
+    } else recordQuery.schedule({ renderMode: 'table' });
   } else if (e.target.id === 'pool-q') {
     state.poolQ = e.target.value;
     state.poolPage = 1;
     state.poolFilters[state.page] = {q:state.poolQ,status:state.poolStatus,page:1};
-    const el = e.target;
     renderPoolTableInto();
-    el.setSelectionRange(el.value.length, el.value.length);
+    // 搜索框未被重建，保留原有光标和选区。
   } else if (e.target.id?.startsWith('f-')) {
     const key = e.target.id.replace('f-', '');
     const map = { country: 'country', product: 'product', start: 'start_seq', ipreg: 'ip_reg_time', idcard: 'id_card', domains: 'domains' };
     if (map[key]) state.form[map[key]] = e.target.value;
+    if (key === 'start') state.startSeqAutomatic = !e.target.value.trim();
     if (['country', 'product', 'domains', 'start'].includes(key)) {
-      const btn = document.querySelector('[data-action="create"]');
-      const preview = document.querySelector('.create-preview');
       // 轻量更新预览与按钮状态，不重建输入框
       updateCreatePreview();
     }
@@ -1591,45 +1866,47 @@ document.addEventListener('input', (e) => {
 function updateCreatePreview() {
   const preview = document.querySelector('.create-preview');
   if (!preview) return;
-  const domains = state.form.domains.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  const draft = createDraft();
+  const domains = draft.body.domains;
   const count = domains.length || 0;
   const fp = parseFpStart(state.form.start_seq);
   const fpPreview = count > 0
     ? (count === 1 ? `${fp.prefix}${fp.seq}` : `${fp.prefix}${fp.seq} ~ ${fp.prefix}${fp.seq + count - 1}`)
     : `${fp.prefix}${fp.seq}`;
-  const avail = { emails: poolCount('emails'), cards: poolCount('cards') };
   preview.querySelector('.fp').textContent = fpPreview;
   preview.querySelector('span > b').textContent = count;
   const btn = preview.querySelector('[data-action="create"]');
   btn.disabled = count === 0 || count > 500 || state.creating;
-  btn.textContent = state.creating ? '创建中' : count > 0 ? `立即创建 ${count} 条` : '立即创建';
-  preview.querySelectorAll('.warn').forEach((w) => w.remove());
-  const warns = [];
-  if (count > avail.emails) warns.push(`⚠ 邮箱仅剩 ${avail.emails} 条`);
-  if (count > avail.cards) warns.push(`⚠ 付款工具仅剩 ${avail.cards} 张`);
-  const span = preview.querySelector('span');
-  warns.forEach((w) => {
-    const el = document.createElement('span');
-    el.className = 'warn';
-    el.textContent = ' ' + w;
-    span.appendChild(el);
-  });
+  btn.textContent = state.creating ? '创建中' : count > 0 ? `核对并创建 ${count} 条` : '核对并创建';
+  showCreateValidation(domains.length ? draft : { error: '' });
+  const checks = document.getElementById('creation-resource-checks');
+  if (checks) checks.innerHTML = renderCreateReadiness();
+  updateCreateProgress();
 }
 
 function renderRecordsTableInto(input) {
   const reset=document.querySelector('[data-action="clear-record-filter"]');
   if(reset) reset.disabled=!state.q&&state.rstatus==='全部';
   // 只刷新表格部分，保持搜索框焦点
-  const panels = document.querySelectorAll('#main .panel');
-  const tablePanel = panels[panels.length - 1];
+  const tablePanel = document.getElementById('recordsPanel');
   if (!tablePanel) return;
+  const restoreView = WorkbenchUI.preserveView(tablePanel);
+  const scrollLeft = tablePanel.querySelector('.table-wrap')?.scrollLeft || 0;
   const old = tablePanel.querySelector('.table-wrap, .empty');
   if (old) old.remove();
   tablePanel.querySelector('.table-pagination')?.remove();
+  tablePanel.querySelector('.table-help')?.remove();
   tablePanel.insertAdjacentHTML('beforeend', renderRecordsTable(getFilteredRecords()));
+  const wrap = tablePanel.querySelector('.table-wrap');
+  if (wrap) wrap.scrollLeft = scrollLeft;
+  const count = tablePanel.querySelector('.overview-title-count');
+  if (count) count.textContent = `${state.recordFilteredTotal} / ${state.recordStats.total} 条`;
   const selCount = tablePanel.querySelector('.sel-count');
   if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
   refreshSelectionUI();
+  updateRecordsChrome();
+  bindLabels();
+  restoreView();
 }
 
 // 勾选/全选后只刷新勾选相关 UI（行高亮、全选框、计数、删除按钮），不重建整页
@@ -1644,14 +1921,20 @@ function refreshSelectionUI() {
   });
   const allCb = document.querySelector('#main thead input[data-action="sel-all"]');
   if (allCb) {
-    const visible = paginate(getFilteredRecords(), 'records').items;
+    const visible = state.records;
     allCb.checked = visible.length > 0 && visible.every((r) => state.sel.has(r.id));
     allCb.indeterminate = visible.some((r) => state.sel.has(r.id)) && !allCb.checked;
   }
   const selCount = document.querySelector('#main .sel-count');
   if (selCount) selCount.innerHTML = `已选 <b>${state.sel.size}</b> 条`;
   const delBtn = document.querySelector('[data-action="delete-selected"]');
-  if (delBtn) delBtn.disabled = state.sel.size === 0;
+  if (delBtn) delBtn.disabled = state.sel.size === 0 || state.recordsPhase !== 'ready';
+  const bar = document.getElementById('selectionBar');
+  if (bar) {
+    bar.hidden = !state.sel.size;
+    const onPage = state.records.filter(record => state.sel.has(record.id)).length;
+    bar.querySelector('.selection-scope').textContent = `已选共 ${state.sel.size} 条：本页 ${onPage} 条，其他页或筛选外 ${state.sel.size - onPage} 条。翻页和筛选会保留选择。`;
+  }
   const label = state.sel.size ? `所选 ${state.sel.size} 条` : '全部';
   const csvButton = document.querySelector('[data-action="export-csv"]');
   const adspowerButton = document.querySelector('[data-action="export-adspower"]');
@@ -1660,74 +1943,91 @@ function refreshSelectionUI() {
 }
 
 document.addEventListener('change', (e) => {
+  if (e.target.id === 'f-require-complete') { state.form.require_complete = e.target.checked; updateCreatePreview(); return; }
+  if (e.target.matches('input[name="settings-density"]')) {
+    setTableDensity(e.target.value);
+    return;
+  }
   if (e.target.id === 'f-proxy') {
     state.form.proxy_id = e.target.value;
     return;
   }
   if (e.target.id === 'f-proxy-mode') {
     state.form.proxy_mode = e.target.value;
+    document.querySelector('[data-action="open-picker"][data-kind="proxies"]').hidden = e.target.value !== 'auto';
     const extra = document.getElementById('proxy-mode-extra');
     if (extra) {
       const proxyOptions = [`<option value="">共享上次使用的代理</option>`]
         .concat(
           state.pools.proxies
             .map(
-              (p) => `<option value="${p.id}" ${String(state.form.proxy_id) === String(p.id) ? 'selected' : ''} ${p.status === '停用' ? 'disabled' : ''}>${esc(
-                `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（${p.status}）`
+              (p) => `<option value="${p.id}" ${String(state.form.proxy_id) === String(p.id) ? 'selected' : ''} ${!WorkbenchProxyCapacity.remaining(p) ? 'disabled' : ''}>${esc(
+                `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（剩余 ${WorkbenchProxyCapacity.remaining(p)} 次）`
               )}</option>`
             )
             .join('')
         )
         .join('');
       if (state.form.proxy_mode === 'shared') {
-        extra.innerHTML = `<select id="f-proxy">${proxyOptions}</select>`;
+        extra.innerHTML = `<select id="f-proxy" aria-label="共享代理">${proxyOptions}</select>`;
       } else if (state.form.proxy_mode === 'auto') {
-        extra.innerHTML = `<span class="mini">每条记录从代理库按顺序取一个 · 可用 <b>${poolCount('proxies')}</b> 条</span>`;
+        extra.innerHTML = `<span class="mini">按 IP 次数上限自动分配 · 剩余 <b>${proxySlots()}</b> 次</span>`;
       } else {
         extra.innerHTML = `<span class="mini">记录中代理字段留空</span>`;
       }
     }
+    updateCreatePreview();
   }
 });
+
+document.addEventListener('toggle', event => { if (event.target.id === 'createAdvanced') state.createAdvanced = event.target.open; }, true);
 
 /* ============ 启动 ============ */
 
 let connecting = false;
 
-async function connect() {
+async function connect({ manual = false } = {}) {
   if (connecting) return;
   connecting = true;
+  const opener = document.activeElement;
+  const startingPage = state.page;
+  const startingTab = state.settingsTab;
   const main = document.getElementById('main');
-  const status = document.getElementById('connectionStatus');
-  if (status) { status.textContent = '正在连接…'; status.className = 'connection-status'; }
+  state.connectionPhase = state.loaded ? 'refreshing' : 'loading';
   if (!state.loaded) main.innerHTML = '<section class="connection-panel" role="status"><span class="connection-spinner" aria-hidden="true"></span><h1>正在打开工作台</h1><p>正在读取你的记录和资源</p></section>';
-  const retry = document.querySelector('[data-action="retry-load"]');
-  if (retry) { retry.disabled = true; retry.textContent = '正在连接…'; }
+  renderConnectionState();
   try {
-    await refresh();
+    const updated = await refresh();
+    if (updated && manual && state.page !== 'settings') toast('数据已更新');
   } catch (error) {
-    if (status) { status.textContent = '连接未完成'; status.className = 'connection-status disconnected'; }
+    state.connectionPhase = 'error';
     // Keep existing records and form input visible if a later refresh fails.
-    if (state.loaded) toast(error.message, 'error');
-    else main.innerHTML = `<section class="connection-panel" role="alert"><span class="empty-ico">⚠</span><h1>暂时无法打开工作台</h1><p>${esc(error.message)}</p><button class="btn btn-primary" data-action="retry-load">重新连接</button></section>`;
+    if (state.loaded) { state.syncError = error.message; renderSyncNotice(); }
+    else main.innerHTML = `<section class="connection-panel" role="alert"><span class="empty-ico">⚠</span><h1>暂时无法打开工作台</h1><p>${esc(error.message)}</p><button class="btn btn-primary" data-action="retry-load">重试</button></section>`;
   } finally {
     connecting = false;
-    const retry = document.querySelector('[data-action="retry-load"]');
-    if (retry) { retry.disabled = false; retry.textContent = '重新连接'; }
+    // A superseded refresh leaves the newer query in charge; never strand controls.
+    if (state.loaded && state.connectionPhase === 'refreshing') state.connectionPhase = state.syncError ? 'error' : 'ready';
+    renderConnectionState();
     document.body.classList.remove('boot');
+    if (opener?.id && document.activeElement === document.body && state.page === startingPage && state.settingsTab === startingTab && !document.querySelector('#modal-root .modal')) {
+      const replacement = document.getElementById(opener.id);
+      if (replacement && !replacement.disabled && replacement.getClientRects().length) replacement.focus({ preventScroll: true });
+    }
   }
 }
 
-function bindLabels() {
-  document.querySelectorAll('.field').forEach((field) => {
-    const label = field.querySelector('label');
-    const input = field.querySelector('input,select,textarea');
-    if (input && !input.id && input.name) input.id = `${field.closest('#modal-root') ? 'modal' : 'main'}-${input.name}`;
-    if (label && input) label.htmlFor = input.id;
-  });
-}
+function bindLabels() { WorkbenchUI.enhance(); }
 new MutationObserver(bindLabels).observe(document.getElementById('main'), { childList: true, subtree: true });
 new MutationObserver(bindLabels).observe(document.getElementById('modal-root'), { childList: true, subtree: true });
+document.addEventListener('toggle', event => {
+  if (event.target.id === 'settingsAdvanced' && state.page === 'settings') state.settingsAdvanced = event.target.open;
+  if (event.target.matches('.col-menu[open]')) WorkbenchUI.positionMenu(event.target);
+}, true);
+document.addEventListener('pointerdown', event => {
+  document.querySelectorAll('.col-menu[open]').forEach(menu => { if (!menu.contains(event.target)) menu.open = false; });
+});
+window.addEventListener('resize', () => document.querySelectorAll('.col-menu[open]').forEach(WorkbenchUI.positionMenu));
 
 if (window.desktop) {
   document.getElementById('desktopTools').hidden = false;
@@ -1739,9 +2039,59 @@ if (window.desktop) {
   }).catch(() => {});
 }
 document.addEventListener('keydown', (event) => {
+  const modalOpen = Boolean(document.querySelector('#modal-root .modal'));
+  if (!modalOpen && event.target.matches('.settings-tabs [role="tab"]') && ['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {
+    event.preventDefault();
+    const keys = ['general', 'security', 'data'];
+    const index = keys.indexOf(state.settingsTab);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? 2 : (index + (event.key === 'ArrowRight' ? 1 : -1) + keys.length) % keys.length;
+    selectSettingsTab(keys[next], true);
+    return;
+  }
+  if (!modalOpen && !event.isComposing && !event.repeat && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    if (event.shiftKey) { event.preventDefault(); openWorkspaceCommands(); return; }
+    const search = document.querySelector('.page-records #rec-q, #pool-q');
+    if (search) { event.preventDefault(); search.focus(); search.select(); }
+    else { event.preventDefault(); openWorkspaceCommands(); }
+  }
+  if (!modalOpen && event.key === 'Escape') {
+    document.querySelectorAll('.col-menu[open]').forEach(menu => { menu.open = false; menu.querySelector('summary')?.focus(); });
+  }
+  if (['Enter', ' '].includes(event.key) && event.target.matches('[role="button"][data-copy], [role="button"][data-action]')) {
+    event.preventDefault(); event.target.click();
+  }
   if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'r') {
     event.preventDefault();
-    connect();
+    if (!modalOpen && !event.repeat) connect({ manual: true });
   }
 });
+function openProxyLimits(id) {
+  const items = id ? state.pools.proxies.filter(item => item.id === id) : paginate(getFilteredPool('proxies'), 'pools').items;
+  if (!items.length) { toast('请先导入或筛选出 IP', 'error'); return; }
+  const minimum = Math.max(1, ...items.map(item => Number(item.linked_record_count || 0)));
+  const initial = id ? WorkbenchProxyCapacity.limit(items[0]) : Math.max(3, minimum);
+  openModal(`<div class="modal-head"><div><span class="license-eyebrow">IP 分配规则</span><h3>${id ? '设置使用次数' : '批量设置次数'}</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <form id="proxy-limit-form"><div class="modal-body proxy-limit-body"><p>${id ? `IP：${esc(items[0].host)}:${esc(items[0].port)}` : `仅修改当前筛选结果的当前页，共 ${items.length} 个 IP。`}</p>
+    <label for="proxy-usage-limit">每个 IP 最多关联记录数</label><div class="proxy-limit-presets" role="group" aria-label="常用使用次数">${[1,3,5].map(value => `<button type="button" class="btn btn-ghost" data-limit="${value}" aria-pressed="${initial === value}" ${value < minimum ? 'disabled' : ''}>${value} 次</button>`).join('')}</div>
+    <div class="proxy-limit-input"><input id="proxy-usage-limit" type="number" min="${minimum}" max="100000" step="1" required value="${initial}" inputmode="numeric" aria-describedby="proxy-limit-help"><span>次 / IP</span></div>
+    <p id="proxy-limit-help" class="dim">按当前关联记录计数，解除关联后释放次数。停用 IP 不参与分配。${minimum > 1 ? `当前至少需要保留 ${minimum} 次。` : '可以输入 1 到 100000 的整数。'}</p><p id="proxy-limit-error" role="alert"></p></div>
+    <div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="close-modal">取消</button><span class="grow"></span><button type="submit" class="btn btn-primary">保存${id ? '' : '当前页'}</button></div></form>`);
+  const form = document.getElementById('proxy-limit-form'), input = document.getElementById('proxy-usage-limit');
+  const paint = () => form.querySelectorAll('[data-limit]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.limit) === input.valueAsNumber)));
+  form.querySelectorAll('[data-limit]').forEach(button => button.onclick = () => { input.value = button.dataset.limit; paint(); input.focus(); });
+  input.oninput = paint;
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    const submit = form.querySelector('[type="submit"]');
+    WorkbenchUI.dialog.pending(submit, true, '正在保存…');
+    try {
+      await api('/api/proxies/usage-limits', { method: 'POST', body: { items: items.map(item => ({ id: item.id, version: item.version })), usage_limit: input.valueAsNumber } });
+      if (!form.isConnected) return;
+      WorkbenchUI.dialog.pending(submit, false);
+      closeModal(); await refreshAfterCommit('IP 次数已保存，列表刷新失败，请重新连接'); render(); toast(`已更新 ${items.length} 个 IP 的使用次数`);
+    } catch (error) { if (!form.isConnected) return; WorkbenchUI.dialog.pending(submit, false); document.getElementById('proxy-limit-error').textContent = error.message; }
+  };
+}
+
 connect();

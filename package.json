@@ -7,16 +7,32 @@
     "start": "node server.js",
     "desktop": "electron .",
     "test": "node --test --test-concurrency=1 tests/*.test.js",
-    "build:win": "electron-builder --win --x64",
-    "build:dir": "electron-builder --win --x64 --dir",
+    "build:win": "electron-builder --win --x64 --publish never",
+    "build:dir": "electron-builder --win --x64 --dir --publish never",
     "test:desktop": "node scripts/desktop-smoke.cjs",
     "test:desktop:remote": "node scripts/remote-smoke.cjs",
-    "backup:check": "node scripts/backup.cjs verify"
+    "test:round73": "node scripts/round73-ui.cjs",
+    "backup:check": "node scripts/backup.cjs verify",
+    "test:f15": "node scripts/f15-ui.cjs",
+    "test:design": "node scripts/design-foundations-ui.cjs",
+    "test:ux": "node scripts/workbench-ux-ui.cjs",
+    "test:backup-ui": "node scripts/backup-tasks-ui.cjs",
+    "build:win:from-dir": "electron-builder --win --x64 --prepackaged dist/win-unpacked --publish never",
+    "build:viewer": "node scripts/build-viewer.cjs",
+    "prestart": "npm run build:viewer",
+    "pretest": "npm run build:viewer",
+    "predesktop": "npm run build:viewer",
+    "prebuild:win": "npm run build:viewer",
+    "prebuild:dir": "npm run build:viewer",
+    "test:workspace": "node scripts/workspace-web-ui.cjs"
   },
   "engines": {
     "node": ">=22.16.0"
   },
   "dependencies": {
+    "@file-viewer/renderer-pdf": "3.2.2",
+    "@file-viewer/web": "3.2.2",
+    "esbuild": "0.25.12",
     "fastify": "^5.2.0",
     "pdfjs-dist": "^6.4.299"
   },

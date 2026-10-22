@@ -193,7 +193,7 @@ test('CVR 相同即判重（即使公司名不同）', async () => {
     body: { items: [{ name: 'Totally Different Name ApS', cvr: 'DK-11111111' }] },
   });
   assert.equal(res.status, 409);
-  assert.match(res.body.error, /CVR/);
+  assert.match(res.body.error, /(?:CVR|注册号)/);
 });
 
 test('地址相同即判重', async () => {

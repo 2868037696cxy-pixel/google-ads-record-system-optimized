@@ -31,6 +31,9 @@ const { openDatabase, transaction } = require('./lib/db');
 const store = require('./lib/store');
 const auth = require('./lib/auth');
 const dedup = require('./lib/dedup');
+const licenseIdentifiers = require('./lib/license-identifiers');
+const { SNAP } = require('./lib/resource-snapshots');
+const recordIntegrity = require('./lib/record-integrity');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
@@ -57,12 +60,28 @@ const STATUSES = store.STATUSES;
 const RECORD_STATUSES = store.RECORD_STATUSES;
 
 const db = openDatabase(DB_FILE);
+const personalJobs = require('./lib/personal-backup-jobs')({ db, databaseFile: DB_FILE, directory: path.join(DATA_DIR, 'backup-tasks') });
 
 /** 抛出带 400 状态的错误；Fastify 会据此返回 400 与中文提示。 */
 function reply400(msg) {
   const err = new Error(msg);
   err.statusCode = 400;
   throw err;
+}
+
+function strictIdList(raw, { field = 'ids', max = 5000 } = {}) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) return reply400(`${field} 必须是数组`);
+  if (raw.length > max) return reply400(`${field} 单次最多 ${max} 个`);
+  if (raw.some((id) => !Number.isSafeInteger(id) || id < 1)) return reply400(`${field} 只能包含正整数编号`);
+  return [...new Set(raw)];
+}
+
+function strictIdParam(raw, label = '记录编号') {
+  if (typeof raw !== 'string' || !/^[1-9]\d*$/.test(raw)) return reply400(`${label}无效`);
+  const id = Number(raw);
+  if (!Number.isSafeInteger(id)) return reply400(`${label}无效`);
+  return id;
 }
 
 /** 北京时间字符串，格式与旧版一致，避免前端与导出格式变化。 */
@@ -524,13 +543,21 @@ function decodePdf(base64) {
 }
 
 function parseCertificate(text) {
+  const native = licenseIdentifiers.businessIdentifier(text);
+  if (native.identity && !/certifies and attests that:/i.test(text)) {
+    const structured = parseLicenses(text);
+    const first = structured.length === 1 ? structured[0] : {};
+    const name = licenseIdentifiers.businessName(text) || first.name || '';
+    return [{ ...first, ...licenseIdentifiers.businessFields(text), name, legal_name: first.legal_name || name, ...native.identity }];
+  }
+  if (native.ambiguous) return [];
   const lines = String(text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   const start = lines.findIndex((line) => /certifies and attests that:/i.test(line));
   if (start >= 0) {
     const name = lines[start + 1] || '';
     const address = lines[start + 2] || '';
     const city = (lines[start + 3] || '').match(/^(?:DK-)?(\d{4})\s+(.+)$/);
-    if (name && city) return [{ name, legal_name: name, address, apt: '', zip: city[1], city: city[2], type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '' }];
+    if (name && city) return [{ name, legal_name: name, address, apt: '', zip: city[1], city: city[2], type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '', jurisdiction: 'DK', registration_type: 'CVR' }];
   }
   const structured = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(text);
   return structured ? parseLicenses(text) : [];
@@ -548,19 +575,33 @@ const LIC_LABELS = {
   apt: '公寓|套房|门牌号|(?:apt|suite|unit)\\b',
   zip: '邮编|(?:postal\\s*code|zip\\s*code|zip)',
   city: '市(?:/区)?|城市|(?:city|town|municipality)',
+  jurisdiction: '注册国家(?:/地区)?|注册地区|登记地区|司法辖区|(?:registration\\s+)?jurisdiction|country\\s+of\\s+registration',
+  regtype: '注册号类型|编号类型|登记号类型|registration\\s*(?:number\\s*)?type|identifier\\s*type',
+  regauthority: '登记机关|注册机关|登记机构|注册机构|registration\\s*(?:authority|registry)|register',
+  cvr: '公司注册号|企业注册号|商业注册号|注册号|登记号|统一社会信用代码|CNPJ|OIB|CVR(?:[\\s.-]*(?:number|nr\\.?|no\\.?|注册号))?|(?:company\\s+|business\\s+)?registration\\s*(?:number|no\\.?|nr\\.?)',
   type: '资料类型|(?:entity|business|organization)\\s*type|类型|type',
 };
 const LIC_STOP = Object.values(LIC_LABELS).join('|');
 
 function licGrab(t, labels) {
-  const re = new RegExp(`(?:${labels})\\s*[:：=]\\s*(.*?)(?=[，,;；、\\s]*(?:${LIC_STOP})\\s*[:：=]|$)`, 'i');
+  const re = new RegExp(`(?:^|[，,;；、\\s])(?:${labels})\\s*[:：=]\\s*(.*?)(?=[，,;；、\\s]+(?:${LIC_STOP})\\s*[:：=]|$)`, 'i');
   const m = t.match(re);
   return m ? m[1].trim().replace(/^["'「」『』【】]+|["'「」『』【】]+$/g, '') : '';
 }
 
 function parseLicenses(text) {
+  if (text != null && typeof text !== 'string') return reply400('待解析内容必须为文本');
   const raw = String(text || '').trim();
   if (!raw) return [];
+  const native = licenseIdentifiers.businessIdentifier(raw);
+  if (native.identity) {
+    const flat = raw.replace(/\s+/g, ' ');
+    const fields = licenseIdentifiers.businessFields(raw);
+    for (const [field, label] of Object.entries({ address: 'address', apt: 'apt', zip: 'zip', city: 'city', registration_authority: 'regauthority' })) fields[field] ||= licGrab(flat, LIC_LABELS[label]);
+    const name = fields.name || licGrab(flat, LIC_LABELS.name) || licGrab(flat, LIC_LABELS.legal) || '';
+    return [{ ...fields, name, legal_name: licGrab(flat, LIC_LABELS.legal) || name, ...native.identity }];
+  }
+  if (native.ambiguous) return [];
 
   // 检测是否为带标签的结构化文本
   const hasLabel = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(raw);
@@ -570,6 +611,12 @@ function parseLicenses(text) {
     const flat = raw.replace(/\r?\n+/g, ' ').replace(/\s+/g, ' ').trim();
     const name = licGrab(flat, LIC_LABELS.name) || licGrab(flat, LIC_LABELS.legal);
     if (!name) return [];
+    const cvr = licGrab(flat, LIC_LABELS.cvr);
+    let jurisdiction = licGrab(flat, LIC_LABELS.jurisdiction);
+    let registrationType = licGrab(flat, LIC_LABELS.regtype);
+    const explicitCvrLabel = /(?:^|[，,;；、\s])CVR(?:[\s.-]*(?:number|nr\.?|no\.?|注册号))?\s*[:：=]/i.test(flat);
+    if (cvr && !registrationType && explicitCvrLabel) registrationType = 'CVR';
+    if (registrationType && dedup.normalizeRegistrationType(registrationType) === 'CVR' && !jurisdiction) jurisdiction = 'DK';
     return [{
       name,
       legal_name: licGrab(flat, LIC_LABELS.legal),
@@ -577,6 +624,10 @@ function parseLicenses(text) {
       apt: licGrab(flat, LIC_LABELS.apt),
       zip: licGrab(flat, LIC_LABELS.zip).replace(/^DK-/i, ''),
       city: licGrab(flat, LIC_LABELS.city),
+      jurisdiction,
+      registration_type: registrationType,
+      registration_authority: licGrab(flat, LIC_LABELS.regauthority),
+      cvr,
       type: licGrab(flat, LIC_LABELS.type) || '组织',
     }];
   }
@@ -597,11 +648,13 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 
 /* ---------------- 资源库导入 ---------------- */
 
+const proxyCapacity = require('./public/proxy-capacity');
+
 const IMPORT_FIELDS = {
   emails: ['user', 'pass', 'fakey'],
-  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
+  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip', 'usage_limit'],
   cards: ['number', 'expiry', 'last4'],
-  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'type', 'cvr'],
+  licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'region', 'type', 'cvr', 'jurisdiction', 'registration_type', 'registration_authority'],
 };
 
 // 同一账号内的重复判定（营业执照另外走跨用户全局判重）
@@ -609,7 +662,10 @@ const DUP_KEYS = {
   emails: (it) => (x) => x.user.toLowerCase() === it.user.toLowerCase(),
   proxies: (it) => (x) => x.host.toLowerCase() === it.host.toLowerCase() && x.port === it.port && x.user === it.user,
   cards: (it) => (x) => x.number === it.number,
-  licenses: (it) => (x) => x.name.toLowerCase() === it.name.toLowerCase(),
+  licenses: (it) => {
+    const keys = dedup.licenseKeys(it);
+    return (x) => dedup.rowMatchesKeys(x, keys);
+  },
 };
 
 /** 重复项展示用的标识（提示用户具体哪些被跳过）。 */
@@ -629,13 +685,23 @@ function batchKeyOf(type, it) {
   if (type === 'cards') return String(it.number || '');
   if (type === 'proxies') return `${String(it.host || '').toLowerCase()}|${it.port}|${it.user}`;
   const keys = dedup.licenseKeys(it);
-  return [keys.dup_name, keys.dup_cvr].filter(Boolean).join('|');
+  if (keys.dup_reg) return 'reg:' + keys.dup_reg;
+  return [keys.dup_name, keys.dup_legal].filter(Boolean).join('|');
 }
 
 function normalizeImport(type, item) {
   if (!item || typeof item !== 'object' || Array.isArray(item)) return reply400('导入内容格式不正确');
   assertNoCardSecrets(item);
+  for (const key of IMPORT_FIELDS[type]) {
+    const value = item[key];
+    if (value != null && typeof value !== 'string' && !(typeof value === 'number' && Number.isFinite(value))) return reply400('导入字段必须为文本或有限数字');
+    if (String(value ?? '').length > 8192) return reply400('单个导入字段过长');
+  }
   const row = Object.fromEntries(IMPORT_FIELDS[type].map((key) => [key, String(item[key] ?? '').trim()]));
+  if (type === 'proxies') {
+    row.usage_limit = item.usage_limit ?? 1;
+    if (!proxyCapacity.valid(row.usage_limit)) return reply400('IP 使用次数必须为 1 到 100000 的整数');
+  }
   if (type === 'emails' && !EMAIL_RE.test(row.user)) return reply400('存在无效邮箱，请检查导入内容');
   if (type === 'proxies' && (!row.host || (row.port && (!/^\d+$/.test(row.port) || Number(row.port) < 1 || Number(row.port) > 65535)))) return reply400('代理主机或端口无效');
   if (type === 'cards') {
@@ -647,6 +713,20 @@ function normalizeImport(type, item) {
     if (!row.name) return reply400('营业执照名称不能为空');
     row.legal_name ||= row.name;
     row.zip = row.zip.replace(/^DK-/i, '');
+    row.jurisdiction = dedup.normalizeJurisdiction(row.jurisdiction);
+    row.registration_type = dedup.normalizeRegistrationType(row.registration_type);
+    if (row.registration_authority.length > 160) return reply400('登记机关名称过长');
+    if (row.cvr && !row.jurisdiction) row.jurisdiction = licenseIdentifiers.TYPE_COUNTRIES[row.registration_type] || '';
+    const hasScope = !!(row.jurisdiction || row.registration_type || row.registration_authority);
+    if (!row.cvr && hasScope) return reply400('填写注册国家、编号类型或登记机关时必须同时填写注册号');
+    if (row.cvr && (!!row.jurisdiction !== !!row.registration_type)) {
+      return reply400('要按国家/地区区分注册号时，请同时填写注册国家/地区和注册号类型');
+    }
+    if (row.registration_authority && !(row.jurisdiction && row.registration_type)) {
+      return reply400('填写登记机关前，请先填写注册国家/地区和注册号类型');
+    }
+    const identifierError = licenseIdentifiers.identifierError(row);
+    if (identifierError) return reply400(identifierError);
   }
   return row;
 }
@@ -663,6 +743,19 @@ function conflictDetail(conflict, item) {
     weak: !!conflict.weak,
     message: privateConflictMessage(conflict),
   };
+}
+
+function ownLicenseIdentityMismatch(existing, incomingKeys) {
+  if (!existing || !incomingKeys) return null;
+  const current = dedup.licenseKeys(existing);
+  if (current.dup_cvr && incomingKeys.dup_cvr && current.dup_cvr !== incomingKeys.dup_cvr) {
+    return { field: 'cvr', label: '注册号', message: '同名资料的注册号不一致，未保存' };
+  }
+  if (current.registration_scoped && incomingKeys.registration_scoped
+      && current.dup_reg && incomingKeys.dup_reg && current.dup_reg !== incomingKeys.dup_reg) {
+    return { field: 'cvr', label: '注册号国家/类型', message: '同名资料的注册国家或注册号类型不一致，未保存' };
+  }
+  return null;
 }
 
 /** 按 PDF 原始字节查重；更改文件名也无法绕过。 */
@@ -683,6 +776,7 @@ function rejectDuplicatePdf() {
  */
 function importItems(ownerId, type, items) {
   if (!Array.isArray(items) || items.length > 5000) return reply400('单次导入最多 5000 条');
+  const submittedItems = items;
   items = items.map((item) => normalizeImport(type, item));
   let added = 0;
   let updated = 0;
@@ -690,7 +784,7 @@ function importItems(ownerId, type, items) {
   const conflicts = [];
   const seen = new Set();
   const label = dupLabel(type);
-  for (const it of items) {
+  for (const [itemIndex, it] of items.entries()) {
     const batchKey = batchKeyOf(type, it);
     if (batchKey && seen.has(batchKey)) { skipped.push(it); continue; }
     if (type === 'licenses') {
@@ -711,21 +805,15 @@ function importItems(ownerId, type, items) {
         // 从任何仪表盘上都看不出来。已知复现：A 的 DK11111111 被 B 的 DK22222222 覆盖。
         // 注册号两边都非空且不相等 → 这是两家不同的公司，判为冲突，不写库，
         // 交给人工核对（迁移与导入都不该替人判断哪条是真实企业）。
-        const mineCvr = mine.dup_cvr || '';
-        const nextCvr = keys.dup_cvr || '';
-        if (mineCvr && nextCvr && mineCvr !== nextCvr) {
+        const identityMismatch = ownLicenseIdentityMismatch(mine, keys);
+        if (identityMismatch) {
           skipped.push(it);
-          conflicts.push({
-            name: it.name,
-            field: 'cvr',
-            label: '注册号',
-            owner: mine.owner_id,
-            message: '该公司名称已存在但注册号不同，请核对后再处理',
-          });
+          conflicts.push({ name: it.name, ...identityMismatch });
           continue;
         }
         try {
-          const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...it });
+          const updates = Object.fromEntries(Object.entries(it).filter(([key, value]) => Object.hasOwn(submittedItems[itemIndex], key) && value !== ''));
+          const updatedLicense = store.updatePoolRow(db, ownerId, 'licenses', mine.id, { ...store.toPublic(mine), ...updates });
           // 本人只更新组织字段时，已有账号记录中的营业执照快照也要同步。
           syncResource(ownerId, 'licenses', updatedLicense);
           updated++;
@@ -798,7 +886,25 @@ function pickPool(pool, ids, count, label) {
   return { items: chosen };
 }
 
-function createRecords(ownerId, body) {
+function createRecords(ownerId, body, { preview = false } = {}) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return { error: '请求体必须是一个 JSON 对象' };
+  if (body.require_complete !== undefined && typeof body.require_complete !== 'boolean') return { error: '完整组合选项必须为布尔值' };
+  for (const key of ['country','product','date_key','fp_prefix','ip_reg_time','id_card','proxy_mode']) {
+    if (Object.hasOwn(body, key) && body[key] != null && typeof body[key] !== 'string') {
+      return { error: `${key} 必须为文本` };
+    }
+    if (typeof body[key] === 'string' && body[key].length > 8192) return { error: `${key} 过长` };
+  }
+  if (body.domains !== undefined && !Array.isArray(body.domains) && typeof body.domains !== 'string') {
+    return { error: 'domains 必须为文本或文本数组' };
+  }
+  if (Array.isArray(body.domains) && body.domains.some((item) => typeof item !== 'string')) {
+    return { error: 'domains 数组只能包含文本' };
+  }
+  if (body.proxy_mode !== undefined && !['shared','auto','none'].includes(body.proxy_mode)) {
+    return { error: '代理模式无效' };
+  }
+
   const country = String(body.country || '').trim();
   const product = String(body.product || '').trim();
   const rawDomains = Array.isArray(body.domains)
@@ -826,10 +932,20 @@ function createRecords(ownerId, body) {
     if (store.fingerprintExists(db, ownerId, `${fpPrefix}${seq + i}`)) return { error: '指纹名称已存在，请调整起始编号' };
   }
 
-  const emails = store.listPool(db, ownerId, 'emails');
-  const cards = store.listPool(db, ownerId, 'cards');
-  const licenses = store.listPool(db, ownerId, 'licenses');
-  const proxies = store.listPool(db, ownerId, 'proxies');
+  const availablePool = kind => store.listPool(db, ownerId, kind, { includeUsage: true }).map(item => item.linked_record_count && item.status === '未使用' ? { ...item, status: '已使用' } : item);
+  const emails = availablePool('emails');
+  const cards = availablePool('cards');
+  const licenses = availablePool('licenses');
+  const proxies = store.listPool(db, ownerId, 'proxies', { includeUsage: true });
+
+  if (body.require_complete === true) {
+    if (body.proxy_mode !== 'auto') return { error: '完整组合需要按使用次数自动分配 IP，请选择自动分配' };
+    for (const [label, pool] of [['邮箱', emails], ['信用卡', cards], ['企业文件', licenses]]) {
+      if (pool.filter(item => item.status === '未使用').length < count) return { error: `${label}池不足，完整组合需要 ${count} 条未使用资源` };
+    }
+  }
+
+  if (body.require_complete && proxies.reduce((sum, item) => sum + proxyCapacity.remaining(item), 0) < count) return { error: 'IP 剩余使用次数不足，无法组成完整组合' };
 
   const pickedEmails = pickPool(emails, body.email_ids, count, '可用邮箱');
   if (pickedEmails.error) return { error: pickedEmails.error };
@@ -838,7 +954,7 @@ function createRecords(ownerId, body) {
   const pickedLic = pickPool(licenses, body.license_ids, count, '可用营业执照');
   if (pickedLic.error) return { error: pickedLic.error };
 
-  const proxyMode = ['shared', 'auto', 'none'].includes(body.proxy_mode) ? body.proxy_mode : 'shared';
+  const proxyMode = body.proxy_mode || 'shared';
   let sharedProxy = null;
   if (proxyMode === 'shared') {
     if (body.proxy_id !== undefined && body.proxy_id !== null) {
@@ -851,11 +967,23 @@ function createRecords(ownerId, body) {
       if (last && last.proxy_id != null) sharedProxy = proxies.find((p) => p.id === last.proxy_id && p.status !== '停用') || null;
     }
   }
+  if (sharedProxy && proxyCapacity.remaining(sharedProxy) < count) return { error: `该 IP 剩余 ${proxyCapacity.remaining(sharedProxy)} 次，无法分配 ${count} 条记录` };
   let autoProxies = [];
   if (proxyMode === 'auto') {
-    const pickedProxies = pickPool(proxies, body.proxy_ids, count, '可用代理');
+    const pickedProxies = proxyCapacity.allocate(proxies, body.proxy_ids, count);
     if (pickedProxies.error) return { error: pickedProxies.error };
     autoProxies = pickedProxies.items;
+  }
+
+  if (body.resource_plan !== undefined) {
+    if (!Array.isArray(body.resource_plan) || body.resource_plan.length !== count) return { error: '资源预览已失效，请重新核对组合' };
+    for (let i = 0; i < count; i++) {
+      const expected = body.resource_plan[i];
+      if (!expected || typeof expected !== 'object' || Array.isArray(expected)) return { error: '资源预览格式无效，请重新核对' };
+      for (const [prefix, resource] of [['email', pickedEmails.items[i]], ['card', pickedCards.items[i]], ['license', pickedLic.items[i]], ['proxy', proxyMode === 'auto' ? autoProxies[i] : sharedProxy]]) {
+        if (expected[prefix + '_id'] !== (resource?.id || null) || expected[prefix + '_version'] !== (resource?.version ?? null)) return { error: '预览中的资源已被使用或修改，请返回重新核对组合；未创建任何记录' };
+      }
+    }
   }
 
   const created = [];
@@ -894,6 +1022,11 @@ function createRecords(ownerId, body) {
       status: '正常',
       created_at: nowLocal(),
     };
+    if (preview) {
+      created.push({ fingerprint: rec.fingerprint, domain, email_id: rec.email_id, email_version: email?.version ?? null, email_user: rec.email_user, proxy_id: rec.proxy_id, proxy_version: proxy?.version ?? null, proxy_host: rec.proxy_host, proxy_port: rec.proxy_port, card_id: rec.card_id, card_version: card?.version ?? null, card_number: rec.card_number, card_last4: rec.card_last4, license_id: rec.license_id, license_version: lic?.version ?? null, license_name: rec.license_name });
+      seq++;
+      continue;
+    }
     const id = store.insertRecord(db, ownerId, rec);
     rec.id = id;
     if (email) store.setPoolStatus(db, ownerId, 'emails', email.id, '已使用');
@@ -907,16 +1040,6 @@ function createRecords(ownerId, body) {
 }
 
 /* ---------------- 记录编辑 / 删除 ---------------- */
-
-const SNAP = {
-  email: (e) => ({ email_user: e.user, email_pass: e.pass, email_fakey: e.fakey }),
-  proxy: (p) => ({
-    proxy_sn: p.sn, proxy_type: p.type, proxy_host: p.host, proxy_port: p.port,
-    proxy_user: p.user, proxy_pass: p.pass, proxy_country: p.country, proxy_ip: p.ip,
-  }),
-  card: (c) => ({ card_number: c.number, card_expiry: c.expiry, card_last4: c.last4 }),
-  license: (l) => ({ license_name: l.name }),
-};
 
 /** 资源被改名/改值后，同步到引用它的记录快照里（导出用的是快照字段）。 */
 function syncResource(ownerId, type, resource) {
@@ -949,6 +1072,7 @@ function updateRecord(ownerId, id, body) {
     if (value === rec[`${prefix}_id`]) continue;
     const target = store.findPoolItem(db, ownerId, kind, value);
     if (!target || target.status === '停用') return { error: '所选资源不存在或已停用' };
+    if (prefix === 'proxy' && proxyCapacity.remaining({ ...target, linked_record_count: store.recordsUsingResource(db, ownerId, prefix, target.id, rec.id).length }) < 1) return { error: '所选 IP 使用次数已满' };
     if (prefix !== 'proxy' && (target.status !== '未使用' || store.recordsUsingResource(db, ownerId, prefix, target.id, rec.id).length)) {
       return { error: '所选资源已被其他记录使用' };
     }
@@ -956,9 +1080,12 @@ function updateRecord(ownerId, id, body) {
 
   const patch = {};
   for (const k of ['country', 'product', 'domain', 'ip_reg_time', 'id_card', 'status']) {
-    if (k in body) patch[k] = String(body[k] ?? '').trim();
+    if (!(k in body)) continue;
+    if (body[k] != null && typeof body[k] !== 'string') return { error: `${k} 必须为文本` };
+    if (typeof body[k] === 'string' && body[k].length > 8192) return { error: `${k} 过长` };
+    patch[k] = String(body[k] ?? '').trim();
   }
-  if ('status' in patch && !RECORD_STATUSES.includes(patch.status)) patch.status = '正常';
+  if ('status' in patch && !RECORD_STATUSES.includes(patch.status)) return { error: '无效记录状态' };
 
   const reassign = (prefix, kind, newId) => {
     if (newId === undefined) return;
@@ -968,6 +1095,9 @@ function updateRecord(ownerId, id, body) {
     const nu = targetId == null ? null : store.findPoolItem(db, ownerId, kind, targetId);
     if (targetId != null && !nu) return;
     rec[`${prefix}_id`] = nu ? nu.id : null;
+    // Persist the relation itself alongside its display snapshot. Mutating only
+    // the in-memory row leaves usage counts, later syncs and release logic stale.
+    patch[`${prefix}_id`] = rec[`${prefix}_id`];
     for (const key of Object.keys(SNAP[prefix]({}))) patch[key] = '';
     if (nu) {
       const snaps = SNAP[prefix](nu);
@@ -1143,7 +1273,7 @@ fastify.addHook('onRequest', async (req, reply) => {
 fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('Referrer-Policy', 'same-origin');
-  reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; font-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
   reply.header('Permissions-Policy','camera=(), microphone=(), geolocation=()');
   if(SESSION_SECURE) reply.header('Strict-Transport-Security','max-age=31536000');
   // 与 onRequest 同理：响应的 no-store 与脱敏也按解码后的路径判断，
@@ -1175,6 +1305,12 @@ function replyConflict(message, conflicts) {
   throw err;
 }
 
+function replyPrecondition(message) {
+  const err = new Error(message);
+  err.statusCode = 428;
+  throw err;
+}
+
 /* ---------------- 认证路由 ---------------- */
 
 fastify.get('/api/healthz', async () => ({ ok: true, version: require('./package.json').version }));
@@ -1183,8 +1319,8 @@ fastify.get('/api/auth/config', async () => ({
   registration: REGISTRATION,
   inviteRequired: REGISTRATION === 'invite',
   minPasswordLength: auth.MIN_PASSWORD,
-  minUsernameLength: 3,
-  maxUsernameLength: 32,
+  minUsernameLength: auth.MIN_USERNAME,
+  maxUsernameLength: auth.MAX_USERNAME,
   siteName: '账号工作台',
 }));
 
@@ -1314,11 +1450,19 @@ fastify.get('/api/bootstrap', async (req) => {
   if(req.query?.reveal === '1') {requireUnlocked(req);req.allowSecrets=true;}
   const ownerId = currentUserId(req);
   const seq = store.nextSeq(db, ownerId);
+  const summaryOnly = req.query?.summary === '1';
+  const recordStats = store.countRecordsByStatus(db, ownerId);
+  const revealSecrets = req.allowSecrets === true;
+  const recentRecords = summaryOnly
+    ? store.listRecordsPage(db, ownerId, { limit: 6, offset: 0, sort: 'id_desc', revealSecrets }).items
+    : undefined;
   return {
     user: auth.publicUser(store.findUserById(db, ownerId)),
-    pools: store.listAllPools(db, ownerId),
-    records: store.listRecords(db, ownerId),
+    pools: store.listAllPools(db, ownerId, { revealSecrets, includeUsage: true }),
+    ...(summaryOnly ? {} : { records: store.listRecords(db, ownerId, { revealSecrets }) }),
     counts: store.countPoolByStatus(db, ownerId),
+    record_stats: recordStats,
+    ...(summaryOnly ? { recent_records: recentRecords } : {}),
     next: { fingerprint: `${todayKey()}ads${seq}`, seq, date_key: todayKey() },
   };
 });
@@ -1331,6 +1475,7 @@ fastify.get('/api/bootstrap', async (req) => {
  * 敏感字段的脱敏由 onSend 的 redact() 统一处理，与本服务其他 /api/ 响应同一套规则。
  */
 fastify.get('/api/records', async (req, reply) => {
+  if(req.query?.reveal === '1') {requireUnlocked(req);req.allowSecrets=true;}
   const ownerId = currentUserId(req);
   const requestedSort = String(req.query?.sort || 'id_desc');
   // 审计 F13：分页参数此前用 `Number(x) || 默认值` 兜底 —— limit=abc 会被静默当成
@@ -1339,7 +1484,7 @@ fastify.get('/api/records', async (req, reply) => {
   const parsePaging = (raw, { min, max, fallback, name }) => {
     if (raw === undefined || raw === '') return { value: fallback };
     const n = Number(raw);
-    if (!Number.isInteger(n) || n < min || n > max) {
+    if (typeof raw !== 'string' || !/^(?:0|[1-9]\d*)$/.test(raw) || !Number.isSafeInteger(n) || n < min || n > max) {
       return { error: `${name} 必须是 ${min}..${max} 之间的整数` };
     }
     return { value: n };
@@ -1348,30 +1493,47 @@ fastify.get('/api/records', async (req, reply) => {
   const offset = parsePaging(req.query?.offset, { min: 0, max: 1_000_000, fallback: 0, name: 'offset' });
   if (limit.error) return reply.code(400).send({ error: limit.error });
   if (offset.error) return reply.code(400).send({ error: offset.error });
+  const q = String(req.query?.q || '').trim();
+  const status = String(req.query?.status || '').trim();
+  if (q.length > 200) return reply.code(400).send({ error: 'q 最多 200 个字符' });
+  if (status && !RECORD_STATUSES.includes(status)) return reply.code(400).send({ error: 'status 无效' });
   const page = store.listRecordsPage(db, ownerId, {
     limit: limit.value,
     offset: offset.value,
-    q: String(req.query?.q || ''),
-    status: String(req.query?.status || ''),
+    q,
+    status,
     sort: requestedSort,
+    revealSecrets: req.allowSecrets === true,
   });
   return { ...page, limit: limit.value,
     offset: offset.value,
     sort: Object.hasOwn(store.RECORD_SORTS, requestedSort) ? requestedSort : 'id_desc' };
 });
 
-fastify.post('/api/parse/auto', async (req) => parseAuto(req.body?.text));
+fastify.get('/api/records/:id/setup', async (req) => {
+  const ownerId = currentUserId(req);
+  const id = Number(req.params.id);
+  const record = Number.isSafeInteger(id) && id > 0 ? store.getRecord(db, ownerId, id) : null;
+  if (!record) { const error = new Error('记录不存在或不可访问'); error.statusCode = 404; throw error; }
+  const safeRecord = Object.fromEntries(['id','fingerprint','country','domain','email_user','proxy_host','proxy_port','card_number','card_last4','card_expiry','license_id'].map(key => [key, record[key]]));
+  const license = record.license_id ? store.toPublic(store.findPoolItem(db, ownerId, 'licenses', record.license_id)) : null;
+  return { record: safeRecord, license: license || null };
+});
+
+fastify.post('/api/records/preview', async (req) => {
+  const result = createRecords(currentUserId(req), req.body, { preview: true });
+  if (result.error) return reply400(result.error);
+  return { items: result.created };
+});
+
+fastify.post('/api/parse/auto', async (req) => {
+  if (req.body?.text !== undefined && typeof req.body.text !== 'string') return reply400('text 必须为文本');
+  return parseAuto(req.body?.text);
+});
 fastify.post('/api/import/auto', async (req) => {
   const ownerId = currentUserId(req);
-  let emails = Array.isArray(req.body?.emails)
-    ? req.body.emails.filter((e) => e && e.user).map((x) => ({ user: String(x.user).trim(), pass: String(x.pass || ''), fakey: String(x.fakey || '') }))
-    : null;
-  let proxies = Array.isArray(req.body?.proxies)
-    ? req.body.proxies.filter((p) => p && p.host).map((x) => ({
-        sn: String(x.sn || ''), type: String(x.type || ''), host: String(x.host), port: String(x.port || ''),
-        user: String(x.user || ''), pass: String(x.pass || ''), country: String(x.country || ''), ip: String(x.ip || ''),
-      }))
-    : null;
+  let emails = Array.isArray(req.body?.emails) ? req.body.emails : null;
+  let proxies = Array.isArray(req.body?.proxies) ? req.body.proxies : null;
   if (!emails || !proxies) {
     const r = parseAuto(req.body?.text);
     emails = r.emails;
@@ -1383,7 +1545,38 @@ fastify.post('/api/import/auto', async (req) => {
 fastify.post('/api/parse/:type', async (req) => {
   const type = req.params.type;
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
+  if (req.body?.text !== undefined && typeof req.body.text !== 'string') return reply400('text 必须为文本');
   return { items: PARSERS[type](req.body?.text) };
+});
+
+// Live, read-only lookup while typing. Never return another member's record,
+// username, dates, original identifier or document. Saving rechecks in a transaction.
+fastify.post('/api/licenses/check-duplicate', { bodyLimit: 12 * 1024 }, async (req) => {
+  const ownerId = currentUserId(req);
+  const excludeId = req.body?.exclude_id;
+  if (excludeId !== undefined) {
+    if (!Number.isSafeInteger(excludeId) || excludeId < 1) return reply400('待校对的企业资料编号无效');
+    if (!store.findPoolItem(db, ownerId, 'licenses', excludeId)) { const error = new Error('企业资料不存在或不可访问'); error.statusCode = 404; throw error; }
+  }
+  const source = req.body?.item;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) return reply400('请提供待核对的营业执照信息');
+  const item = {};
+  for (const field of IMPORT_FIELDS.licenses) {
+    if (source[field] != null && typeof source[field] !== 'string') return reply400('查重字段必须为文本');
+    if (String(source[field] || '').length > 512) return reply400('查重字段过长');
+    item[field] = String(source[field] || '').trim();
+  }
+  item.registration_type = dedup.normalizeRegistrationType(item.registration_type);
+  item.jurisdiction = dedup.normalizeJurisdiction(item.jurisdiction);
+  const keys = dedup.licenseKeys(item);
+  const error = licenseIdentifiers.identifierError(item);
+  if (error) return { state: 'incomplete', message: error };
+  if (item.cvr && (!!keys.jurisdiction !== !!keys.registration_type)) return { state: 'incomplete', message: '请同时填写注册国家 / 地区和企业编号类型' };
+  const conflict = dedup.findLicenseConflict(db, keys, { excludeId: excludeId ?? null });
+  if (conflict) return { state: 'duplicate', conflict: conflictDetail(conflict, item) };
+  if (!keys.dup_cvr) return { state: 'incomplete', message: '请填写证书上的完整企业编号，以完成全员查重' };
+  if (!keys.registration_scoped) return { state: 'incomplete', message: '请填写注册国家 / 地区和企业编号类型，系统会按国家区分编号' };
+  return { state: 'clear', message: '未发现重复，保存时将再次核对', identity: { jurisdiction: keys.jurisdiction, registration_type: keys.registration_type } };
 });
 
 // 只解析不保存；只有确认导入后才会保存原件。
@@ -1395,7 +1588,7 @@ fastify.post('/api/parse/licenses-pdf', async (req) => {
     const text = await extractPdfText(bytes);
     const items = parseCertificate(text);
     const enriched = items.map((item) => ({ ...item, ...probeDuplicate(item, req) }));
-    return { items: enriched, text };
+    return { items: enriched, text, extraction: { mode: text.trim() ? 'text' : 'unreadable', review_required: true, missing_fields: licenseIdentifiers.missingFields(items[0] || {}), ambiguous: licenseIdentifiers.businessIdentifier(text).ambiguous } };
   } catch (error) {
     // 审计 F17：原来只放行 statusCode===400，于是 extractPdfText 抛出的 **429**
     // （并发解析超限："识别任务较多，请稍后重试"）被这里吞掉，改写成
@@ -1413,11 +1606,9 @@ fastify.post('/api/parse/licenses-pdf', async (req) => {
  * 这里只读不写。
  */
 function probeDuplicate(item, req) {
-  const ownerId = currentUserId(req);
+  currentUserId(req);
   const keys = dedup.licenseKeys(item);
-  // 自己已有的同一条属于「更新」，识别阶段不当作重复提醒
-  const mine = ownerId ? store.listLicenses(db, ownerId).find((l) => dedup.rowMatchesKeys(l, keys)) : null;
-  const conflict = dedup.findLicenseConflict(db, keys, { excludeId: mine ? mine.id : null });
+  const conflict = dedup.findLicenseConflict(db, keys);
   if (!conflict) return {};
   return {
     duplicate: {
@@ -1434,35 +1625,68 @@ fastify.post('/api/import/:type', async (req, reply) => {
   if (!POOL_TYPES.includes(type)) return reply400('未知类型');
   const items = Array.isArray(req.body?.items) ? req.body.items : PARSERS[type](req.body?.text);
   const hasPdf = Object.hasOwn(req.body || {}, 'pdf');
+  const creatingLicense = type === 'licenses' && req.body?.intent === 'create';
+  const checkNewLicense = (item) => {
+    const keys = dedup.licenseKeys(item);
+    if (!keys.dup_cvr) return reply400('请填写证书上的完整企业编号后再保存');
+    if (!keys.registration_scoped) return reply400('请同时填写注册国家 / 地区和企业编号类型，以区分不同国家的企业');
+    const error = licenseIdentifiers.identifierError(item);
+    if (error) return reply400(error);
+    const conflict = dedup.findLicenseConflict(db, keys);
+    if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, item)]);
+  };
   if (hasPdf && type !== 'licenses') return reply400('PDF 只能导入到营业执照资料库');
 
   if (hasPdf) {
     if (items.length !== 1) return reply400('一个 PDF 请对应一份营业执照');
     const bytes = decodePdf(req.body.pdf);
+    if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
+    let extractedIdentity;
+    try {
+      extractedIdentity = licenseIdentifiers.businessIdentifier(await extractPdfText(bytes)).identity;
+    } catch (error) {
+      if (error.statusCode) throw error;
+      return reply400('PDF 结构无效、已损坏或需要密码，未保存原件');
+    }
     const item = normalizeImport('licenses', items[0]);
+    if (creatingLicense && extractedIdentity) {
+      const original = dedup.licenseKeys(extractedIdentity);
+      const entered = dedup.licenseKeys(item);
+      if (original.dup_cvr !== entered.dup_cvr || (entered.registration_scoped && original.dup_reg !== entered.dup_reg)) {
+        return reply400('填写的企业编号或国家 / 类型与 PDF 识别结果不一致，请核对原件');
+      }
+      Object.assign(item, { jurisdiction: extractedIdentity.jurisdiction, registration_type: extractedIdentity.registration_type });
+    }
     const documentId = checkDuplicatePdf(bytes).sha256;
     const filename = path.basename(String(req.body.filename || '营业执照.pdf')).replace(/[\\/\r\n]/g, '_');
     return mutate(() => {
+      if (creatingLicense) checkNewLicense(item);
       // 再次校验并在单个 SQLite 写事务里拒绝重复，防止两人同时保存。
       if (checkDuplicatePdf(bytes).exists) rejectDuplicatePdf();
       const mine = store.listLicenses(db, ownerId);
       const byDocument = mine.filter((license) => license.document_id === documentId);
       if (byDocument.length > 1) return reply400('原 PDF 已关联多份历史资料，请先核对这些资料再导入');
-      const byName = mine.find(DUP_KEYS.licenses(item));
-      if (byDocument[0] && byName && byDocument[0].id !== byName.id) {
-        return reply400('该 PDF 已属于另一份资料，名称修改与现有组织冲突，请核对后重试');
+      const itemKeys = dedup.licenseKeys(item);
+      const byIdentity = mine.find((license) => dedup.rowMatchesKeys(license, itemKeys));
+      if (byDocument[0] && byIdentity && byDocument[0].id !== byIdentity.id) {
+        return reply400('该 PDF 已属于另一份资料，组织身份与现有资料冲突，请核对后重试');
       }
-      const mineMatched = byDocument[0] || byName || null;
+      const mineMatched = byDocument[0] || byIdentity || null;
+      const identityMismatch = ownLicenseIdentityMismatch(mineMatched, itemKeys);
+      if (identityMismatch) {
+        return replyConflict(identityMismatch.message, [{name:item.name,...identityMismatch}]);
+      }
 
       // 关键一步：跨全体用户判重（自己已有的那条属于「更新」，不算重复）
-      const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(item), { excludeId: mineMatched ? mineMatched.id : null });
+      const conflict = dedup.findLicenseConflict(db, itemKeys, { excludeId: mineMatched ? mineMatched.id : null });
       if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, item)]);
 
       let license = mineMatched;
       const added = license ? 0 : 1;
       try {
         if (!license) license = store.insertPoolRow(db, ownerId, 'licenses', item, { createdAt: nowLocal() });
-        const merged = normalizeImport('licenses', { ...store.toPublic(license), ...items[0] });
+        const updates = Object.fromEntries(Object.entries(item).filter(([key, value]) => Object.hasOwn(items[0], key) && value !== ''));
+        const merged = normalizeImport('licenses', { ...store.toPublic(license), ...updates });
         license = store.updatePoolRow(db, ownerId, 'licenses', license.id, merged);
       } catch (error) {
         if (!store.isUniqueViolation(error)) throw error;
@@ -1474,6 +1698,7 @@ fastify.post('/api/import/:type', async (req, reply) => {
       store.putDocument(db, ownerId, { sha256: documentId, filename, bytes, createdAt: nowLocal() });
       license = store.findPoolItem(db, ownerId, 'licenses', license.id);
       syncResource(ownerId, 'licenses', license);
+      audit(db, ownerId, added ? 'pdf.import' : 'pdf.replace', String(license.id));
       store.pruneDocuments(db);
       return {
         added, updated: added ? 0 : 1, skipped: 0, duplicates: [], conflicts: [],
@@ -1483,6 +1708,10 @@ fastify.post('/api/import/:type', async (req, reply) => {
   }
 
   return mutate(() => {
+    if (creatingLicense) {
+      if (!Array.isArray(items) || items.length !== 1) return reply400('请一次保存一份营业执照');
+      checkNewLicense(normalizeImport('licenses', items[0]));
+    }
     const result = importItems(ownerId, type, items);
     // 营业执照出现全局重复时，整批拒绝，避免「悄悄少导一条」
     if (type === 'licenses' && result.conflicts.length) {
@@ -1500,6 +1729,7 @@ function licenseDocument(id, ownerId = null) {
   const license = owner ? store.findPoolItem(db, owner, 'licenses', Number(id)) : null;
   const document = license && license.document_id ? store.getDocument(db, license.document_id) : null;
   if (!document) throw new Error('这份营业执照尚未保存原 PDF');
+  audit(db, owner, 'pdf.read', String(id));
   return {
     id: license.document_id,
     filename: document.filename,
@@ -1526,6 +1756,24 @@ fastify.get('/api/licenses/duplicates', async (req, reply) => {
   return reply.code(403).send({ error: '无权查看其他成员的查重报告' });
 });
 
+fastify.post('/api/proxies/usage-limits', async (req) => {
+  const ownerId = currentUserId(req), body = req.body;
+  if (!body || !proxyCapacity.valid(body.usage_limit) || !Array.isArray(body.items) || !body.items.length || body.items.length > 500) return reply400('请选择 IP，并填写 1 到 100000 的整数次数');
+  if (body.items.some(item => !item || !Number.isSafeInteger(item.id) || item.id < 1 || !Number.isSafeInteger(item.version)) || new Set(body.items.map(item => item.id)).size !== body.items.length) return reply400('IP 选择格式不正确');
+  return mutate(() => {
+    for (const item of body.items) {
+      const current = store.findPoolItem(db, ownerId, 'proxies', item.id);
+      if (!current) return reply400('IP 不存在');
+      if (current.version !== item.version) return replyConflict('IP 已被修改或分配，请刷新后重试；未保存任何修改', []);
+      if (body.usage_limit < store.recordsUsingResource(db, ownerId, 'proxy', item.id).length) return reply400('使用次数不能低于当前已关联记录数；未保存任何修改');
+    }
+    const statement = db.prepare('UPDATE proxies SET usage_limit=?, version=version+1 WHERE owner_id=? AND id=?');
+    for (const item of body.items) statement.run(body.usage_limit, ownerId, item.id);
+    audit(db, ownerId, 'proxies.usage_limit', `${body.items.length} IP; limit=${body.usage_limit}`);
+    return { updated: body.items.length, usage_limit: body.usage_limit };
+  });
+});
+
 fastify.patch('/api/pool/:type/:id', async (req) => {
   const ownerId = currentUserId(req);
   const type = req.params.type;
@@ -1538,18 +1786,21 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     const id = Number(req.params.id);
     const current = store.findPoolItem(db, ownerId, type, id);
     if (!current) return reply400('资源不存在');
-    if(body.version !== undefined && body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+    if (!Number.isSafeInteger(body.version) || body.version < 0) return replyPrecondition('必须提供当前 version 后才能修改资源，请刷新后重试。');
+    if (body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
     assertNoCardSecrets(body);
-    if ('status' in body) {
+    const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in body).map((key) => [key, body[key]]));
+    const hasStatus = 'status' in body;
+    if (!hasStatus && !Object.keys(changed).length) return reply400('没有可修改的资源字段');
+    if (hasStatus) {
       if (!STATUSES.includes(body.status)) return reply400('无效状态');
       const prefix = POOL_PREFIX[type];
       if (body.status === '未使用' && store.recordsUsingResource(db, ownerId, prefix, id).length) {
         return reply400('资源仍关联记录，不能标记为未使用');
       }
-      store.setPoolStatus(db, ownerId, type, id, body.status);
     }
-    const changed = Object.fromEntries(IMPORT_FIELDS[type].filter((key) => key in body).map((key) => [key, body[key]]));
     const merged = normalizeImport(type, { ...store.toPublic(current), ...changed });
+    if (type === 'proxies' && merged.usage_limit < store.recordsUsingResource(db, ownerId, 'proxy', id).length) return reply400('使用次数不能低于当前已关联记录数');
     if (type === 'licenses') {
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
       if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, merged)]);
@@ -1561,9 +1812,16 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
     }
     let updated;
     try {
-      updated = store.updatePoolRow(db, ownerId, type, id, merged);
+      if (hasStatus && Object.keys(changed).length) store.setPoolStatus(db, ownerId, type, id, body.status, { bumpVersion: false });
+      updated = Object.keys(changed).length
+        ? store.updatePoolRow(db, ownerId, type, id, merged)
+        : store.setPoolStatus(db, ownerId, type, id, body.status);
     } catch (error) {
       if (!store.isUniqueViolation(error)) throw error;
+      if (type === 'licenses') {
+        const again = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
+        if (again) return replyConflict(privateConflictMessage(again), [conflictDetail(again, merged)]);
+      }
       return reply400('修改后的资源与资料库中现有资源重复');
     }
     syncResource(ownerId, type, updated);
@@ -1625,7 +1883,8 @@ fastify.patch('/api/records/:id', async (req) => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return reply400('请求体必须是一个 JSON 对象');
   const current=store.getRecord(db,ownerId,Number(req.params.id));
   if(!current) return reply400('Record not found');
-  if(body.version!==undefined && body.version!==current.version) return replyConflict('Record changed; refresh before retrying.',[]);
+  if (!Number.isSafeInteger(body.version) || body.version < 0) return replyPrecondition('必须提供当前 version 后才能修改记录，请刷新后重试。');
+  if (body.version !== current.version) return replyConflict('Record changed; refresh before retrying.',[]);
   const res = mutate(() => updateRecord(ownerId, Number(req.params.id), body));
   if (res.error) return reply400(res.error);
   // 修改也留痕：审核与排错时，「这个字段是谁改的」同样需要能回答
@@ -1633,9 +1892,29 @@ fastify.patch('/api/records/:id', async (req) => {
   return res;
 });
 
+fastify.get('/api/data-integrity', async req => {
+  if (Object.keys(req.query || {}).some(key => !['after', 'upper_bound', 'limit'].includes(key))) return reply400('检查参数无效');
+  const readInteger = (key, fallback, max) => {
+    const raw = req.query?.[key];
+    if (raw === undefined) return fallback;
+    if (typeof raw !== 'string' || !/^(0|[1-9]\d*)$/.test(raw) || !Number.isSafeInteger(Number(raw)) || Number(raw) > max) return reply400(`${key} 无效`);
+    return Number(raw);
+  };
+  const after = readInteger('after', 0, Number.MAX_SAFE_INTEGER);
+  const upperBound = readInteger('upper_bound', undefined, Number.MAX_SAFE_INTEGER);
+  const limit = readInteger('limit', 100, 100);
+  if (!limit || (upperBound !== undefined && after > upperBound)) return reply400('检查范围无效');
+  return recordIntegrity.scanPage(db, currentUserId(req), { after, upperBound, limit });
+});
+
+fastify.post('/api/data-integrity/repair', async req => {
+  requireUnlocked(req);
+  return mutate(() => recordIntegrity.applyRepair(db, currentUserId(req), req.body));
+});
+
 fastify.post('/api/records/batch-delete', async (req) => {
   const ownerId = currentUserId(req);
-  const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = strictIdList(req.body?.ids);
   if (!ids.length) return { deleted: 0 };
   return mutate(() => {
     const result = deleteRecords(ownerId, ids);
@@ -1648,9 +1927,10 @@ fastify.post('/api/records/batch-delete', async (req) => {
 
 fastify.delete('/api/records/:id', async (req) => {
   const ownerId = currentUserId(req);
+  const id = strictIdParam(req.params.id);
   return mutate(() => {
-    const result = deleteRecords(ownerId, [Number(req.params.id)]);
-    if (result?.deleted) audit(db, ownerId, 'records.delete', String(req.params.id));
+    const result = deleteRecords(ownerId, [id]);
+    if (result?.deleted) audit(db, ownerId, 'records.delete', String(id));
     return result;
   });
 });
@@ -1664,9 +1944,8 @@ fastify.post('/api/export/adspower', async (req) => {
   // 直接把邮箱密码、2FA 与代理密码以 text 字符串返回（JSON 脱敏洗不到它）。
   // 此刻已经在 handler 内部，路径比较本身就没有存在理由，删掉即可。
   requireUnlocked(req);
-  if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
-  const ids = new Set((req.body?.ids || []).map(Number));
-  const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
+  const ids = strictIdList(req.body?.ids);
+  const list = store.listRecordsForExport(db, ownerId, ids, { revealSecrets: true });
   if (!list.length) return reply400('没有可导出的记录');
   audit(db,ownerId,'export.credentials',String(list.length));
   return { text: buildAdspower(list), count: list.length };
@@ -1679,32 +1958,76 @@ fastify.post('/api/export/csv', async (req) => {
   // （审计 F01 修改动作 2）。已删除。
   // CSV 不需要二次解锁：buildCsv 在映射阶段就把 email_pass / email_fakey /
   // proxy_pass / id_card 清空（见 server.js:981），输出里本来就不含凭据。
-  if(req.body?.ids && !Array.isArray(req.body.ids)) return reply400('Invalid ids');
-  const ids = new Set((req.body?.ids || []).map(Number));
-  const list = store.listRecords(db, ownerId).reverse().filter((r) => !ids.size || ids.has(r.id));
+  const ids = strictIdList(req.body?.ids);
+  const list = store.listRecordsForExport(db, ownerId, ids, { revealSecrets: false });
   if (!list.length) return reply400('没有可导出的记录');
   return { text: buildCsv(list), count: list.length };
 });
 
 /* ---------------- 个人备份与恢复（服务器版） ---------------- */
 
+fastify.get('/api/backup-jobs', async req => ({ jobs: personalJobs.list(currentUserId(req)) }));
+fastify.get('/api/backup-jobs/:id', async req => personalJobs.get(currentUserId(req), req.params.id));
+fastify.post('/api/backup-jobs', async req => { requireUnlocked(req); return personalJobs.create(currentUserId(req), req.body); });
+fastify.delete('/api/backup-jobs/:id', async req => personalJobs.remove(currentUserId(req), req.params.id));
+fastify.post('/api/backup-jobs/:id/verify', async req => { requireUnlocked(req); return personalJobs.verify(currentUserId(req), req.params.id); });
+fastify.post('/api/backup-jobs/:id/review', async req => { requireUnlocked(req); return personalJobs.review(currentUserId(req), req.params.id); });
+fastify.post('/api/backup-jobs/:id/apply', async req => {
+  requireUnlocked(req);
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'revision')) return reply400('恢复确认参数无效');
+  return personalJobs.apply(currentUserId(req), req.params.id, body.revision);
+});
+fastify.register(async app => {
+  app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+  app.put('/api/backup-jobs/:id/chunk', { bodyLimit: require('./lib/personal-package').CHUNK_BYTES }, async req => {
+    const raw = req.query?.offset;
+    if (typeof raw !== 'string' || !/^(0|[1-9]\d*)$/.test(raw) || !Number.isSafeInteger(Number(raw))) return reply400('分块位置无效');
+    return personalJobs.chunk(currentUserId(req), req.params.id, Number(raw), req.body, req.headers['x-chunk-sha256']);
+  });
+});
+fastify.get('/api/backup-jobs/:id/file', async (req, reply) => {
+  requireUnlocked(req);
+  const file = personalJobs.download(currentUserId(req), req.params.id);
+  if (!fs.existsSync(file.file) || fs.statSync(file.file).size !== file.size) return reply.code(409).send({ error: '临时备份文件不完整，请重新创建任务' });
+  const etag = '"' + file.sha256 + '"';
+  reply.header('Accept-Ranges', 'bytes').header('ETag', etag).header('Content-Type', 'application/octet-stream');
+  reply.header('Content-Disposition', `attachment; filename="AdsWorkbench-${req.params.id}.awbp"`);
+  const range = !req.headers['if-range'] || req.headers['if-range'] === etag ? req.headers.range : undefined;
+  let start = 0, end = file.size - 1;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    if (match && (match[1] || match[2])) {
+      if (!match[1]) start = Math.max(0, file.size - Number(match[2]));
+      else { start = Number(match[1]); if (match[2]) end = Math.min(end, Number(match[2])); }
+    }
+    if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= file.size || (!match[1] && Number(match[2]) === 0)) return reply.code(416).header('Content-Range', `bytes */${file.size}`).send();
+    reply.code(206).header('Content-Range', `bytes ${start}-${end}/${file.size}`);
+  }
+  reply.header('Content-Length', end - start + 1);
+  if (req.method !== 'HEAD') audit(db, currentUserId(req), 'backup.package.download', req.params.id);
+  return reply.send(fs.createReadStream(file.file, { start, end }));
+});
+
 /** 导出当前账号的资源、记录与原件。附件以 base64 内嵌，形状与旧版 data.json 一致，可互相导入。 */
 fastify.get('/api/backup', async (req, reply) => {
   const ownerId = currentUserId(req);
   const user = store.findUserById(db, ownerId);
+  requireUnlocked(req);
+  const envelope = encryptedSnapshot(ownerId);
   const filename = `账号工作台-${user.username}-${new Date().toISOString().slice(0, 10)}.json`;
   reply.header('Content-Type', 'application/json; charset=utf-8');
   reply.header('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
   requireUnlocked(req);
   audit(db,ownerId,'backup.export');
-  return reply.send(JSON.stringify(encryptedSnapshot(ownerId)));
+  return reply.send(JSON.stringify(envelope));
 });
 
 /**
  * 恢复个人备份：只覆盖当前账号的数据，绝不触碰其他成员。
  * 单独放宽请求体上限（附件内嵌 base64 会很大），避免为此抬高全局上限成为攻击面。
  */
-fastify.post('/api/backup/restore', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
+fastify.post('/api/backup/restore', { bodyLimit: require('./lib/personal-backup-policy').RESTORE_BODY_LIMIT }, async (req, reply) => {
   const ownerId = currentUserId(req);
   const payload = req.body?.snapshot ?? req.body;
   requireUnlocked(req);
@@ -1759,10 +2082,12 @@ function snapshot(ownerId = null) {
 function encryptedSnapshot(ownerId=null) {
   const owner=ownerId??resolveDefaultOwner();
   if(!owner) throw new Error('Login required for backup');
+  const policy = require('./lib/personal-backup-policy');
+  policy.assertDocumentBudget(db, owner);
   const value=snapshot(owner),vault=getVault(db);
-  return {format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),
+  return policy.assertEnvelopeBudget({format:'adsworkbench-backup',version:2,owner_id:owner,key_id:vault.keyId,created_at:new Date().toISOString(),
     counts:{records:value.records.length,licenses:value.licenses.length},
-    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)};
+    payload:vault.seal(JSON.stringify(value),`backup:${owner}`)});
 }
 function decryptSnapshot(envelope,ownerId=null) {
   const owner=ownerId??resolveDefaultOwner(),vault=getVault(db);
@@ -1828,6 +2153,7 @@ const start = async ({ port = Number(process.env.PORT) || 3000, host = process.e
 /** 关闭服务：先停掉 HTTP，再关数据库句柄（Windows 上句柄不关会导致数据文件无法删除/替换）。 */
 const close = async () => {
   await fastify.close();
+  await personalJobs.close();
   try { db.close(); } catch { /* 已关闭 */ }
 };
 

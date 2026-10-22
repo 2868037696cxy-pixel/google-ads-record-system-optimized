@@ -1,192 +1,144 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="auth-document">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#090c11">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#f2f4f8">
   <title>登录 · 账号工作台</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23C8F65D'/%3E%3Cpath d='M10 23V9h6.5a4.5 4.5 0 0 1 0 9H10' fill='none' stroke='%23131A04' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20261019r4">
-  <link rel="stylesheet" href="/login.css?v=20261018g">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23f2f4f8'/%3E%3Cg fill='%23465a78'%3E%3Crect x='7' y='7' width='7' height='7' rx='2'/%3E%3Crect x='18' y='7' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='7' y='18' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='18' y='18' width='7' height='7' rx='2'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/design-tokens.css?v=20261023design1">
+  <link rel="stylesheet" href="/styles.css?v=20261021settings1">
+  <link rel="stylesheet" href="/login.css?v=20261021glass1">
 </head>
 <body class="auth-body">
-
-  <!-- 图标精灵：眼睛 / 闭眼，供密码可见性按钮复用 -->
   <svg class="auth-sprite" aria-hidden="true" focusable="false">
     <symbol id="ico-eye" viewBox="0 0 24 24">
-      <path d="M2.6 12S6.2 5.8 12 5.8 21.4 12 21.4 12 17.8 18.2 12 18.2 2.6 12 2.6 12Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
-      <circle cx="12" cy="12" r="3.1" fill="none" stroke="currentColor" stroke-width="1.7"/>
+      <path d="M2.6 12S6.2 5.8 12 5.8 21.4 12 21.4 12 17.8 18.2 12 18.2 2.6 12 2.6 12Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/>
     </symbol>
     <symbol id="ico-eye-off" viewBox="0 0 24 24">
-      <path d="M3.4 3.4l17.2 17.2" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
-      <path d="M10.1 5.9A9.9 9.9 0 0 1 12 5.8c5.8 0 9.4 6.2 9.4 6.2a17.6 17.6 0 0 1-3.2 3.8M6.6 7.9A17 17 0 0 0 2.6 12s3.6 6.2 9.4 6.2a10 10 0 0 0 3.4-.6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="m3.4 3.4 17.2 17.2M10.1 5.9A9.9 9.9 0 0 1 12 5.8c5.8 0 9.4 6.2 9.4 6.2a17.6 17.6 0 0 1-3.2 3.8M6.6 7.9A17 17 0 0 0 2.6 12s3.6 6.2 9.4 6.2a10 10 0 0 0 3.4-.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="ico-workbench" viewBox="0 0 24 24">
+      <rect x="3.5" y="3.5" width="7" height="7" rx="2" fill="currentColor"/>
+      <rect x="13.5" y="3.5" width="7" height="7" rx="2" fill="currentColor" opacity=".42"/>
+      <rect x="3.5" y="13.5" width="7" height="7" rx="2" fill="currentColor" opacity=".42"/>
+      <rect x="13.5" y="13.5" width="7" height="7" rx="2" fill="currentColor"/>
+    </symbol>
+    <symbol id="ico-lock" viewBox="0 0 24 24">
+      <rect x="5.5" y="10.5" width="13" height="10" rx="3" fill="none" stroke="currentColor" stroke-width="1.6"/>
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+      <circle cx="12" cy="15.5" r="1" fill="currentColor"/>
     </symbol>
   </svg>
 
+  <div class="auth-atmosphere" aria-hidden="true">
+    <div class="auth-orbit auth-orbit-one"></div>
+    <div class="auth-orbit auth-orbit-two"></div>
+    <div class="auth-glow"></div>
+  </div>
+
   <div class="auth-shell">
-
-    <!-- 左：品牌与工作台说明 -->
-    <aside class="auth-rail">
-      <div class="brand auth-brand">
-        <span class="brand-mark" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-            <path d="M5 19V5h7a5 5 0 0 1 0 10H5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="18.4" cy="18.4" r="2.1" fill="currentColor"/>
-          </svg>
-        </span>
-        <div class="brand-text">
-          <strong id="brandName">账号工作台</strong>
-          <span>ADS CONSOLE</span>
-        </div>
+    <header class="auth-header">
+      <div class="auth-brand">
+        <svg width="22" height="22" aria-hidden="true" focusable="false"><use href="#ico-workbench"></use></svg>
+        <span id="brandName">账号工作台</span>
       </div>
+      <span class="auth-header-note">ADS WORKSPACE</span>
+    </header>
 
-      <div class="auth-pitch">
-        <h1>广告账号资源<br><em>集中管控</em>的工作台</h1>
-        <p>邮箱、代理、付款工具、营业执照与广告账号记录归档在同一处，供团队检索、分配与交接。</p>
-      </div>
-
-      <ul class="auth-specs">
-        <li><span class="spec-key">MAIL</span><span class="spec-label">邮箱账号</span><span class="spec-idx">01</span></li>
-        <li><span class="spec-key">PROXY</span><span class="spec-label">代理节点</span><span class="spec-idx">02</span></li>
-        <li><span class="spec-key">CARD</span><span class="spec-label">付款工具</span><span class="spec-idx">03</span></li>
-        <li><span class="spec-key">LIC</span><span class="spec-label">营业执照资料</span><span class="spec-idx">04</span></li>
-        <li><span class="spec-key">ADS</span><span class="spec-label">广告账号记录</span><span class="spec-idx">05</span></li>
-      </ul>
-
-      <p class="auth-rail-foot">
-        <span class="dot lime" aria-hidden="true"></span>
-        <span>仅限团队内部使用 · 敏感字段默认脱敏显示</span>
-      </p>
-    </aside>
-
-    <!-- 右：登录 / 注册卡片 -->
     <main class="auth-main">
-      <section class="auth-card">
-        <noscript>
-          <p class="auth-noscript">登录页需要启用 JavaScript 才能使用，请启用后刷新页面。</p>
-        </noscript>
-
+      <section class="auth-card" data-mode="login" aria-labelledby="authHeading">
+        <div class="auth-intro">
+          <div class="auth-emblem" aria-hidden="true">
+            <svg width="28" height="28" focusable="false"><use href="#ico-workbench"></use></svg>
+          </div>
+          <h1 class="auth-title" id="authHeading">欢迎回来</h1>
+          <p class="auth-sub" id="authSubtitle">登录工作台，继续你的工作。</p>
+        </div>
+        <noscript><p class="auth-noscript">请启用 JavaScript 后刷新页面，以登录工作台。</p></noscript>
         <div class="auth-tabs">
           <div class="tabs" role="tablist" aria-label="登录或注册" id="authTabs">
             <button type="button" class="tab active" id="tabLogin" role="tab" aria-selected="true" aria-controls="panelLogin">登录</button>
             <button type="button" class="tab" id="tabRegister" role="tab" aria-selected="false" aria-controls="panelRegister" tabindex="-1" hidden>注册</button>
           </div>
         </div>
-
         <div class="auth-alert" id="authAlert" role="alert" aria-live="polite" data-kind="error" hidden></div>
 
         <div class="auth-panel" id="panelLogin" role="tabpanel" aria-labelledby="tabLogin">
-          <h2 class="auth-title">登录工作台</h2>
-          <p class="auth-sub">使用团队分配的账号进入资源库。</p>
-
           <form class="auth-form" id="loginForm" novalidate>
             <div class="field">
               <label for="loginUsername">用户名</label>
-              <input class="auth-input mono" id="loginUsername" name="username" type="text" autocomplete="username"
-                     autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="例如 zhangsan"
-                     required aria-describedby="loginUsernameErr" autofocus>
+              <input class="auth-input" id="loginUsername" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="输入用户名" required aria-describedby="loginUsernameErr">
               <p class="field-err" id="loginUsernameErr" aria-live="polite" hidden></p>
             </div>
-
             <div class="field">
               <label for="loginPassword">密码</label>
               <div class="input-wrap">
-                <input class="auth-input" id="loginPassword" name="password" type="password" autocomplete="current-password"
-                       placeholder="输入密码" required aria-describedby="loginPasswordErr">
-                <button type="button" class="pw-toggle" data-target="loginPassword" aria-controls="loginPassword"
-                        aria-label="显示密码" aria-pressed="false">
-                  <svg class="ico eye-open" width="16" height="16" aria-hidden="true" focusable="false"><use href="#ico-eye"></use></svg>
-                  <svg class="ico eye-off" width="16" height="16" aria-hidden="true" focusable="false"><use href="#ico-eye-off"></use></svg>
+                <input class="auth-input" id="loginPassword" name="password" type="password" autocomplete="current-password" placeholder="输入密码" required aria-describedby="loginPasswordErr capsLogin">
+                <button type="button" class="pw-toggle" data-target="loginPassword" aria-controls="loginPassword" aria-label="显示密码" aria-pressed="false">
+                  <svg class="ico eye-open" width="19" height="19" aria-hidden="true" focusable="false"><use href="#ico-eye"></use></svg>
+                  <svg class="ico eye-off" width="19" height="19" aria-hidden="true" focusable="false"><use href="#ico-eye-off"></use></svg>
                 </button>
               </div>
               <p class="field-err" id="loginPasswordErr" aria-live="polite" hidden></p>
               <p class="caps-hint" id="capsLogin" role="status" hidden>大写锁定已开启</p>
             </div>
-
-            <button type="submit" class="btn btn-primary auth-submit" id="loginSubmit">登录</button>
-
-            <p class="auth-switch" id="switchWrapLogin" hidden>
-              还没有账号？
-              <button type="button" class="link-btn" id="switchToRegister">注册新账号</button>
-            </p>
+            <button type="submit" class="btn btn-primary auth-submit" id="loginSubmit">登录工作台</button>
+            <p class="auth-switch" id="switchWrapLogin" hidden>还没有账号？<button type="button" class="link-btn" id="switchToRegister">创建账号</button></p>
           </form>
         </div>
 
         <div class="auth-panel" id="panelRegister" role="tabpanel" aria-labelledby="tabRegister" hidden>
-          <h2 class="auth-title">创建账号</h2>
-          <p class="auth-sub">注册后即可进入工作台，功能权限由团队管理员分配。</p>
-
           <form class="auth-form" id="registerForm" novalidate>
             <div class="field">
-              <label for="regUsername">用户名 <span class="mini" id="regUsernameHint">3–32 个字符</span></label>
-              <input class="auth-input mono" id="regUsername" name="username" type="text" autocomplete="username"
-                     autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="用于登录"
-                     required aria-describedby="regUsernameErr">
+              <label for="regUsername">用户名 <span class="mini" id="regUsernameHint">2–32 个字符</span></label>
+              <input class="auth-input" id="regUsername" name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="支持中文、字母和数字" required aria-describedby="regUsernameHint regUsernameErr">
               <p class="field-err" id="regUsernameErr" aria-live="polite" hidden></p>
             </div>
-
-            <div class="field">
-              <label for="regDisplayName">显示名称 <span class="mini">选填</span></label>
-              <input class="auth-input" id="regDisplayName" name="display_name" type="text" autocomplete="nickname"
-                     placeholder="例如 张三">
-            </div>
-
             <div class="field">
               <label for="regPassword">密码 <span class="mini" id="regPasswordHint">至少 8 位</span></label>
               <div class="input-wrap">
-                <input class="auth-input" id="regPassword" name="password" type="password" autocomplete="new-password"
-                       placeholder="设置登录密码" required aria-describedby="regPasswordErr">
-                <button type="button" class="pw-toggle" data-target="regPassword" aria-controls="regPassword"
-                        aria-label="显示密码" aria-pressed="false">
-                  <svg class="ico eye-open" width="16" height="16" aria-hidden="true" focusable="false"><use href="#ico-eye"></use></svg>
-                  <svg class="ico eye-off" width="16" height="16" aria-hidden="true" focusable="false"><use href="#ico-eye-off"></use></svg>
+                <input class="auth-input" id="regPassword" name="password" type="password" autocomplete="new-password" placeholder="设置登录密码" required aria-describedby="regPasswordHint regPasswordErr regStrength capsRegister">
+                <button type="button" class="pw-toggle" data-target="regPassword" aria-controls="regPassword" aria-label="显示密码" aria-pressed="false">
+                  <svg class="ico eye-open" width="19" height="19" aria-hidden="true" focusable="false"><use href="#ico-eye"></use></svg>
+                  <svg class="ico eye-off" width="19" height="19" aria-hidden="true" focusable="false"><use href="#ico-eye-off"></use></svg>
                 </button>
               </div>
               <p class="field-err" id="regPasswordErr" aria-live="polite" hidden></p>
               <div class="pw-strength" id="regStrength" data-level="1" hidden>
                 <span class="bars" aria-hidden="true"><span></span><span></span><span></span></span>
-                <span class="lvl" id="regStrengthLabel">强度 弱</span>
+                <span class="lvl" id="regStrengthLabel" role="status">密码强度：弱</span>
               </div>
               <p class="caps-hint" id="capsRegister" role="status" hidden>大写锁定已开启</p>
             </div>
-
             <div class="field">
               <label for="regConfirm">确认密码</label>
               <div class="input-wrap">
-                <input class="auth-input" id="regConfirm" name="confirm" type="password" autocomplete="new-password"
-                       placeholder="再次输入密码" required aria-describedby="regConfirmErr">
-                <button type="button" class="pw-toggle" data-target="regConfirm" aria-controls="regConfirm"
-                        aria-label="显示密码" aria-pressed="false">
-                  <svg class="ico eye-open" width="16" height="16" aria-hidden="true" focusable="false"><use href="#ico-eye"></use></svg>
-                  <svg class="ico eye-off" width="16" height="16" aria-hidden="true" focusable="false"><use href="#ico-eye-off"></use></svg>
+                <input class="auth-input" id="regConfirm" name="confirm" type="password" autocomplete="new-password" placeholder="再次输入密码" required aria-describedby="regConfirmErr">
+                <button type="button" class="pw-toggle" data-target="regConfirm" aria-controls="regConfirm" aria-label="显示密码" aria-pressed="false">
+                  <svg class="ico eye-open" width="19" height="19" aria-hidden="true" focusable="false"><use href="#ico-eye"></use></svg>
+                  <svg class="ico eye-off" width="19" height="19" aria-hidden="true" focusable="false"><use href="#ico-eye-off"></use></svg>
                 </button>
               </div>
               <p class="field-err" id="regConfirmErr" aria-live="polite" hidden></p>
             </div>
-
             <div class="field" id="regInviteField" hidden>
               <label for="regInvite">邀请码 <span class="mini">由管理员提供</span></label>
-              <input class="auth-input mono" id="regInvite" name="invite_code" type="text" autocomplete="off"
-                     autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="粘贴邀请码"
-                     aria-describedby="regInviteErr">
+              <input class="auth-input" id="regInvite" name="invite_code" type="text" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" placeholder="输入邀请码" aria-describedby="regInviteErr">
               <p class="field-err" id="regInviteErr" aria-live="polite" hidden></p>
             </div>
-
             <button type="submit" class="btn btn-primary auth-submit" id="regSubmit">创建账号</button>
-
-            <p class="auth-switch">
-              已有账号？
-              <button type="button" class="link-btn" id="switchToLogin">返回登录</button>
-            </p>
+            <p class="auth-switch">已有账号？<button type="button" class="link-btn" id="switchToLogin">返回登录</button></p>
           </form>
         </div>
+        <p class="auth-card-foot"><svg width="14" height="14" aria-hidden="true" focusable="false"><use href="#ico-lock"></use></svg>账号独立，资料有序。</p>
       </section>
-
-      <p class="auth-main-foot">账号工作台 · 仅限团队内部使用</p>
     </main>
+    <footer class="auth-footer"><span>账号工作台</span><span>专注每一次投放</span></footer>
   </div>
-
-  <script src="/login.js?v=20261018g"></script>
+  <script src="/username-rules.js?v=20261021identity1"></script>
+  <script src="/login.js?v=20261021identity2"></script>
 </body>
 </html>

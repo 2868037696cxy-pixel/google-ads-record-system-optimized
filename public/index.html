@@ -3,32 +3,51 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#090c11">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eef1f6">
   <title>账号工作台 · Ads Operations Console</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23C8F65D'/%3E%3Cpath d='M10 23V9h6.5a4.5 4.5 0 0 1 0 9H10' fill='none' stroke='%23131A04' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=20261019r4">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23f2f4f8'/%3E%3Cg fill='%23465a78'%3E%3Crect x='7' y='7' width='7' height='7' rx='2'/%3E%3Crect x='18' y='7' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='7' y='18' width='7' height='7' rx='2' opacity='.42'/%3E%3Crect x='18' y='18' width='7' height='7' rx='2'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/design-tokens.css?v=20261023design1">
+  <link rel="stylesheet" href="/styles.css?v=20261021settings1">
+  <link rel="stylesheet" href="/ui-foundations.css?v=20261021settings1">
+  <link rel="stylesheet" href="/ui-components.css?v=20261022viewer1">
+  <link rel="stylesheet" href="/workspace-experience.css?v=20261023quota1">
 </head>
 <body class="boot">
+  <a class="skip-link" href="#main">跳转到主内容</a>
   <div class="app">
-    <aside class="sidebar">
+    <header class="mobile-topbar">
+      <button type="button" class="icon-btn" id="mobileNavToggle" popovertarget="workspaceSidebar" aria-label="打开工作台导航" aria-expanded="false"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
+      <strong>账号工作台</strong>
+      <button type="button" class="ghost-btn" data-action="nav" data-page="settings">设置</button>
+    </header>
+    <aside class="sidebar" id="workspaceSidebar" popover="auto" aria-label="工作台导航">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
-            <path d="M5 19V5h7a5 5 0 0 1 0 10H5" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-            <circle cx="18.4" cy="18.4" r="2.1" fill="currentColor"/>
+            <rect x="3.5" y="3.5" width="7" height="7" rx="2" fill="currentColor"/>
+            <rect x="13.5" y="3.5" width="7" height="7" rx="2" fill="currentColor" opacity=".42"/>
+            <rect x="3.5" y="13.5" width="7" height="7" rx="2" fill="currentColor" opacity=".42"/>
+            <rect x="13.5" y="13.5" width="7" height="7" rx="2" fill="currentColor"/>
           </svg>
         </span>
         <div class="brand-text">
           <strong>账号工作台</strong>
-          <span>ADS CONSOLE</span>
+          <span>ADS WORKSPACE</span>
         </div>
+        <button type="button" class="icon-btn mobile-nav-close" popovertarget="workspaceSidebar" popovertargetaction="hide" aria-label="关闭工作台导航">✕</button>
       </div>
+      <button type="button" class="workspace-command-trigger" data-action="workspace-commands" aria-keyshortcuts="Control+Shift+K Meta+Shift+K"><svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg><span>快捷前往</span><kbd>⇧ K</kbd></button>
       <nav class="nav" id="nav" aria-label="主导航"></nav>
       <div class="sidebar-foot">
         <button class="ghost-btn w-full" id="revealBtn" data-action="toggle-reveal">
           <span class="dot dot-eye"></span><span id="revealLabel">敏感信息：已隐藏</span>
         </button>
+        <div class="sidebar-connection" id="connectionNotice" hidden><p class="connection-status disconnected" id="connectionStatus" role="status"></p>
+        <button class="ghost-btn" data-action="retry-load">重试</button></div>
+        <details class="sidebar-utilities" id="sidebarUtilities">
+          <summary>快捷工具 <span aria-hidden="true" class="utility-chevron">⌄</span></summary>
+          <div class="sidebar-utilities-content">
         <div id="desktopTools" hidden>
           <div class="desktop-actions">
             <button class="ghost-btn" data-action="desktop-backup" title="导出全部记录和资源">备份</button>
@@ -38,30 +57,42 @@
           <p class="foot-note" id="desktopVersion">Windows 桌面版</p>
         </div>
         <p class="foot-note">全员证书查重已启用 · 其他成员的记录不可见</p>
-        <p class="connection-status" id="connectionStatus" role="status">正在连接…</p>
-        <button class="ghost-btn w-full" data-action="retry-load" title="重新读取数据（Ctrl+R）">重新连接</button>
         <div class="desktop-actions" id="webTools">
           <button class="ghost-btn" data-action="web-backup" title="导出本人全部资源、记录与原件">导出备份</button>
           <button class="ghost-btn" data-action="web-restore" title="从备份文件恢复本人数据">恢复备份</button>
         </div>
         <button class="ghost-btn w-full" data-action="my-audit">我的操作记录</button>
         <button class="ghost-btn w-full" data-action="change-password">修改登录密码</button>
+          </div>
+        </details>
         <div class="account-box">
           <div class="account-who">
             <span class="account-avatar" id="accountAvatar" aria-hidden="true">—</span>
             <span class="account-meta"><strong id="accountName">未登录</strong><span id="accountHint">数据仅本人可见</span></span>
           </div>
-          <button class="ghost-btn w-full" data-action="logout" title="退出当前账号">退出登录</button>
+          <button class="ghost-btn" data-action="logout" title="退出当前账号">退出</button>
         </div>
         <p class="foot-note">资源与记录按账号隔离<br>其他成员看不到，也不会互相覆盖</p>
       </div>
     </aside>
-    <main class="main" id="main"><section class="connection-panel" role="status"><h1>正在打开工作台</h1><p>正在加载界面…</p><noscript>请启用 JavaScript 后重试。</noscript></section></main>
+    <main class="main" id="main" tabindex="-1" data-connection="loading" aria-busy="true"><section class="connection-panel" role="status"><h1>正在打开工作台</h1><p>正在加载界面…</p><noscript>请启用 JavaScript 后重试。</noscript></section></main>
   </div>
   <div id="modal-root"></div>
   <div id="toast-root"></div>
-  <script src="/licenses.js?v=20261018g"></script>
-  <script src="/app.js?v=20261019r4"></script>
-  <script src="/security.js?v=20261019r1"></script>
+  <script src="/ui-components.js?v=20261023design1"></script>
+  <script src="/proxy-capacity.js?v=20261023quota1"></script>
+  <script src="/workspace-experience.js?v=20261023quota1"></script>
+  <script src="/navigation.js?v=20261021settings1"></script>
+  <script src="/document-viewer.js?v=20261022viewer1"></script>
+  <script src="/licenses.js?v=20261022viewer1"></script>
+  <script src="/license-batch.js?v=20261022viewer1"></script>
+  <script src="/account-setup.js?v=20261021pools1"></script>
+  <script src="/backup-tasks.js?v=20261020e"></script>
+  <script src="/record-integrity.js?v=20261020e"></script>
+  <script src="/record-query.js?v=20261020f"></script>
+  <script src="/record-create.js?v=20261023quota1"></script>
+  <script src="/resource-import.js?v=20261020g"></script>
+  <script src="/app.js?v=20261023quota1"></script>
+  <script src="/security.js?v=20261021settings1"></script>
 </body>
 </html>
