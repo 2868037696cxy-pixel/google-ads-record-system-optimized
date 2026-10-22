@@ -48,6 +48,7 @@
     --accent-deep: #1c5998;
     --accent-ink: #ffffff;
     --accent-dim: rgba(36, 118, 200, .075);
+    --accent-soft: var(--accent-dim);
     --accent-line: rgba(36, 118, 200, .4);
     --action-fill: #303b4f;
     --action-hover: #43536d;
@@ -58,6 +59,8 @@
     --danger-dim: #fceff1;
     --warning-dim: #fff7e8;
     --success-dim: #edf7f0;
+    --surface-recessed: #f1f4f8;
+    --surface-feature: linear-gradient(125deg, rgba(255,255,255,.95), rgba(241,246,253,.9));
 
     --ui-space-1: 4px;
     --ui-space-2: 8px;

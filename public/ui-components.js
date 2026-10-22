@@ -18,6 +18,9 @@ globalThis.WorkbenchUI = (() => {
     archive: '<rect x="3" y="3" width="18" height="5" rx="1"/><path d="M5 8v13h14V8M10 12h4"/>',
     check: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
     chevron: '<path d="m6 9 6 6 6-6"/>',
+    'arrow-right': '<path d="M4 12h16m-6-6 6 6-6 6"/>',
+    command: '<path d="M8 8h8v8H8zM8 8H5a3 3 0 1 1 3-3v3Zm8 0V5a3 3 0 1 1 3 3h-3Zm0 8h3a3 3 0 1 1-3 3v-3Zm-8 0v3a3 3 0 1 1-3-3h3Z"/>',
+    warning: '<path d="m12 3 10 18H2L12 3Z M12 9v5m0 3h.01"/>',
   });
   function icon(name) {
     return `<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] || paths.records}</svg>`;
@@ -74,7 +77,7 @@ globalThis.WorkbenchUI = (() => {
   let opener = null;
   let dialogController = null;
   const pendingControls = new WeakMap();
-  const focusable = modal => [...modal.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter(element => !element.disabled && element.getClientRects().length);
+  const focusable = modal => [...modal.querySelectorAll('button, input, select, textarea, a[href], [tabindex="0"]')].filter(element => !element.disabled && element.tabIndex >= 0 && element.getClientRects().length);
   const isBusy = () => Boolean(document.querySelector('#modal-root .modal[data-submitting]'));
   function pending(button, value, label) {
     const modal = button?.closest('.modal');
@@ -136,6 +139,7 @@ globalThis.WorkbenchUI = (() => {
     opener = null;
   }
   function onDialogKey(event) {
+    if (event.isComposing || event.keyCode === 229) return;
     const modal = document.querySelector('#modal-root .modal');
     if (!modal) return;
     if (event.key === 'Escape') { event.preventDefault(); if (!isBusy()) closeDialog(); }

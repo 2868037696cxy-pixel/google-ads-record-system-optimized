@@ -23,7 +23,8 @@
     "pretest": "npm run build:viewer",
     "predesktop": "npm run build:viewer",
     "prebuild:win": "npm run build:viewer",
-    "prebuild:dir": "npm run build:viewer"
+    "prebuild:dir": "npm run build:viewer",
+    "test:workspace": "node scripts/workspace-web-ui.cjs"
   },
   "engines": {
     "node": ">=22.16.0"

@@ -24,6 +24,8 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm test
+      - name: Verify responsive workspace, command navigation, resource combinations and PDF review
+        run: npm run test:workspace
       - name: Verify native design system and complete workbench interactions
         run: npm run test:ux
       - name: Verify encrypted backup tasks, native download, resume and restore safeguards

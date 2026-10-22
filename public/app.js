@@ -162,6 +162,7 @@ const state = {
   connectionPhase: 'loading',
   settingsTab: 'general',
   settingsAdvanced: false,
+  createAdvanced: false,
   next: null,
   reveal: false,
   unlockedUntil: 0,
@@ -346,6 +347,7 @@ function render() {
   renderSyncNotice();
   updateRecordsChrome();
   bindLabels();
+  updateCreateProgress();
   restoreView();
 }
 
@@ -496,6 +498,50 @@ async function refresh() {
 }
 
 /* ============ 运营总览：当前账号授权数据，不代表团队共享已上线 ============ */
+function openWorkspaceCommands() {
+  WorkbenchExperience.openCommands({
+    open: openModal, close: closeModal, signal: WorkbenchUI.dialog.signal,
+    select: command => {
+      if (command.type === 'nav') document.querySelector(`#nav [data-page="${command.key}"]`)?.click();
+      else openImportModal(command.key);
+    },
+  });
+}
+
+function renderInventorySummary() {
+  const inventory = WorkbenchExperience.inventory(state.pools);
+  return `<section class="inventory-summary" aria-labelledby="inventory-title">
+    <div class="inventory-summary-intro"><span class="section-kicker">资源准备度</span><h2 id="inventory-title">${inventory.capacity ? `可组合 ${inventory.capacity} 组完整资料` : '准备资源，开始下一组'}</h2><p>${inventory.missing.length ? `待补充：${inventory.missing.map(item => item.label).join('、')}` : '四类资源均有可用库存，可前往创建并核对实际组合。'}</p><small>按四类未占用库存估算上限，实际分配以创建核对为准。</small></div>
+    <div class="inventory-summary-items">${inventory.items.map(item => `<button type="button" class="inventory-item" data-action="nav" data-page="${item.key}"><span class="inventory-icon">${WorkbenchUI.icon(item.key)}</span><span class="inventory-label">${item.label}</span><strong>${item.available}<small>${item.unit}</small></strong><span class="inventory-hint">${item.available ? `共 ${item.total} · 已占用 ${item.occupied}` : '补充资源 →'}</span></button>`).join('')}</div>
+  </section>`;
+}
+
+function renderCreateReadiness() {
+  const inventory = WorkbenchExperience.inventory(state.pools);
+  const count = createDraft().body.domains.length;
+  return inventory.items.map(item => {
+    const omitted = item.key === 'proxies' ? state.form.proxy_mode === 'none' || (state.form.proxy_mode === 'auto' && !item.total && !state.form.require_complete) : !item.total && !state.form.require_complete;
+    const shared = item.key === 'proxies' && state.form.proxy_mode === 'shared';
+    const shortage = !omitted && !shared && count > item.available;
+    const manual = state.picked[item.key].size;
+    const text = omitted ? '本次不关联' : shared ? '共享模式 · 核对时确认' : shortage ? `缺少 ${count - item.available} ${item.unit}` : count ? `可满足 ${count} 条记录` : '等待填写域名';
+    return `<div class="creation-resource-check" data-tone="${shortage ? 'warning' : omitted ? 'neutral' : 'ready'}"><span>${WorkbenchUI.icon(item.key)}<b>${item.label}</b><small>${manual && !omitted && !shared ? `手动 ${manual} · 其余自动` : shared ? '共享分配' : omitted ? '留空' : '自动补齐'}</small></span><strong>${text}</strong></div>`;
+  }).join('');
+}
+
+function updateCreateProgress() {
+  const steps = [...document.querySelectorAll('.creation-steps > button')];
+  if (!steps.length) return;
+  const draft = createDraft();
+  const current = !draft.body.domains.length || draft.field ? 0 : draft.error ? 1 : 2;
+  steps.forEach((step, index) => {
+    step.dataset.phase = index < current ? 'complete' : index === current ? 'current' : 'waiting';
+    if (index === current) step.setAttribute('aria-current', 'step');
+    else step.removeAttribute('aria-current');
+    step.querySelector('span').textContent = index < current ? '✓' : String(index + 1);
+  });
+}
+
 function renderOverview() {
   const normal = state.recordStats['正常'];
   const abnormal = state.recordStats['异常'];
@@ -503,15 +549,14 @@ function renderOverview() {
   const recent = state.recentRecords;
   const resources = [
     {kind:'emails', label:'邮箱资源'},
-    {kind:'proxies', label:'代理资源'},
+    {kind:'proxies', label:'IP / 代理'},
     {kind:'cards', label:'信用卡'},
     {kind:'licenses', label:'营业执照'},
   ];
   const resourceRows = resources.map(({kind,label}) => `
     <button type="button" class="overview-resource" data-action="nav" data-page="${kind}">
       <span class="overview-resource-icon" aria-hidden="true">${WorkbenchUI.icon(kind)}</span>
-      <span class="overview-resource-name">${label}<small>管理和导入资源</small></span>
-      <b class="overview-resource-count ${poolCount(kind) === 0 ? 'overview-danger' : ''}">${poolCount(kind)}<small>可用</small></b>
+      <span class="overview-resource-name">${label}<small>${kind === 'licenses' ? '预览原件、校对与查重' : '批量导入与管理资源'}</small></span>
       <span class="overview-arrow" aria-hidden="true">↗</span>
     </button>`).join('');
   document.getElementById('main').innerHTML = `
@@ -520,6 +565,7 @@ function renderOverview() {
       <div class="head-actions"><button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>
       <button class="btn btn-primary" data-action="nav" data-page="create">创建账号记录</button></div>
     </div>
+    ${renderInventorySummary()}
     <div class="overview-metrics">
       <div class="overview-metric"><span>账号记录</span><b>${state.recordStats.total}</b><small>已建档总数</small></div>
       <div class="overview-metric"><span>正常</span><b class="overview-good">${normal}</b><small>当前状态正常</small></div>
@@ -527,9 +573,9 @@ function renderOverview() {
       <div class="overview-metric"><span>停用</span><b>${paused}</b><small>检查关联资源</small></div>
     </div>
     <div class="overview-columns">
-      <section class="panel"><div class="panel-head"><div class="panel-title">资源准备度</div><span class="dim">点击管理</span></div>
+      <section class="panel"><div class="panel-head"><div class="panel-title">资源管理</div><span class="dim">独立入池 · 按需组合</span></div>
         <div class="overview-resource-list">${resourceRows}</div>
-        <p class="overview-footnote">此处仅展示当前用户库存。实际批量创建还需服务端分配校验。</p>
+        <p class="overview-footnote">导入后即可前往创建页，自动组合或手动指定资源。</p>
       </section>
       <section class="panel"><div class="panel-head"><div class="panel-title">优先处理</div><span class="dim">账号状态</span></div>
         <div class="overview-todo">
@@ -586,7 +632,7 @@ function renderSettings() {
           <div class="settings-section-head"><h2 id="settings-sync-title">数据更新</h2><p>打开工作台时自动读取，操作后自动更新。</p></div>
           <div class="settings-section-body"><div class="settings-row"><div><b>获取最新数据</b><p id="settingsSyncStatus" role="status">${esc(lastSyncLabel())}</p></div><button class="btn btn-ghost" id="settingsRefresh" data-action="retry-load" data-pending-label="正在刷新…">刷新数据</button></div></div>
         </section>
-        <div class="settings-shortcuts" aria-label="键盘快捷键"><span><kbd>Ctrl / ⌘ K</kbd> 搜索列表</span><span><kbd>Ctrl R</kbd> 刷新数据</span><span><kbd>Esc</kbd> 关闭弹窗</span></div>
+        <div class="settings-shortcuts" aria-label="键盘快捷键"><span><kbd>Ctrl / ⌘ K</kbd> 搜索列表</span><span><kbd>Ctrl / ⌘ ⇧ K</kbd> 快捷操作</span><span><kbd>Ctrl R</kbd> 刷新数据</span><span><kbd>Esc</kbd> 关闭弹窗</span></div>
       </div>
       <div class="settings-content" ${panel('security')}>
         <section class="panel settings-section" aria-labelledby="settings-account-title">
@@ -686,8 +732,8 @@ function renderWorkbench() {
       <div>
         <h1>${state.page === 'create' ? '新建记录' : '我的记录'}</h1>
         <p class="sub">${state.page === 'create'
-          ? '指纹名称按今日日期自动生成，资源按状态分组、自动分配'
-          : '查记录、看状态、处理异常优先；需要录入新记录时走「新建记录」'}</p>
+          ? '填写域名，选择资源，核对每一组开户资料。'
+          : '查找账号、核对开户资料，集中处理状态变化。'}</p>
       </div>
       <div class="head-actions">
         ${state.page === 'create'
@@ -706,13 +752,14 @@ function renderWorkbench() {
     </div>
 
     ${
-      state.recordStats.total === 0
+      state.recordStats.total === 0 && state.page === 'records'
         ? `<div class="panel"><div class="panel-body"><div class="steps">
             ${[
               { n: '01', t: '导入邮箱', d: '支持「账号——密码——2FA」格式，一行一个，自动拆分入库', k: 'emails' },
               { n: '02', t: '导入代理', d: '粘贴代理商文本块，自动提取 IP、端口、编号、账号密码', k: 'proxies' },
               { n: '03', t: '导入信用卡', d: '信用卡别名 | 末四位 | 有效期；不接收完整卡号和 CVV', k: 'cards' },
-              { n: '04', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
+              { n: '04', t: '导入营业执照', d: '上传 PDF，预览原件并校对企业资料，输入时自动检查重复', k: 'licenses' },
+              { n: '05', t: '创建记录', d: '在「新建记录」填写国家/产品/域名，指纹名称按今天日期自动生成', k: 'create' },
             ]
               .map(
                 (s) => `<div class="step-card" ${s.k ? `data-action="nav" data-page="${s.k}"` : ''}>
@@ -725,74 +772,36 @@ function renderWorkbench() {
     }
 
     <div class="panel" id="createPanel">
-      <div class="panel-head">
-        <div class="panel-title">快速创建 <span class="tag">指纹名称自动生成</span></div>
-        <span class="dim" style="font-size:12px">域名一行一个，每行创建一条记录；邮箱 / 信用卡 / 营业执照自动按顺序分配并标记已使用</span>
+      <div class="panel-head"><div><span class="section-kicker">资源自动组合</span><div class="panel-title">从资料到记录，一次核对</div></div><span class="creation-safe-note">确认前不占用资源</span></div>
+      <div class="creation-steps" aria-label="创建步骤">
+        <button type="button" data-action="create-section" data-target="creation-basics"><span>1</span><b>填写信息</b><small>域名与基础资料</small></button>
+        <button type="button" data-action="create-section" data-target="creation-resources"><span>2</span><b>分配资源</b><small>自动补齐或手动指定</small></button>
+        <button type="button" data-action="create-section" data-target="creation-check"><span>3</span><b>核对组合</b><small>查看实际组合后创建</small></button>
       </div>
-      <div class="panel-body">
-        <form id="createForm" class="form-grid" autocomplete="off">
-          <div class="field col-3">
-            <label>投放国家 <span class="mini">与企业注册国家分别记录</span></label>
-            <input id="f-country" value="${esc(f.country)}" placeholder="奥地利">
-          </div>
-          <div class="field col-3">
-            <label>产品 <span class="mini">如：呼吸机</span></label>
-            <input id="f-product" value="${esc(f.product)}" placeholder="呼吸机">
-          </div>
-          <div class="field col-2">
-            <label>指纹起始 <span class="mini">数字或全名，如 6 或 10.8ads6</span></label>
-            <input id="f-start" class="mono" value="${esc(f.start_seq)}" placeholder="${todayKey()}ads1">
-          </div>
-          <div class="field col-2">
-            <label>IP注册时间</label>
-            <input id="f-ipreg" type="date" value="${esc(f.ip_reg_time)}">
-          </div>
-          <div class="field col-2">
-            <label>身份证 <span class="mini">选填</span></label>
-            <input id="f-idcard" value="${esc(f.id_card)}" placeholder="选填">
-          </div>
-          <div class="field col-3">
-            <label>域名 <span class="mini">一行一个，如 nfjh.shop；名称将自动拼成「国家-产品-域名前缀」</span></label>
-            <textarea id="f-domains" class="mono" rows="4" aria-describedby="create-domain-error" placeholder="nfjh.shop&#10;mkxd.shop&#10;wnfh.shop">${esc(f.domains)}</textarea>
-            <p class="field-error" id="create-domain-error" role="status" hidden></p>
-          </div>
-          <div class="field col-3">
-            <label>资源分配 <span class="mini">点击「选择」可手动指定，否则自动从未使用中按顺序取用</span></label>
-            <div style="display:flex;flex-direction:column;gap:8px">
-              <div class="assign-row">
-                <span class="assign-info">✉ 谷歌邮箱：<span id="info-emails">${assignInfo('emails')}</span></span>
-                <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="emails">选择</button>
-              </div>
-              <div class="assign-row">
-                <span class="assign-info">▤ 信用卡：<span id="info-cards">${assignInfo('cards')}</span></span>
-                <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="cards">选择</button>
-              </div>
-              <div class="assign-row">
-                <span class="assign-info">§ 营业执照：<span id="info-licenses">${assignInfo('licenses')}</span></span>
-                <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="licenses">选择</button>
-              </div>
-              <div class="assign-row">
-                <span class="assign-info">⇅ 代理：
-                  <select id="f-proxy-mode" aria-label="代理分配方式" style="flex:0 0 auto">
-                    <option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个</option>
-                    <option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>自动分配</option>
-                    <option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>不使用</option>
-                  </select>
-                  <span id="proxy-mode-extra" style="flex:1">${proxyModeExtra(f)}</span>
-                  <button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="proxies" ${f.proxy_mode === 'auto' ? '' : 'hidden'}>选择 IP</button>
-                </span>
-              </div>
+      <div class="panel-body creation-body">
+        <form id="createForm" class="creation-form" autocomplete="off">
+          <section class="creation-section" id="creation-basics" aria-labelledby="creation-basics-title">
+            <div class="creation-section-title"><h2 id="creation-basics-title">基础信息</h2><p>每个域名创建一条记录，指纹编号自动递增。</p></div>
+            <div class="creation-fields-grid">
+              <div class="field"><label>投放国家 <span class="mini">与企业注册国家分开</span></label><input id="f-country" value="${esc(f.country)}" placeholder="例如：意大利"></div>
+              <div class="field"><label>产品 <span class="mini">用于识别账号</span></label><input id="f-product" value="${esc(f.product)}" placeholder="例如：影像设备"></div>
+              <div class="field creation-wide"><label>域名 <span class="mini">一行一个，支持直接粘贴网址</span></label><textarea id="f-domains" class="mono" rows="5" aria-describedby="create-domain-error" placeholder="example-one.com&#10;example-two.com">${esc(f.domains)}</textarea><p class="field-error" id="create-domain-error" role="status" hidden></p></div>
+              <div class="field creation-wide"><label>指纹起始 <span class="mini">留空按今日序号生成，可填写数字或完整名称</span></label><input id="f-start" class="mono" value="${esc(f.start_seq)}" placeholder="${todayKey()}ads1"></div>
             </div>
-          </div>
+            <details class="creation-advanced" id="createAdvanced" ${state.createAdvanced ? 'open' : ''}><summary><span>更多记录信息 <small>选填</small></span>${WorkbenchUI.icon('chevron')}</summary><div class="creation-fields-grid"><div class="field"><label>IP 注册时间</label><input id="f-ipreg" type="date" value="${esc(f.ip_reg_time)}"></div><div class="field"><label>身份证 <span class="mini">选填</span></label><input id="f-idcard" value="${esc(f.id_card)}" placeholder="选填"></div></div></details>
+          </section>
+          <section class="creation-section" id="creation-resources" aria-labelledby="creation-resources-title">
+            <div class="creation-section-title"><h2 id="creation-resources-title">资源分配</h2><p>默认从独立资源池取用，也可以指定已有资源。</p></div>
+            <div class="assignment-list">${['emails','cards','licenses'].map(kind => `<div class="assignment-item"><span class="assignment-icon">${WorkbenchUI.icon(kind)}</span><div><strong>${({emails:'邮箱',cards:'信用卡',licenses:'企业文件'})[kind]}</strong><span id="info-${kind}">${assignInfo(kind)}</span></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="${kind}" aria-label="选择${({emails:'邮箱',cards:'信用卡',licenses:'企业文件'})[kind]}">选择</button></div>`).join('')}</div>
+            <div class="assignment-proxy"><div class="assignment-proxy-label"><span class="assignment-icon">${WorkbenchUI.icon('proxies')}</span><label for="f-proxy-mode">IP / 代理</label><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="proxies" ${f.proxy_mode === 'auto' ? '' : 'hidden'}>选择 IP</button></div><select id="f-proxy-mode" aria-label="代理分配方式"><option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>每条记录独立分配</option><option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个 IP</option><option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>本次不关联</option></select><div id="proxy-mode-extra">${proxyModeExtra(f)}</div></div>
+            <label class="bundle-choice"><input id="f-require-complete" type="checkbox" ${f.require_complete ? 'checked' : ''}><span><strong>必须组成完整的一组</strong><small>每条包含邮箱、IP、信用卡和企业文件，缺项不创建。</small></span></label>
+            <div id="creation-check" class="creation-readiness" aria-labelledby="creation-check-title"><h3 id="creation-check-title">本次资源准备情况</h3><div id="creation-resource-checks">${renderCreateReadiness()}</div><p>下一步查看每条记录的实际组合，再确认创建。</p></div>
+          </section>
         </form>
-        <label class="bundle-choice"><input id="f-require-complete" type="checkbox" ${f.require_complete ? 'checked' : ''}>每条必须包含 1 个邮箱 + 1 个 IP + 1 张信用卡 + 1 份企业文件；缺项不创建</label>
         <p class="field-error" id="create-validation" role="alert" tabindex="-1" hidden></p>
         <div class="create-preview">
-          <span>本次将创建 <b>${count || 0}</b> 条记录，指纹名称：<span class="fp">${esc(fpPreview)}</span>
-            ${count > avail.emails ? `<span class="warn">⚠ 邮箱仅剩 ${avail.emails} 条</span>` : ''}
-            ${count > avail.cards ? `<span class="warn">⚠ 信用卡仅剩 ${avail.cards} 张</span>` : ''}
-          </span>
-          <button class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `核对并创建 ${count > 0 ? count + ' 条' : ''}`}</button>
+          <span>本次创建 <b>${count}</b> 条记录<small>指纹范围 <span class="fp">${esc(fpPreview)}</span></small></span>
+          <button type="button" class="btn btn-primary" data-action="create" ${count === 0 || count > 500 || state.creating ? 'disabled' : ''}>${state.creating ? '创建中' : `核对并创建 ${count > 0 ? count + ' 条' : ''}`}</button>
         </div>
       </div>
     </div>
@@ -1123,16 +1132,23 @@ function renderPoolTable(kind, list) {
 
 function renderPool(kind) {
   const conf = KINDS.find((item) => item.key === kind);
+  const context = {
+    emails: ['独立邮箱池', '批量导入后，在创建页自动取用或手动指定。密码与 2FA 继续按授权隐藏。', '搜索邮箱、备注…'],
+    proxies: ['连接资源独立管理', 'IP 与账号分开入池。创建时选择独立分配、共享一个或本次不关联。', '搜索 IP、编号、国家…'],
+    cards: ['轻量信用卡档案', '保存别名、末四位和有效期，便于匹配与核对；请勿填写完整卡号或 CVV。', '搜索别名、末四位…'],
+    licenses: ['原件与企业资料，一处校对', '批量 PDF 逐份预览、校对并自动查重。扫描件可预览，自动提取仍需可读取的文本层。', '搜索企业、注册编号、城市…'],
+  }[kind];
   const list = getFilteredPool(kind);
   // 状态数量直接标在筛选标签上：原来上方另有一排大数字卡片，与这里说的是同一件事，白占一块空间。
   const counts = { 全部: state.pools[kind].length, 未使用: poolCount(kind), 已使用: poolCount(kind, '已使用'), 停用: poolCount(kind, '停用') };
   document.getElementById('main').innerHTML = `
-    <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">统一管理${conf.label}资源，创建记录时自动分配并标记</p></div>
+    <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">独立管理，按需组合；占用与分配状态自动同步。</p></div>
       <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>' : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
+    <section class="pool-context" aria-label="资源使用说明"><span class="pool-context-icon">${WorkbenchUI.icon(kind)}</span><div><strong>${context[0]}</strong><p>${context[1]}</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="nav" data-page="create">去组合资源 ${WorkbenchUI.icon('arrow-right')}</button></section>
     <div class="panel"><div class="toolbar">
-      <input class="search" id="pool-q" aria-label="搜索资源" placeholder="搜索…" value="${esc(state.poolQ)}">
-      <div class="tabs">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" aria-pressed="${state.poolStatus === status}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
+      <input class="search" id="pool-q" aria-label="搜索资源" placeholder="${context[2]}" value="${esc(state.poolQ)}">
+      <div class="tabs" role="group" aria-label="资源状态筛选">${['全部', '未使用', '已使用', '停用'].map((status) => `<button class="tab ${state.poolStatus === status ? 'active' : ''}" aria-pressed="${state.poolStatus === status}" data-action="pool-status" data-v="${status}">${status}<i class="n">${counts[status]}</i></button>`).join('')}</div>
       <span class="sel-count">${list.length} 条</span>
       <button class="btn btn-ghost btn-sm" data-action="clear-pool-filter" ${!state.poolQ && state.poolStatus === '全部' ? 'disabled' : ''}>清除筛选</button></div>${renderPoolTable(kind, list)}</div>`;
 }
@@ -1492,6 +1508,16 @@ document.addEventListener('click', async (e) => {
 
   try {
     switch (action) {
+      case 'workspace-commands':
+        openWorkspaceCommands();
+        break;
+      case 'create-section': {
+        const section = document.getElementById(t.dataset.target);
+        section?.scrollIntoView({ block: 'start', behavior: 'auto' });
+        const target = section?.querySelector('input, textarea, select, button, h3');
+        if (target) { if (target.matches('h3')) target.tabIndex = -1; target.focus({ preventScroll: true }); }
+        break;
+      }
       case 'retry-load':
         await connect({ manual: true });
         break;
@@ -1840,24 +1866,15 @@ function updateCreatePreview() {
   const fpPreview = count > 0
     ? (count === 1 ? `${fp.prefix}${fp.seq}` : `${fp.prefix}${fp.seq} ~ ${fp.prefix}${fp.seq + count - 1}`)
     : `${fp.prefix}${fp.seq}`;
-  const avail = { emails: poolCount('emails'), cards: poolCount('cards') };
   preview.querySelector('.fp').textContent = fpPreview;
   preview.querySelector('span > b').textContent = count;
   const btn = preview.querySelector('[data-action="create"]');
   btn.disabled = count === 0 || count > 500 || state.creating;
   btn.textContent = state.creating ? '创建中' : count > 0 ? `核对并创建 ${count} 条` : '核对并创建';
   showCreateValidation(domains.length ? draft : { error: '' });
-  preview.querySelectorAll('.warn').forEach((w) => w.remove());
-  const warns = [];
-  if (count > avail.emails) warns.push(`⚠ 邮箱仅剩 ${avail.emails} 条`);
-  if (count > avail.cards) warns.push(`⚠ 信用卡仅剩 ${avail.cards} 张`);
-  const span = preview.querySelector('span');
-  warns.forEach((w) => {
-    const el = document.createElement('span');
-    el.className = 'warn';
-    el.textContent = ' ' + w;
-    span.appendChild(el);
-  });
+  const checks = document.getElementById('creation-resource-checks');
+  if (checks) checks.innerHTML = renderCreateReadiness();
+  updateCreateProgress();
 }
 
 function renderRecordsTableInto(input) {
@@ -1919,7 +1936,7 @@ function refreshSelectionUI() {
 }
 
 document.addEventListener('change', (e) => {
-  if (e.target.id === 'f-require-complete') { state.form.require_complete = e.target.checked; showCreateValidation(createDraft()); return; }
+  if (e.target.id === 'f-require-complete') { state.form.require_complete = e.target.checked; updateCreatePreview(); return; }
   if (e.target.matches('input[name="settings-density"]')) {
     setTableDensity(e.target.value);
     return;
@@ -1952,8 +1969,11 @@ document.addEventListener('change', (e) => {
         extra.innerHTML = `<span class="mini">记录中代理字段留空</span>`;
       }
     }
+    updateCreatePreview();
   }
 });
+
+document.addEventListener('toggle', event => { if (event.target.id === 'createAdvanced') state.createAdvanced = event.target.open; }, true);
 
 /* ============ 启动 ============ */
 
@@ -2021,9 +2041,11 @@ document.addEventListener('keydown', (event) => {
     selectSettingsTab(keys[next], true);
     return;
   }
-  if (!modalOpen && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+  if (!modalOpen && !event.isComposing && !event.repeat && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+    if (event.shiftKey) { event.preventDefault(); openWorkspaceCommands(); return; }
     const search = document.querySelector('.page-records #rec-q, #pool-q');
     if (search) { event.preventDefault(); search.focus(); search.select(); }
+    else { event.preventDefault(); openWorkspaceCommands(); }
   }
   if (!modalOpen && event.key === 'Escape') {
     document.querySelectorAll('.col-menu[open]').forEach(menu => { menu.open = false; menu.querySelector('summary')?.focus(); });
