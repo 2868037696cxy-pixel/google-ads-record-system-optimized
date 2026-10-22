@@ -53,6 +53,7 @@ async function waitFile(file){for(let n=0;n<100;n++){if(fs.existsSync(file)&&fs.
   await newProxy(port);await page.locator('#retry').click();await page.locator('#main[data-connection="ready"]').waitFor();console.log('PASS offline page and reconnect, never local fallback');
   await page.locator('[data-action="logout"]').click();await page.locator('#loginUsername').waitFor();await page.locator('#loginUsername').fill('bob');await page.locator('#loginPassword').fill('Remote-Test-1234');await page.locator('#loginSubmit').click();await page.locator('#main[data-connection="ready"]').waitFor();assert.equal(await page.evaluate(()=>state.records.length),0);assert.ok(!(await page.content()).includes('alice@example.test'));console.log('PASS logout and second-user login clear previous private data');
   await require('./license-pools-ui.cjs')(page);
+  await require('./document-viewer-ui.cjs')(page);
   assert.deepEqual(errors,[]);await electron.close();electron=null;testPage=null;
   // Same server without test certificate pin MUST be rejected, not silently trusted.
   electron=await _electron.launch({executablePath:require('electron'),args:[...(process.platform==='linux'?['--no-sandbox']:[]),'.'],env:{...process.env,NODE_ENV:'test',ADS_WORKBENCH_MODE:'remote',ADS_WORKBENCH_SERVER_URL:remote,ADS_TEST_CERT_FINGERPRINT:'',ADS_DESKTOP_DATA_DIR:path.join(root,'invalid-cert-client')}});

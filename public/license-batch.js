@@ -11,9 +11,11 @@ function openLicenseBatch(files) {
       <label class="batch-auto"><input type="checkbox" id="batch-auto-save">自动保存字段完整且无重复的资料</label>
       <p id="batch-summary" role="status" aria-live="polite"></p>
       <div class="license-batch-layout"><div id="batch-files" class="license-batch-files" aria-label="文件队列"></div>
-        <section id="batch-editor" aria-label="当前文件校对"></section></div>
+        <div class="document-review-layout">${WorkbenchDocumentViewer.markup()}<section id="batch-editor" class="document-fields" aria-label="当前文件校对"></section></div></div>
     </div><div class="modal-foot"><button class="btn btn-ghost" id="batch-done">完成并返回资料库</button><span class="grow"></span><button class="btn btn-primary" id="batch-save-ready" disabled>保存完整资料</button></div>`, { large: true });
   const signal = WorkbenchUI.dialog.signal();
+  const preview = WorkbenchDocumentViewer.attach(document.querySelector('.document-preview'), signal);
+  let previewId = null;
   const list = document.getElementById('batch-files'), editor = document.getElementById('batch-editor');
   const summary = document.getElementById('batch-summary'), saveReady = document.getElementById('batch-save-ready');
   const auto = document.getElementById('batch-auto-save');
@@ -43,6 +45,7 @@ function openLicenseBatch(files) {
   }
   function showEditor(entry) {
     currentId = entry.id;
+    if (previewId !== entry.id) { previewId = entry.id; void preview.show({ file: entry.file, name: entry.file.name }); }
     editor.innerHTML = `<h4>${esc(entry.file.name)}</h4><p class="batch-entry-status" id="batch-entry-status" role="status" aria-live="polite">${esc(entry.message)}</p>
       <form id="batch-fields" class="license-form" autocomplete="off">${LICENSE_FIELDS.map(([key, label, mandatory]) => `<div class="field ${['address', 'cvr'].includes(key) ? 'license-wide' : ''}"><label for="batch-${key}">${label}${mandatory ? ' *' : ''}</label><input id="batch-${key}" name="${key}" maxlength="512" value="${esc(entry.item[key] || '')}" ${['saved','saving','parsing','queued'].includes(entry.phase) ? 'disabled' : ''} aria-describedby="batch-entry-status"></div>`).join('')}</form>
       <button type="button" class="btn btn-primary" id="batch-save-one" ${entry.phase === 'ready' && !writing && !running ? '' : 'disabled'}>保存当前资料</button>`;

@@ -1263,7 +1263,7 @@ fastify.addHook('onRequest', async (req, reply) => {
 fastify.addHook('onSend', async (req, reply, payload) => {
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('Referrer-Policy', 'same-origin');
-  reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+  reply.header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; font-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'");
   reply.header('Permissions-Policy','camera=(), microphone=(), geolocation=()');
   if(SESSION_SECURE) reply.header('Strict-Transport-Security','max-age=31536000');
   // 与 onRequest 同理：响应的 no-store 与脱敏也按解码后的路径判断，

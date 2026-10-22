@@ -14,22 +14,31 @@ const LICENSE_FIELDS = [
 function openLicenseDetails(id) {
   const license = state.pools.licenses.find((item) => item.id === id);
   if (!license) return toast('营业执照不存在，请重新连接刷新数据', 'warn');
-  const rows = LICENSE_FIELDS.map(([key, label]) => `<tr><th>${label}</th><td><span class="copyable" data-copy="${esc(license[key] || '')}" title="点击复制">${esc(license[key] || '—')}</span></td></tr>`).join('');
+  const rows = LICENSE_FIELDS.map(([key, label]) => `<tr><th>${label}</th><td>${license[key] ? `<button type="button" class="license-value-copy" data-license-copy="${esc(license[key])}" aria-label="复制 ${label}">${esc(license[key])}<span aria-hidden="true">复制</span></button>` : '<span class="license-value-empty">待补充</span>'}</td></tr>`).join('');
   openModal(`
     <div class="modal-head"><div><span class="license-eyebrow">组织资料 · ${esc(license.status)}</span><h3>${esc(license.name)}</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
-    <div class="modal-body">
-      <p class="license-help">开户常用资料 · 名称、街道、城市与邮编保留证书原文，点击字段即可复制。未填写的项目显示为「—」。</p>
+    <div class="modal-body document-review-body"><div class="document-review-layout">${WorkbenchDocumentViewer.markup()}<section class="document-fields" aria-label="企业资料">
+      <div class="document-fields-heading"><span class="license-eyebrow">企业档案</span><h4>开户常用资料</h4><p id="license-copy-status" role="status" aria-live="polite">点击字段即可复制，名称与地址保留原文。</p></div>
       <table class="detail-table"><tbody>${rows}</tbody></table>
       <div class="license-document">
         <span class="license-document-icon" aria-hidden="true">PDF</span>
         <div class="grow"><strong>${esc(license.document_name || '原 PDF 未保存')}</strong><p>${license.document_id ? `原始文件已保存到工作台 · ${Math.ceil((license.document_size || 0) / 1024)} KB · 完整备份可恢复` : '可重新导入同名组织的 PDF，补充原文件。'}</p></div>
       </div>
-    </div>
+    </section></div></div>
     <div class="modal-foot">
       ${license.document_id ? `<button class="btn btn-primary" data-action="open-license-pdf" data-id="${id}">${window.desktop ? '打开原 PDF' : '下载原 PDF'}</button>${window.desktop ? `<button class="btn btn-ghost" data-action="reveal-license-pdf" data-id="${id}">打开文件位置</button>` : ''}` : ''}
       <button class="btn btn-primary" id="license-copy-fields">复制企业资料</button><button class="btn btn-ghost" id="license-edit-fields">校对资料</button><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">关闭</button>
     </div>`, { large: true });
-  document.getElementById('license-copy-fields').onclick = () => copyText(WorkbenchAccountSetup.build({}, license).business.filter(field => field.value).map(field => `${field.label}：${field.value}`).join('\n'));
+  const preview = WorkbenchDocumentViewer.attach(document.querySelector('.document-preview'), WorkbenchUI.dialog.signal());
+  if (license.document_id) void preview.show({ id: license.id, name: license.document_name });
+  else document.querySelector('.document-preview-message p').textContent = '这份资料尚未保存 PDF 原件，可先查看和校对右侧信息。';
+  const copy = async (value, label) => {
+    const feedback = document.getElementById('license-copy-status');
+    const ok = await copyText(value, { quiet: true });
+    if (feedback?.isConnected) feedback.textContent = ok ? `已复制${label}` : '复制失败，请选中文字后复制';
+  };
+  document.querySelectorAll('[data-license-copy]').forEach(button => { button.onclick = () => copy(button.dataset.licenseCopy, button.closest('tr').querySelector('th').textContent); });
+  document.getElementById('license-copy-fields').onclick = () => copy(WorkbenchAccountSetup.build({}, license).business.filter(field => field.value).map(field => `${field.label}：${field.value}`).join('\n'), '企业资料');
   document.getElementById('license-edit-fields').onclick = () => openLicenseImport(license);
 }
 
@@ -39,6 +48,7 @@ function openLicenseImport(existing = null) {
     <div class="modal-body">
       <div class="license-upload" ${existing ? 'hidden' : ''}><strong>企业文件入池</strong><p>可同时选择多个国家的营业执照或工商 PDF。每份文件独立识别、校对与查重；单份最大 10 MB。</p><input type="file" id="license-file" aria-label="选择营业执照 PDF" aria-describedby="license-file-status" accept=".pdf,application/pdf" multiple><span id="license-file-status" role="status">也可以不上传文件，直接填写资料。</span></div>
       ${existing ? '<p class="license-help">修改已保存的企业资料，原 PDF 与账号关联会保留。已有企业编号只读，其他资料可按原件校对。</p>' : ''}
+      <div class="document-review-layout">${WorkbenchDocumentViewer.markup()}<section class="document-fields" aria-label="校对企业资料"><div class="document-fields-heading"><span class="license-eyebrow">资料校对</span><h4>让每份资料准确入池</h4><p>对照原件确认企业身份与地址，填写时自动查重。</p></div>
       <form id="license-form" class="license-form" autocomplete="off">
         ${LICENSE_FIELDS.map(([key, label, required]) => {
           const placeholder = key === 'zip' ? '9310 或 DK-9310'
@@ -52,9 +62,12 @@ function openLicenseImport(existing = null) {
       </form>
       <details class="license-source" ${existing ? 'hidden' : ''}><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" aria-label="营业执照结构化信息或识别原文" class="mono" rows="7" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n注册国家：DK\n注册号类型：CVR\nCVR：12345678\n街道地址：Følfodvej 1\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
       <p class="license-help">输入时自动查重，保存时再次核对。巴西填写 CNPJ，克罗地亚填写企业 OIB；相同编号的空格、分隔符和大小写不影响判重。未识别出编号的 PDF，请手动补齐；扫描图片暂不支持自动识别。其他成员的资料不会显示。</p>
+      </section></div>
     </div>
     <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="license-import">确认保存</button></div>
   `, { large: true });
+  const preview = WorkbenchDocumentViewer.attach(document.querySelector('.document-preview'), WorkbenchUI.dialog.signal());
+  if (existing?.document_id) void preview.show({ id: existing.id, name: existing.document_name });
   const form = document.getElementById('license-form');
   const fileInput = document.getElementById('license-file');
   const status = document.getElementById('license-file-status');
@@ -141,6 +154,7 @@ function openLicenseImport(existing = null) {
     cancelCheck();
     setParsing(false);
     document.getElementById('license-conflict')?.remove();
+    void preview.show(file ? { file, name: file.name } : null);
     if (!file) { status.textContent = '也可以不上传文件，直接填写资料。'; scheduleCheck(); return; }
     fill({}); text.value = '';
     showCheck('empty', '识别到企业编号后将自动查重。');

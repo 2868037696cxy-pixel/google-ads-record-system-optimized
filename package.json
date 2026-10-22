@@ -17,12 +17,21 @@
     "test:design": "node scripts/design-foundations-ui.cjs",
     "test:ux": "node scripts/workbench-ux-ui.cjs",
     "test:backup-ui": "node scripts/backup-tasks-ui.cjs",
-    "build:win:from-dir": "electron-builder --win --x64 --prepackaged dist/win-unpacked --publish never"
+    "build:win:from-dir": "electron-builder --win --x64 --prepackaged dist/win-unpacked --publish never",
+    "build:viewer": "node scripts/build-viewer.cjs",
+    "prestart": "npm run build:viewer",
+    "pretest": "npm run build:viewer",
+    "predesktop": "npm run build:viewer",
+    "prebuild:win": "npm run build:viewer",
+    "prebuild:dir": "npm run build:viewer"
   },
   "engines": {
     "node": ">=22.16.0"
   },
   "dependencies": {
+    "@file-viewer/renderer-pdf": "3.2.2",
+    "@file-viewer/web": "3.2.2",
+    "esbuild": "0.25.12",
     "fastify": "^5.2.0",
     "pdfjs-dist": "^6.4.299"
   },
