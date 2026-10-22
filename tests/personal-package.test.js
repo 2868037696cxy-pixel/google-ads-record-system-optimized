@@ -21,7 +21,7 @@ async function fixture(){
   return {n,password,cookie,owner,raw,api,unlock,wait,upload};
 }
 async function seed(f){
-  for(const [kind,items]of Object.entries({emails:[{user:`package-${f.n}@example.test`,pass:'SYNTHETIC-PACKAGE-SECRET'}],proxies:[{host:'192.0.2.25',port:'1080',pass:'SYNTHETIC-PROXY-SECRET'}],cards:[{number:`Package-${f.n}`,last4:'0123',expiry:'12/30'}]}))assert.equal((await f.api('POST',`/api/import/${kind}`,{items})).status,200);
+  for(const [kind,items]of Object.entries({emails:[{user:`package-${f.n}@example.test`,pass:'SYNTHETIC-PACKAGE-SECRET'}],proxies:[{usage_limit:5,host:'192.0.2.25',port:'1080',pass:'SYNTHETIC-PROXY-SECRET'}],cards:[{number:`Package-${f.n}`,last4:'0123',expiry:'12/30'}]}))assert.equal((await f.api('POST',`/api/import/${kind}`,{items})).status,200);
   const pdf=certificate([`Personal package ${f.n}`]);
   assert.equal((await f.api('POST','/api/import/licenses',{pdf:pdf.toString('base64'),filename:'certificate.pdf',items:[{name:`Package company ${f.n}`}]})).status,200);
   const made=await f.api('POST','/api/records',{domains:[`package-${f.n}.example`],proxy_mode:'auto'});assert.equal(made.status,200);
@@ -42,7 +42,7 @@ test('personal package exports owner-only ciphertext, restores exact resources/P
   const result=await f.api('POST',`/api/backup-jobs/${upload.id}/apply`,{revision:review.revision});assert.equal(result.status,200,JSON.stringify(result.data));assert.equal(result.data.status,'complete');
   assert.ok(service.store.getDocument(service.db,digest(orphan)),'restore must not prune another owner’s unreferenced files');
   const records=service.store.listRecords(service.db,f.owner);assert.equal(records.length,1);assert.equal(records[0].domain,seeded.record.domain);assert.equal(records[0].email_pass,'SYNTHETIC-PACKAGE-SECRET');
-  for(const [kind,prefix]of Object.entries(service.store.POOL_PREFIX)){const item=service.store.findPoolItem(service.db,f.owner,kind,records[0][`${prefix}_id`]);assert.ok(item);assert.equal(item.status,'已使用');}
+  for(const [kind,prefix]of Object.entries(service.store.POOL_PREFIX)){const item=service.store.findPoolItem(service.db,f.owner,kind,records[0][`${prefix}_id`]);assert.ok(item);assert.equal(item.status,'已使用');if(kind==='proxies')assert.equal(item.usage_limit,5);}
   const sha=digest(seeded.pdf);assert.deepEqual(service.store.getDocument(service.db,sha).bytes,seeded.pdf);assert.equal(JSON.stringify(service.store.listRecords(service.db,foreign.owner)),beforeForeign);
   assert.equal((await f.api('POST',`/api/backup-jobs/${upload.id}/apply`,{revision:review.revision})).data.status,'complete');
   assert.equal(service.db.prepare("SELECT COUNT(*) n FROM audit_events WHERE owner_id=? AND action='backup.package.restore'").get(f.owner).n,1);

@@ -21,7 +21,7 @@ globalThis.WorkbenchRecordCreate = (() => {
       const resource = resources[kind];
       if (!error && (resource.total || form.require_complete) && resource.available < domains.length) error = `${resource.label}可用资源不足：需要 ${domains.length} 条，当前可用 ${resource.available} 条。请先补充资源或减少创建数量。`;
     }
-    if (!error && form.require_complete && form.proxy_mode !== 'auto') error = '完整组合需要为每条记录独立分配一个 IP，请选择自动分配。';
+    if (!error && form.require_complete && form.proxy_mode !== 'auto') error = '完整组合需要按使用次数自动分配 IP，请选择自动分配。';
     return { error, field, fp, body: {
       country: form.country, product: form.product, domains,
       start_seq: fp.seq, fp_prefix: fp.prefix, date_key: dateKey,

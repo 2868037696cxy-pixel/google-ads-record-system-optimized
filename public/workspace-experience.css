@@ -186,3 +186,13 @@
     .command-results > button[aria-selected="true"] { outline: 2px solid Highlight; }
   }
 }
+
+/* Quota settings share the workspace's restrained glass controls. */
+.proxy-limit-body { display: grid; gap: 16px; }
+.proxy-limit-body p { margin: 0; line-height: 1.65; }
+.proxy-limit-presets { display: flex; gap: 10px; }
+.proxy-limit-presets button { flex: 1; min-height: 44px; }
+.proxy-limit-presets [aria-pressed="true"] { background: var(--accent); color: white; border-color: var(--accent); }
+.proxy-limit-input { display: flex; align-items: center; gap: 12px; }
+.proxy-limit-input input { flex: 1; min-width: 0; min-height: 44px; }
+#proxy-limit-error { color: var(--danger, #b42318); }

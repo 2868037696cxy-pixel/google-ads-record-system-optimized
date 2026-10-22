@@ -38,6 +38,7 @@ module.exports = async function verifyDocumentViewer(page, shot = async () => {}
   // A failed original fetch must preserve editable metadata and offer retry.
   await page.locator('#license-import:not([disabled])').waitFor();
   await page.locator('#license-import').click(); await page.locator('#license-form').waitFor({ state: 'detached' });
+  await page.waitForFunction(() => state.pools.licenses.some(item => item.cvr === '04123456789' && item.document_id));
   const license = await page.evaluate(() => state.pools.licenses.find(item => item.cvr === '04123456789'));
   assert.ok(license?.document_id);
   const unavailable = route => route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"Synthetic outage"}' });

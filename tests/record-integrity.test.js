@@ -29,7 +29,7 @@ async function fixture(count = 1) {
   };
   const resources = {
     emails: Array.from({ length: count }, (_, i) => ({ user: `integrity-${index}-${i}@example.test`, pass: 'SYNTHETIC-EMAIL-SECRET', fakey: 'SYNTHETIC-2FA' })),
-    proxies: [{ host: `192.0.2.${index}`, port: '1080', type: 'socks5', pass: 'SYNTHETIC-PROXY-SECRET' }],
+    proxies: [{ usage_limit: Math.max(1, count), host: `192.0.2.${index}`, port: '1080', type: 'socks5', pass: 'SYNTHETIC-PROXY-SECRET' }],
     cards: Array.from({ length: count }, (_, i) => ({ number: `Integrity-${index}-${i}`, last4: '1234', expiry: '12/29' })),
     licenses: Array.from({ length: count }, (_, i) => ({ name: `Integrity organization ${index} number ${i}` })),
   };

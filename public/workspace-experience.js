@@ -1,9 +1,10 @@
 'use strict';
+if (typeof module !== 'undefined' && module.exports) require('./proxy-capacity');
 
 // Shared presentation rules only. Allocation and duplicate checks stay on the server.
 globalThis.WorkbenchExperience = (() => {
   const resources = Object.freeze([
-    { key: 'emails', label: '邮箱', unit: '个' }, { key: 'proxies', label: 'IP', unit: '个' },
+    { key: 'emails', label: '邮箱', unit: '个' }, { key: 'proxies', label: 'IP', unit: '次' },
     { key: 'cards', label: '信用卡', unit: '张' }, { key: 'licenses', label: '企业文件', unit: '份' },
   ].map(Object.freeze));
   const commands = Object.freeze([
@@ -21,7 +22,7 @@ globalThis.WorkbenchExperience = (() => {
   function inventory(pools) {
     const items = resources.map(resource => {
       const all = pools[resource.key] || [];
-      const available = all.filter(item => item.status === '未使用' && !Number(item.linked_record_count)).length;
+      const available = resource.key === 'proxies' ? all.reduce((sum, item) => sum + WorkbenchProxyCapacity.remaining(item), 0) : all.filter(item => item.status === '未使用' && !Number(item.linked_record_count)).length;
       return { ...resource, total: all.length, available, occupied: all.filter(item => Number(item.linked_record_count) > 0 || item.status === '已使用').length };
     });
     return { items, capacity: Math.min(...items.map(item => item.available)), missing: items.filter(item => !item.available) };

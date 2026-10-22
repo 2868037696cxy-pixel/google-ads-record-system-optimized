@@ -17,7 +17,7 @@ const watchdog = setTimeout(() => { console.error('Workspace UI verification tim
   browser = await _electron.launch({ executablePath: process.env.WORKBENCH_UI_EXECUTABLE || require('electron'), args: [...(process.platform === 'linux' ? ['--no-sandbox', '--headless', '--ozone-platform=headless', '--disable-gpu'] : []), path.join(__dirname, 'ui-browser-window.cjs')] });
   page = await browser.firstWindow();
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  for (const [suite, username] of [['workspace-experience-ui', 'space-qa'], ['license-pools-ui', 'pool-qa'], ['document-viewer-ui', 'document-qa']]) {
+  for (const [suite, username] of [['workspace-experience-ui', 'space-qa'], ['license-pools-ui', 'pool-qa'], ['document-viewer-ui', 'document-qa'], ['proxy-capacity-ui', 'quota-qa']]) {
     if (suite !== 'workspace-experience-ui') await page.evaluate(() => api('/api/auth/logout', { method: 'POST' }));
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(origin + '/login');

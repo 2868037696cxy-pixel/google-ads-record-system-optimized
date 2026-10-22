@@ -127,6 +127,8 @@ function fmtCard(num) {
   return num ? num.replace(/^(.{6})(.+?)(.{4})$/, '$1 $2 $3') : '';
 }
 
+function proxySlots() { return state.pools.proxies.reduce((sum, item) => sum + WorkbenchProxyCapacity.remaining(item), 0); }
+
 function poolCount(kind, status = '未使用') {
   return state.pools[kind].filter((x) => x.status === status && (status !== '未使用' || !x.linked_record_count)).length;
 }
@@ -477,7 +479,7 @@ async function refresh() {
   state.tableDensity = loadTableDensity();
 
   for (const kind of Object.keys(state.picked)) {
-    const available = new Set(data.pools[kind].filter((item) => item.status === '未使用').map((item) => item.id));
+    const available = new Set(data.pools[kind].filter((item) => kind === 'proxies' ? WorkbenchProxyCapacity.remaining(item) > 0 : item.status === '未使用').map((item) => item.id));
     state.picked[kind] = new Set([...state.picked[kind]].filter((id) => available.has(id)));
   }
   if (state.form.proxy_id && !data.pools.proxies.some((proxy) => String(proxy.id) === String(state.form.proxy_id) && proxy.status !== '停用')) state.form.proxy_id = '';
@@ -511,7 +513,7 @@ function openWorkspaceCommands() {
 function renderInventorySummary() {
   const inventory = WorkbenchExperience.inventory(state.pools);
   return `<section class="inventory-summary" aria-labelledby="inventory-title">
-    <div class="inventory-summary-intro"><span class="section-kicker">资源准备度</span><h2 id="inventory-title">${inventory.capacity ? `可组合 ${inventory.capacity} 组完整资料` : '准备资源，开始下一组'}</h2><p>${inventory.missing.length ? `待补充：${inventory.missing.map(item => item.label).join('、')}` : '四类资源均有可用库存，可前往创建并核对实际组合。'}</p><small>按四类未占用库存估算上限，实际分配以创建核对为准。</small></div>
+    <div class="inventory-summary-intro"><span class="section-kicker">资源准备度</span><h2 id="inventory-title">${inventory.capacity ? `可组合 ${inventory.capacity} 组完整资料` : '准备资源，开始下一组'}</h2><p>${inventory.missing.length ? `待补充：${inventory.missing.map(item => item.label).join('、')}` : '四类资源均有可用库存，可前往创建并核对实际组合。'}</p><small>按库存与 IP 剩余次数估算上限，实际分配以创建核对为准。</small></div>
     <div class="inventory-summary-items">${inventory.items.map(item => `<button type="button" class="inventory-item" data-action="nav" data-page="${item.key}"><span class="inventory-icon">${WorkbenchUI.icon(item.key)}</span><span class="inventory-label">${item.label}</span><strong>${item.available}<small>${item.unit}</small></strong><span class="inventory-hint">${item.available ? `共 ${item.total} · 已占用 ${item.occupied}` : '补充资源 →'}</span></button>`).join('')}</div>
   </section>`;
 }
@@ -689,7 +691,7 @@ function renderWorkbench() {
     : `${fp.prefix}${fp.seq}`;
 
   const avail = {
-    proxies: poolCount('proxies'),
+    proxies: proxySlots(),
     emails: poolCount('emails'),
     cards: poolCount('cards'),
     licenses: poolCount('licenses'),
@@ -705,8 +707,8 @@ function renderWorkbench() {
     .concat(
       state.pools.proxies
         .map(
-          (p) => `<option value="${p.id}" ${String(f.proxy_id) === String(p.id) ? 'selected' : ''} ${p.status === '停用' ? 'disabled' : ''}>${esc(
-            `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（${p.status}）`
+          (p) => `<option value="${p.id}" ${String(f.proxy_id) === String(p.id) ? 'selected' : ''} ${!WorkbenchProxyCapacity.remaining(p) ? 'disabled' : ''}>${esc(
+            `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（剩余 ${WorkbenchProxyCapacity.remaining(p)} 次）`
           )}</option>`
         )
         .join('')
@@ -718,7 +720,7 @@ function renderWorkbench() {
       return `<select id="f-proxy" aria-label="共享代理">${proxyOptions}</select>`;
     }
     if (fm.proxy_mode === 'auto') {
-      return `<span class="mini">每条记录从代理库按顺序取一个 · 可用 <b>${poolCount('proxies')}</b> 条</span>`;
+      return `<span class="mini">按 IP 次数上限自动分配 · 剩余 <b>${proxySlots()}</b> 次</span>`;
     }
     return `<span class="mini">记录中代理字段留空</span>`;
   };
@@ -793,7 +795,7 @@ function renderWorkbench() {
           <section class="creation-section" id="creation-resources" aria-labelledby="creation-resources-title">
             <div class="creation-section-title"><h2 id="creation-resources-title">资源分配</h2><p>默认从独立资源池取用，也可以指定已有资源。</p></div>
             <div class="assignment-list">${['emails','cards','licenses'].map(kind => `<div class="assignment-item"><span class="assignment-icon">${WorkbenchUI.icon(kind)}</span><div><strong>${({emails:'邮箱',cards:'信用卡',licenses:'企业文件'})[kind]}</strong><span id="info-${kind}">${assignInfo(kind)}</span></div><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="${kind}" aria-label="选择${({emails:'邮箱',cards:'信用卡',licenses:'企业文件'})[kind]}">选择</button></div>`).join('')}</div>
-            <div class="assignment-proxy"><div class="assignment-proxy-label"><span class="assignment-icon">${WorkbenchUI.icon('proxies')}</span><label for="f-proxy-mode">IP / 代理</label><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="proxies" ${f.proxy_mode === 'auto' ? '' : 'hidden'}>选择 IP</button></div><select id="f-proxy-mode" aria-label="代理分配方式"><option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>每条记录独立分配</option><option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个 IP</option><option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>本次不关联</option></select><div id="proxy-mode-extra">${proxyModeExtra(f)}</div></div>
+            <div class="assignment-proxy"><div class="assignment-proxy-label"><span class="assignment-icon">${WorkbenchUI.icon('proxies')}</span><label for="f-proxy-mode">IP / 代理</label><button type="button" class="btn btn-ghost btn-sm" data-action="open-picker" data-kind="proxies" ${f.proxy_mode === 'auto' ? '' : 'hidden'}>选择 IP</button></div><select id="f-proxy-mode" aria-label="代理分配方式"><option value="auto" ${f.proxy_mode === 'auto' ? 'selected' : ''}>按使用次数自动分配</option><option value="shared" ${f.proxy_mode === 'shared' ? 'selected' : ''}>共享一个 IP</option><option value="none" ${f.proxy_mode === 'none' ? 'selected' : ''}>本次不关联</option></select><div id="proxy-mode-extra">${proxyModeExtra(f)}</div></div>
             <label class="bundle-choice"><input id="f-require-complete" type="checkbox" ${f.require_complete ? 'checked' : ''}><span><strong>必须组成完整的一组</strong><small>每条包含邮箱、IP、信用卡和企业文件，缺项不创建。</small></span></label>
             <div id="creation-check" class="creation-readiness" aria-labelledby="creation-check-title"><h3 id="creation-check-title">本次资源准备情况</h3><div id="creation-resource-checks">${renderCreateReadiness()}</div><p>下一步查看每条记录的实际组合，再确认创建。</p></div>
           </section>
@@ -930,7 +932,7 @@ function renderRecordsTable(list) {
 function createDraft() {
   return WorkbenchRecordCreate.draft({
     form: state.form, picked: state.picked, dateKey: todayKey(), nextSeq: state.next?.seq || 1,
-    resources: Object.fromEntries(KINDS.map(kind => [kind.key, { label: kind.label, total: state.pools[kind.key].length, available: poolCount(kind.key) }])),
+    resources: Object.fromEntries(KINDS.map(kind => [kind.key, { label: kind.label, total: state.pools[kind.key].length, available: kind.key === 'proxies' ? proxySlots() : poolCount(kind.key) }])),
   });
 }
 const createSubmitter = WorkbenchRecordCreate.createSubmitter({ request: (path, options) => api(path, options) });
@@ -1036,8 +1038,8 @@ const POOL_TABLE = {
     ],
   },
   proxies: {
-    cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '状态', '导入时间', '操作'],
-    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '95px', '160px', '65px'],
+    cols: ['ID', '编号', '类型', '主机', '端口', '代理账号', '代理密码', '国家', '出口IP', '使用次数', '状态', '导入时间', '操作'],
+    widths: ['55px', '75px', '75px', '200px', '65px', '120px', '120px', '90px', '130px', '160px', '95px', '160px', '65px'],
     row: (p) => [
       `<span class="faint mono">${p.id}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.sn)}" title="点击复制">${esc(p.sn) || '<span class="faint">—</span>'}</span>`,
@@ -1048,6 +1050,7 @@ const POOL_TABLE = {
       `<span class="mono copyable" data-copy="${esc(p.pass)}" title="点击复制">${sens(p.pass)}</span>`,
       `<span class="dim copyable" data-copy="${esc(p.country)}" title="点击复制">${esc(p.country) || '<span class="faint">—</span>'}</span>`,
       `<span class="mono copyable" data-copy="${esc(p.ip)}" title="点击复制">${esc(p.ip) || '<span class="faint">—</span>'}</span>`,
+      `<button class="btn btn-ghost btn-sm" data-action="proxy-limits" data-id="${p.id}" aria-label="设置 IP ${p.id} 使用次数">${Number(p.linked_record_count || 0)} / ${WorkbenchProxyCapacity.limit(p)} 次</button><span class="resource-usage">剩余 ${WorkbenchProxyCapacity.remaining(p)} 次</span>`,
     ],
   },
   cards: {
@@ -1134,7 +1137,7 @@ function renderPool(kind) {
   const conf = KINDS.find((item) => item.key === kind);
   const context = {
     emails: ['独立邮箱池', '批量导入后，在创建页自动取用或手动指定。密码与 2FA 继续按授权隐藏。', '搜索邮箱、备注…'],
-    proxies: ['连接资源独立管理', 'IP 与账号分开入池。创建时选择独立分配、共享一个或本次不关联。', '搜索 IP、编号、国家…'],
+    proxies: ['连接资源独立管理', '每个 IP 可设置 1、3、5 次或自定义上限。按当前关联记录计数，解除关联后释放次数。', '搜索 IP、编号、国家…'],
     cards: ['轻量信用卡档案', '保存别名、末四位和有效期，便于匹配与核对；请勿填写完整卡号或 CVV。', '搜索别名、末四位…'],
     licenses: ['原件与企业资料，一处校对', '批量 PDF 逐份预览、校对并自动查重。扫描件可预览，自动提取仍需可读取的文本层。', '搜索企业、注册编号、城市…'],
   }[kind];
@@ -1143,7 +1146,7 @@ function renderPool(kind) {
   const counts = { 全部: state.pools[kind].length, 未使用: poolCount(kind), 已使用: poolCount(kind, '已使用'), 停用: poolCount(kind, '停用') };
   document.getElementById('main').innerHTML = `
     <div class="page-head"><div><h1>${conf.label}</h1><p class="sub">独立管理，按需组合；占用与分配状态自动同步。</p></div>
-      <div class="head-actions">${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>' : ''}
+      <div class="head-actions">${kind === 'proxies' ? '<button class="btn btn-ghost" data-action="proxy-limits">批量设置次数</button>' : ''}${kind === 'emails' || kind === 'proxies' ? '<button class="btn btn-ghost" data-action="open-auto-import">智能导入</button>' : ''}
         <button class="btn btn-primary" data-action="open-import" data-kind="${kind}">${kind === 'licenses' ? '导入营业执照' : '批量导入'}</button></div></div>
     <section class="pool-context" aria-label="资源使用说明"><span class="pool-context-icon">${WorkbenchUI.icon(kind)}</span><div><strong>${context[0]}</strong><p>${context[1]}</p></div><button type="button" class="btn btn-ghost btn-sm" data-action="nav" data-page="create">去组合资源 ${WorkbenchUI.icon('arrow-right')}</button></section>
     <div class="panel"><div class="toolbar">
@@ -1185,11 +1188,12 @@ function openPicker(kind) {
   const items = state.pools[kind].map(item => item.linked_record_count && item.status === '未使用' ? { ...item, status: '已使用' } : item)
     .sort((a, b) => (a.status === '未使用' ? -1 : 1) - (b.status === '未使用' ? -1 : 1) || a.id - b.id);
 
+  const unavailable = item => kind === 'proxies' ? !WorkbenchProxyCapacity.remaining(item) : item.status !== '未使用';
   const mainVal = (it) =>
     kind === 'emails' ? `${it.user} · ${it.pass ? '有密码' : '无密码'}` :
     kind === 'cards' ? `${it.number} ${it.expiry}` :
     kind === 'licenses' ? it.name :
-    `${it.host}:${it.port} · ${it.sn || ''}`;
+    `${it.host}:${it.port} · 剩余 ${WorkbenchProxyCapacity.remaining(it)} 次 / 上限 ${WorkbenchProxyCapacity.limit(it)} 次`;
 
   openModal(`
     <div class="modal-head"><h3>选择${conf.label.replace('库', '')} <span class="dim" style="font-size:12px;font-weight:400">（多选，不选则自动分配）</span></h3><button class="modal-close" data-action="close-modal">✕</button></div>
@@ -1198,8 +1202,8 @@ function openPicker(kind) {
       <div class="picker-list" id="picker-list">
         ${items
           .map(
-            (it) => `<label class="picker-item ${it.status !== '未使用' ? 'disabled' : ''}" data-val="${it.id}" data-text="${esc(mainVal(it))}">
-              <input type="checkbox" ${picked.has(it.id) ? 'checked' : ''} ${it.status !== '未使用' ? 'disabled' : ''}>
+            (it) => `<label class="picker-item ${unavailable(it) ? 'disabled' : ''}" data-val="${it.id}" data-text="${esc(mainVal(it))}">
+              <input type="checkbox" ${picked.has(it.id) ? 'checked' : ''} ${unavailable(it) ? 'disabled' : ''}>
               <span class="mono">${esc(mainVal(it))}</span>
               <span class="pill ${it.status === '未使用' ? 'pill-green' : it.status === '已使用' ? 'pill-blue' : 'pill-red'}"><span class="dot"></span>${it.status}</span>
             </label>`
@@ -1238,7 +1242,7 @@ function openPicker(kind) {
     countEl.textContent = 0;
   };
   document.getElementById('picker-ok').onclick = async () => {
-    const available = new Set(state.pools[kind].filter(item => item.status === '未使用' && !item.linked_record_count).map(item => item.id));
+    const available = new Set(state.pools[kind].filter(item => kind === 'proxies' ? WorkbenchProxyCapacity.remaining(item) > 0 : item.status === '未使用' && !item.linked_record_count).map(item => item.id));
     state.picked[kind] = new Set([...picked].filter(id => available.has(id)));
     closeModal();
     render();
@@ -1260,7 +1264,7 @@ function openEditRecord(id) {
               : kind === 'cards' ? `${it.number} ${it.expiry}`
               : kind === 'licenses' ? it.name
               : `${it.host}:${it.port} ${it.sn || ''}`;
-            const disabled = it.id !== currentId && (it.status === '停用' || (kind !== 'proxies' && it.status !== '未使用'));
+            const disabled = it.id !== currentId && (kind === 'proxies' ? !WorkbenchProxyCapacity.remaining(it) : it.status !== '未使用');
             return `<option value="${it.id}" ${it.id === currentId ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${esc(label)}（${it.status}）</option>`;
           })
           .join('')
@@ -1508,6 +1512,9 @@ document.addEventListener('click', async (e) => {
 
   try {
     switch (action) {
+      case 'proxy-limits':
+        openProxyLimits(Number(t.dataset.id) || null);
+        break;
       case 'workspace-commands':
         openWorkspaceCommands();
         break;
@@ -1954,8 +1961,8 @@ document.addEventListener('change', (e) => {
         .concat(
           state.pools.proxies
             .map(
-              (p) => `<option value="${p.id}" ${String(state.form.proxy_id) === String(p.id) ? 'selected' : ''} ${p.status === '停用' ? 'disabled' : ''}>${esc(
-                `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（${p.status}）`
+              (p) => `<option value="${p.id}" ${String(state.form.proxy_id) === String(p.id) ? 'selected' : ''} ${!WorkbenchProxyCapacity.remaining(p) ? 'disabled' : ''}>${esc(
+                `${p.host ? p.host + ':' + p.port : '未设置主机'} · ${p.sn || '无编号'}${p.country ? ' · ' + p.country : ''}（剩余 ${WorkbenchProxyCapacity.remaining(p)} 次）`
               )}</option>`
             )
             .join('')
@@ -1964,7 +1971,7 @@ document.addEventListener('change', (e) => {
       if (state.form.proxy_mode === 'shared') {
         extra.innerHTML = `<select id="f-proxy" aria-label="共享代理">${proxyOptions}</select>`;
       } else if (state.form.proxy_mode === 'auto') {
-        extra.innerHTML = `<span class="mini">每条记录从代理库按顺序取一个 · 可用 <b>${poolCount('proxies')}</b> 条</span>`;
+        extra.innerHTML = `<span class="mini">按 IP 次数上限自动分配 · 剩余 <b>${proxySlots()}</b> 次</span>`;
       } else {
         extra.innerHTML = `<span class="mini">记录中代理字段留空</span>`;
       }
@@ -2058,4 +2065,33 @@ document.addEventListener('keydown', (event) => {
     if (!modalOpen && !event.repeat) connect({ manual: true });
   }
 });
+function openProxyLimits(id) {
+  const items = id ? state.pools.proxies.filter(item => item.id === id) : paginate(getFilteredPool('proxies'), 'pools').items;
+  if (!items.length) { toast('请先导入或筛选出 IP', 'error'); return; }
+  const minimum = Math.max(1, ...items.map(item => Number(item.linked_record_count || 0)));
+  const initial = id ? WorkbenchProxyCapacity.limit(items[0]) : Math.max(3, minimum);
+  openModal(`<div class="modal-head"><div><span class="license-eyebrow">IP 分配规则</span><h3>${id ? '设置使用次数' : '批量设置次数'}</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
+    <form id="proxy-limit-form"><div class="modal-body proxy-limit-body"><p>${id ? `IP：${esc(items[0].host)}:${esc(items[0].port)}` : `仅修改当前筛选结果的当前页，共 ${items.length} 个 IP。`}</p>
+    <label for="proxy-usage-limit">每个 IP 最多关联记录数</label><div class="proxy-limit-presets" role="group" aria-label="常用使用次数">${[1,3,5].map(value => `<button type="button" class="btn btn-ghost" data-limit="${value}" aria-pressed="${initial === value}" ${value < minimum ? 'disabled' : ''}>${value} 次</button>`).join('')}</div>
+    <div class="proxy-limit-input"><input id="proxy-usage-limit" type="number" min="${minimum}" max="100000" step="1" required value="${initial}" inputmode="numeric" aria-describedby="proxy-limit-help"><span>次 / IP</span></div>
+    <p id="proxy-limit-help" class="dim">按当前关联记录计数，解除关联后释放次数。停用 IP 不参与分配。${minimum > 1 ? `当前至少需要保留 ${minimum} 次。` : '可以输入 1 到 100000 的整数。'}</p><p id="proxy-limit-error" role="alert"></p></div>
+    <div class="modal-foot"><button type="button" class="btn btn-ghost" data-action="close-modal">取消</button><span class="grow"></span><button type="submit" class="btn btn-primary">保存${id ? '' : '当前页'}</button></div></form>`);
+  const form = document.getElementById('proxy-limit-form'), input = document.getElementById('proxy-usage-limit');
+  const paint = () => form.querySelectorAll('[data-limit]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.limit) === input.valueAsNumber)));
+  form.querySelectorAll('[data-limit]').forEach(button => button.onclick = () => { input.value = button.dataset.limit; paint(); input.focus(); });
+  input.oninput = paint;
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (!form.reportValidity()) return;
+    const submit = form.querySelector('[type="submit"]');
+    WorkbenchUI.dialog.pending(submit, true, '正在保存…');
+    try {
+      await api('/api/proxies/usage-limits', { method: 'POST', body: { items: items.map(item => ({ id: item.id, version: item.version })), usage_limit: input.valueAsNumber } });
+      if (!form.isConnected) return;
+      WorkbenchUI.dialog.pending(submit, false);
+      closeModal(); await refreshAfterCommit('IP 次数已保存，列表刷新失败，请重新连接'); render(); toast(`已更新 ${items.length} 个 IP 的使用次数`);
+    } catch (error) { if (!form.isConnected) return; WorkbenchUI.dialog.pending(submit, false); document.getElementById('proxy-limit-error').textContent = error.message; }
+  };
+}
+
 connect();

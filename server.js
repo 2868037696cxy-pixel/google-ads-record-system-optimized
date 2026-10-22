@@ -648,9 +648,11 @@ const PARSERS = { emails: parseEmails, proxies: parseProxyPool, cards: parseCard
 
 /* ---------------- 资源库导入 ---------------- */
 
+const proxyCapacity = require('./public/proxy-capacity');
+
 const IMPORT_FIELDS = {
   emails: ['user', 'pass', 'fakey'],
-  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip'],
+  proxies: ['sn', 'type', 'host', 'port', 'user', 'pass', 'country', 'ip', 'usage_limit'],
   cards: ['number', 'expiry', 'last4'],
   licenses: ['name', 'legal_name', 'address', 'apt', 'zip', 'city', 'region', 'type', 'cvr', 'jurisdiction', 'registration_type', 'registration_authority'],
 };
@@ -696,6 +698,10 @@ function normalizeImport(type, item) {
     if (String(value ?? '').length > 8192) return reply400('单个导入字段过长');
   }
   const row = Object.fromEntries(IMPORT_FIELDS[type].map((key) => [key, String(item[key] ?? '').trim()]));
+  if (type === 'proxies') {
+    row.usage_limit = item.usage_limit ?? 1;
+    if (!proxyCapacity.valid(row.usage_limit)) return reply400('IP 使用次数必须为 1 到 100000 的整数');
+  }
   if (type === 'emails' && !EMAIL_RE.test(row.user)) return reply400('存在无效邮箱，请检查导入内容');
   if (type === 'proxies' && (!row.host || (row.port && (!/^\d+$/.test(row.port) || Number(row.port) < 1 || Number(row.port) > 65535)))) return reply400('代理主机或端口无效');
   if (type === 'cards') {
@@ -930,14 +936,16 @@ function createRecords(ownerId, body, { preview = false } = {}) {
   const emails = availablePool('emails');
   const cards = availablePool('cards');
   const licenses = availablePool('licenses');
-  const proxies = availablePool('proxies');
+  const proxies = store.listPool(db, ownerId, 'proxies', { includeUsage: true });
 
   if (body.require_complete === true) {
-    if (body.proxy_mode !== 'auto') return { error: '完整组合需要为每条记录独立分配一个 IP，请选择自动分配' };
-    for (const [label, pool] of [['邮箱', emails], ['信用卡', cards], ['企业文件', licenses], ['IP', proxies]]) {
+    if (body.proxy_mode !== 'auto') return { error: '完整组合需要按使用次数自动分配 IP，请选择自动分配' };
+    for (const [label, pool] of [['邮箱', emails], ['信用卡', cards], ['企业文件', licenses]]) {
       if (pool.filter(item => item.status === '未使用').length < count) return { error: `${label}池不足，完整组合需要 ${count} 条未使用资源` };
     }
   }
+
+  if (body.require_complete && proxies.reduce((sum, item) => sum + proxyCapacity.remaining(item), 0) < count) return { error: 'IP 剩余使用次数不足，无法组成完整组合' };
 
   const pickedEmails = pickPool(emails, body.email_ids, count, '可用邮箱');
   if (pickedEmails.error) return { error: pickedEmails.error };
@@ -959,9 +967,10 @@ function createRecords(ownerId, body, { preview = false } = {}) {
       if (last && last.proxy_id != null) sharedProxy = proxies.find((p) => p.id === last.proxy_id && p.status !== '停用') || null;
     }
   }
+  if (sharedProxy && proxyCapacity.remaining(sharedProxy) < count) return { error: `该 IP 剩余 ${proxyCapacity.remaining(sharedProxy)} 次，无法分配 ${count} 条记录` };
   let autoProxies = [];
   if (proxyMode === 'auto') {
-    const pickedProxies = pickPool(proxies, body.proxy_ids, count, '可用代理');
+    const pickedProxies = proxyCapacity.allocate(proxies, body.proxy_ids, count);
     if (pickedProxies.error) return { error: pickedProxies.error };
     autoProxies = pickedProxies.items;
   }
@@ -1063,6 +1072,7 @@ function updateRecord(ownerId, id, body) {
     if (value === rec[`${prefix}_id`]) continue;
     const target = store.findPoolItem(db, ownerId, kind, value);
     if (!target || target.status === '停用') return { error: '所选资源不存在或已停用' };
+    if (prefix === 'proxy' && proxyCapacity.remaining({ ...target, linked_record_count: store.recordsUsingResource(db, ownerId, prefix, target.id, rec.id).length }) < 1) return { error: '所选 IP 使用次数已满' };
     if (prefix !== 'proxy' && (target.status !== '未使用' || store.recordsUsingResource(db, ownerId, prefix, target.id, rec.id).length)) {
       return { error: '所选资源已被其他记录使用' };
     }
@@ -1746,6 +1756,24 @@ fastify.get('/api/licenses/duplicates', async (req, reply) => {
   return reply.code(403).send({ error: '无权查看其他成员的查重报告' });
 });
 
+fastify.post('/api/proxies/usage-limits', async (req) => {
+  const ownerId = currentUserId(req), body = req.body;
+  if (!body || !proxyCapacity.valid(body.usage_limit) || !Array.isArray(body.items) || !body.items.length || body.items.length > 500) return reply400('请选择 IP，并填写 1 到 100000 的整数次数');
+  if (body.items.some(item => !item || !Number.isSafeInteger(item.id) || item.id < 1 || !Number.isSafeInteger(item.version)) || new Set(body.items.map(item => item.id)).size !== body.items.length) return reply400('IP 选择格式不正确');
+  return mutate(() => {
+    for (const item of body.items) {
+      const current = store.findPoolItem(db, ownerId, 'proxies', item.id);
+      if (!current) return reply400('IP 不存在');
+      if (current.version !== item.version) return replyConflict('IP 已被修改或分配，请刷新后重试；未保存任何修改', []);
+      if (body.usage_limit < store.recordsUsingResource(db, ownerId, 'proxy', item.id).length) return reply400('使用次数不能低于当前已关联记录数；未保存任何修改');
+    }
+    const statement = db.prepare('UPDATE proxies SET usage_limit=?, version=version+1 WHERE owner_id=? AND id=?');
+    for (const item of body.items) statement.run(body.usage_limit, ownerId, item.id);
+    audit(db, ownerId, 'proxies.usage_limit', `${body.items.length} IP; limit=${body.usage_limit}`);
+    return { updated: body.items.length, usage_limit: body.usage_limit };
+  });
+});
+
 fastify.patch('/api/pool/:type/:id', async (req) => {
   const ownerId = currentUserId(req);
   const type = req.params.type;
@@ -1772,6 +1800,7 @@ fastify.patch('/api/pool/:type/:id', async (req) => {
       }
     }
     const merged = normalizeImport(type, { ...store.toPublic(current), ...changed });
+    if (type === 'proxies' && merged.usage_limit < store.recordsUsingResource(db, ownerId, 'proxy', id).length) return reply400('使用次数不能低于当前已关联记录数');
     if (type === 'licenses') {
       const conflict = dedup.findLicenseConflict(db, dedup.licenseKeys(merged), { excludeId: id });
       if (conflict) return replyConflict(privateConflictMessage(conflict), [conflictDetail(conflict, merged)]);

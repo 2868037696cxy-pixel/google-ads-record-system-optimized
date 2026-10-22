@@ -281,7 +281,7 @@ test('畸形的数量与资源编号会被拒绝，且没有部分写入', async
 
 test('共享代理要等最后一条记录删除后才释放', async () => {
   const proxyRes = await api('a', 'POST', '/api/import/proxies', {
-    body: { items: [{ host: 'shared.proxy.example', port: '1080', user: 'shared' }] },
+    body: { items: [{ host: 'shared.proxy.example', port: '1080', user: 'shared', usage_limit: 2 }] },
   });
   assert.equal(proxyRes.status, 200, encode(proxyRes.body));
   const boot = (await api('a', 'GET', '/api/bootstrap')).body;
