@@ -1121,9 +1121,6 @@ button:focus-visible, [data-action]:focus-visible { outline: 2px solid var(--acc
 .license-document strong { overflow-wrap: anywhere; }
 .license-document p, .license-upload p, .license-help { font-size: 12px; color: var(--muted); line-height: 1.7; margin: 5px 0 0; }
 .license-document-icon { padding: 12px 8px; border-radius: 8px; font: 700 12px var(--mono); background: var(--accent-dim); color: var(--accent); }
-.license-upload { background: var(--surface-2); border: 1px dashed var(--accent-line); border-radius: 12px; padding: 18px; margin-bottom: 20px; }
-.license-upload input { display: block; margin: 12px 0; width: 100%; }
-.license-upload [role=status] { color: var(--accent); font-size: 12px; }
 .license-form { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .license-wide { grid-column: 1 / -1; }
 .license-source { margin: 20px 0; color: var(--muted); }

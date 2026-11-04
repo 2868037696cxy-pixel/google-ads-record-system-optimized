@@ -73,7 +73,21 @@ function openLicenseImport(existing = null) {
   openModal(`
     <div class="modal-head"><div><span class="license-eyebrow">营业执照资料库</span><h3>${existing ? '校对企业资料' : '导入与校对'}</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
     <div class="modal-body">
-      <div class="license-upload" ${existing ? 'hidden' : ''}><strong>企业文件入池</strong><p>可同时选择多个国家的营业执照或工商 PDF。每份文件独立识别、校对与查重；单份最大 10 MB。</p><input type="file" id="license-file" aria-label="选择营业执照 PDF" aria-describedby="license-file-status" accept=".pdf,application/pdf" multiple><span id="license-file-status" role="status">也可以不上传文件，直接填写资料。</span></div>
+      <div class="license-upload" id="license-drop" ${existing ? 'hidden' : ''}>
+        <div class="license-upload-main">
+          <span class="license-upload-icon" aria-hidden="true">${WorkbenchUI.icon('licenses')}</span>
+          <div class="license-upload-copy"><strong>企业文件入池</strong><p>可同时选择多个国家的营业执照或工商 PDF，每份独立识别、校对与查重。</p>
+            <div class="license-upload-meta" aria-hidden="true"><span>PDF</span><span>单份 ≤ 10 MB</span><span>最多 100 份</span></div>
+          </div>
+        </div>
+        <div class="license-upload-side">
+          <input type="file" id="license-file" class="license-file-input" aria-label="选择营业执照 PDF" aria-describedby="license-file-status" accept=".pdf,application/pdf" multiple>
+          <button type="button" class="btn btn-primary license-pick" id="license-pick">选择 PDF</button>
+          <small>或拖拽文件到这里</small>
+        </div>
+      </div>
+      <p class="license-file-status" id="license-file-status" role="status" aria-live="polite">也可以不上传文件，直接填写资料。</p>
+      <div class="license-file-list" id="license-file-list" hidden></div>
       ${existing ? '<p class="license-help">修改已保存的企业资料，原 PDF 与账号关联会保留。已有企业编号只读，其他资料可按原件校对。</p>' : ''}
       <div class="document-review-layout">${WorkbenchDocumentViewer.markup()}<section class="document-fields" aria-label="校对企业资料"><div class="document-fields-heading"><span class="license-eyebrow">资料校对</span><h4>让每份资料准确入池</h4><p>对照原件确认企业身份与地址，填写时自动查重。</p></div>
       <form id="license-form" class="license-form" autocomplete="off">
@@ -103,6 +117,39 @@ function openLicenseImport(existing = null) {
   const parseText = document.getElementById('license-parse-text');
   const checkStatus = document.getElementById('license-duplicate-status');
   const syncCopy = wireLicenseFieldCopy(form);
+  const drop = document.getElementById('license-drop');
+  const fileList = document.getElementById('license-file-list');
+  const pick = document.getElementById('license-pick');
+  const formatSize = bytes => bytes >= 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  const renderFileChip = () => {
+    const file = fileInput.files?.[0];
+    if (!file) { fileList.hidden = true; fileList.replaceChildren(); return; }
+    fileList.hidden = false;
+    fileList.innerHTML = `<div class="license-file-chip"><span class="license-file-name">${esc(file.name)}</span><span class="license-file-size">${formatSize(file.size)}</span><button type="button" class="license-file-clear" data-clear-license-file aria-label="移除已选文件">✕</button></div>`;
+  };
+  pick.onclick = () => { if (!saving && !parsing) fileInput.click(); };
+  fileList.onclick = event => {
+    if (saving || !event.target.closest('[data-clear-license-file]')) return;
+    fileInput.value = '';
+    fileInput.dispatchEvent(new Event('change'));
+  };
+  drop.addEventListener('dragover', event => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    if (!saving && !parsing) drop.classList.add('is-dragging');
+  });
+  drop.addEventListener('dragleave', event => { if (!drop.contains(event.relatedTarget)) drop.classList.remove('is-dragging'); });
+  drop.addEventListener('drop', event => {
+    event.preventDefault();
+    drop.classList.remove('is-dragging');
+    if (saving || parsing) return;
+    const files = [...(event.dataTransfer?.files || [])].filter(file => /\.pdf$/i.test(file.name) || file.type === 'application/pdf');
+    if (!files.length) return toast('请选择 PDF 文件', 'warn');
+    const transfer = new DataTransfer();
+    files.forEach(file => transfer.items.add(file));
+    fileInput.files = transfer.files;
+    fileInput.dispatchEvent(new Event('change'));
+  });
   let attachment = null;
   let sourceText = '';
   let revision = 0;
@@ -167,6 +214,7 @@ function openLicenseImport(existing = null) {
     parsing = value;
     for (const control of form.elements) control.disabled = value;
     parseText.disabled = value;
+    pick.disabled = value;
     syncSubmit();
   };
   WorkbenchUI.dialog.signal().addEventListener('abort', () => { cancelCheck(); revision++; }, { once: true });
@@ -183,6 +231,7 @@ function openLicenseImport(existing = null) {
   };
   fileInput.onchange = async () => {
     if (saving) return;
+    renderFileChip();
     if (fileInput.files.length > 1) return openLicenseBatch([...fileInput.files]);
     const current = ++revision;
     const file = fileInput.files[0];
@@ -194,7 +243,7 @@ function openLicenseImport(existing = null) {
     if (!file) { status.textContent = '也可以不上传文件，直接填写资料。'; scheduleCheck(); return; }
     fill({}); text.value = ''; sourceText = '';
     showCheck('empty', '识别到企业编号后将自动查重。');
-    if (file.size > 10 * 1024 * 1024) { status.textContent = '文件超过 10 MB，请选择较小的 PDF'; fileInput.value = ''; return; }
+    if (file.size > 10 * 1024 * 1024) { status.textContent = '文件超过 10 MB，请选择较小的 PDF'; fileInput.value = ''; renderFileChip(); return; }
     status.textContent = '正在识别 PDF…';
     setParsing(true);
     try {
@@ -215,6 +264,7 @@ function openLicenseImport(existing = null) {
       if (current === revision && form.isConnected) {
         status.textContent = error.message;
         fileInput.value = '';
+        renderFileChip();
         attachment = null;
         if (Array.isArray(error.conflicts) && error.conflicts.length) showLicenseConflicts(error);
       }
