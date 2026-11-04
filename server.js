@@ -32,6 +32,7 @@ const store = require('./lib/store');
 const auth = require('./lib/auth');
 const dedup = require('./lib/dedup');
 const licenseIdentifiers = require('./lib/license-identifiers');
+const danishCertificate = require('./lib/danish-certificate');
 const { SNAP } = require('./lib/resource-snapshots');
 const recordIntegrity = require('./lib/record-integrity');
 
@@ -551,13 +552,10 @@ function parseCertificate(text) {
     return [{ ...first, ...licenseIdentifiers.businessFields(text), name, legal_name: first.legal_name || name, ...native.identity }];
   }
   if (native.ambiguous) return [];
-  const lines = String(text).split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-  const start = lines.findIndex((line) => /certifies and attests that:/i.test(line));
-  if (start >= 0) {
-    const name = lines[start + 1] || '';
-    const address = lines[start + 2] || '';
-    const city = (lines[start + 3] || '').match(/^(?:DK-)?(\d{4})\s+(.+)$/);
-    if (name && city) return [{ name, legal_name: name, address, apt: '', zip: city[1], city: city[2], type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '', jurisdiction: 'DK', registration_type: 'CVR' }];
+  // 丹麦证书的姓名/地址/城市行数不固定（例如多一行区域名），按规则解析而不是固定下标。
+  const danish = danishCertificate.parse(text);
+  if (danish) {
+    return [{ ...danish, type: '组织', cvr: text.match(/CVR number:\s*(\d{8})/i)?.[1] || '', jurisdiction: 'DK', registration_type: 'CVR', ...native.identity }];
   }
   const structured = new RegExp(`(?:${LIC_STOP})\\s*[:：=]`, 'i').test(text);
   return structured ? parseLicenses(text) : [];

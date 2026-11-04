@@ -11,6 +11,33 @@ const LICENSE_FIELDS = [
   ['registration_authority', '登记机关', false],
 ];
 
+// 右侧校对字段逐项复制：按钮在字段有值时可用，复制后短暂反馈。
+function wireLicenseFieldCopy(form) {
+  const sync = () => form.querySelectorAll('[data-copy-license-field]').forEach((button) => {
+    const input = form.elements[button.dataset.copyLicenseField];
+    button.disabled = !String(input?.value || '').trim();
+  });
+  form.querySelectorAll('[data-copy-license-field]').forEach((button) => {
+    button.onclick = async () => {
+      const input = form.elements[button.dataset.copyLicenseField];
+      const value = String(input?.value || '').trim();
+      if (!value) return toast('这个字段还没有内容', 'warn');
+      const ok = await copyText(value, { quiet: true });
+      if (!ok) return toast('复制失败，请手动选中文字复制', 'warn');
+      button.textContent = '已复制';
+      button.classList.add('is-copied');
+      setTimeout(() => {
+        if (!button.isConnected) return;
+        button.textContent = '复制';
+        button.classList.remove('is-copied');
+      }, 1600);
+    };
+  });
+  form.addEventListener('input', sync);
+  sync();
+  return sync;
+}
+
 function openLicenseDetails(id) {
   const license = state.pools.licenses.find((item) => item.id === id);
   if (!license) return toast('营业执照不存在，请重新连接刷新数据', 'warn');
@@ -57,7 +84,7 @@ function openLicenseImport(existing = null) {
             : key === 'cvr' ? '填写证书上的完整企业编号'
             : key === 'registration_authority' ? '例如 CVR / KRS / 商业登记机关'
             : '';
-          return `<div class="field ${['address', 'cvr'].includes(key) ? 'license-wide' : ''}"><label for="license-${key}">${label}${required ? ' *' : '（选填）'}</label><input id="license-${key}" name="${key}" maxlength="512" ${required ? 'required' : ''} ${placeholder ? `placeholder="${placeholder}"` : ''} aria-describedby="license-duplicate-status"></div>${key === 'cvr' ? '<div id="license-duplicate-status" class="license-check license-wide" role="status" aria-live="polite" aria-atomic="true" data-state="empty">填写企业编号后自动检查全员记录。</div>' : ''}`;
+          return `<div class="field ${['address', 'cvr'].includes(key) ? 'license-wide' : ''}"><label for="license-${key}">${label}${required ? ' *' : '（选填）'}</label><div class="field-input"><input id="license-${key}" name="${key}" maxlength="512" ${required ? 'required' : ''} ${placeholder ? `placeholder="${placeholder}"` : ''} aria-describedby="license-duplicate-status"><button type="button" class="field-copy" data-copy-license-field="${key}" aria-label="复制 ${label}" title="复制 ${label}" disabled>复制</button></div></div>${key === 'cvr' ? '<div id="license-duplicate-status" class="license-check license-wide" role="status" aria-live="polite" aria-atomic="true" data-state="empty">填写企业编号后自动检查全员记录。</div>' : ''}`;
         }).join('')}
       </form>
       <details class="license-source" ${existing ? 'hidden' : ''}><summary>粘贴结构化信息 / 查看识别原文</summary><textarea id="license-text" aria-label="营业执照结构化信息或识别原文" class="mono" rows="7" placeholder="组织名称：PBF Auto ApS\n法定名称：PBF Auto ApS\n注册国家：DK\n注册号类型：CVR\nCVR：12345678\n街道地址：Følfodvej 1\n市/区：Vodskov"></textarea><button class="btn btn-ghost btn-sm" id="license-parse-text">从文本提取</button></details>
@@ -75,6 +102,7 @@ function openLicenseImport(existing = null) {
   const text = document.getElementById('license-text');
   const parseText = document.getElementById('license-parse-text');
   const checkStatus = document.getElementById('license-duplicate-status');
+  const syncCopy = wireLicenseFieldCopy(form);
   let attachment = null;
   let sourceText = '';
   let revision = 0;
@@ -145,7 +173,14 @@ function openLicenseImport(existing = null) {
   form.addEventListener('input', scheduleCheck);
   window.addEventListener('online', scheduleCheck, { signal: WorkbenchUI.dialog.signal() });
   syncSubmit();
-  const fill = (item) => LICENSE_FIELDS.forEach(([key]) => { form.elements[key].value = item[key] || ''; });
+  const fill = (item) => {
+    LICENSE_FIELDS.forEach(([key]) => { form.elements[key].value = item[key] || ''; });
+    // 企业唯一编号是查重凭证：识别到（或已保存）后锁定，避免改号绕过查重。
+    const locked = Boolean(String(item.cvr || '').trim());
+    form.elements.cvr.readOnly = locked;
+    form.elements.cvr.title = locked ? '企业唯一编号用于查重，识别后不可修改' : '填写证书上的完整企业编号';
+    syncCopy();
+  };
   fileInput.onchange = async () => {
     if (saving) return;
     if (fileInput.files.length > 1) return openLicenseBatch([...fileInput.files]);
@@ -171,7 +206,8 @@ function openLicenseImport(existing = null) {
       if (current !== revision || !form.isConnected) return;
       attachment = { pdf: base64, filename: file.name };
       const first = result.items[0] || {};
-      fill(first);
+      const extracted = WorkbenchLicenseExtract.parseText(result.text);
+      fill(extracted && extracted.name ? { ...first, ...extracted } : first);
       text.value = result.text || '';
       sourceText = result.text || '';
       status.textContent = first.cvr ? '已提取企业编号，请核对并补齐资料。原 PDF 将一并保存。' : '未识别出唯一企业编号，请手动填写。扫描版或含多个编号的文件需人工核对。';

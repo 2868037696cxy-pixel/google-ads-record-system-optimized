@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const extract = require('../public/license-extract');
+const danish = require('../lib/danish-certificate');
 
 test('固定字段按表单顺序输出，证书值保留原文', () => {
   const rows = extract.fields({ name: 'MJ TECH ApS', address: 'Sandhøjen 9', apt: 'c/o Michael Jacobsen', zip: 'DK-2720', city: 'Vanløse' });
@@ -53,6 +54,24 @@ test('丹麦证书按原文拆出街道与楼层，邮编去掉 DK-', () => {
 test('非丹麦证书不套用丹麦拆分规则，沿用已识别字段', () => {
   assert.equal(extract.parseText('ACME LLC\n1 Main Street\nSpringfield'), null);
   assert.equal(extract.fields({ name: 'ACME LLC', address: '1 Main Street', city: 'Springfield' })[3][1], '1 Main Street');
+});
+
+test('丹麦证书多一行区域名时，表单与提取卡片用同一结果', () => {
+  const text = [
+    'The Danish Business Authority certifies and attests that:',
+    'LANGDAHL E-handel og service',
+    'Kong Knaps Vej 20',
+    'Stenrøgel',
+    'DK-8620 Kjellerup',
+    'with CVR number: 21947784 in the municipality of Silkeborg is registered as Sole proprietorship in',
+  ].join('\n');
+  const server = danish.parse(text);
+  const client = extract.parseText(text);
+  assert.deepEqual({ name: server.name, address: server.address, apt: server.apt, zip: server.zip, city: server.city },
+    { name: 'LANGDAHL E-handel og service', address: 'Kong Knaps Vej 20', apt: '', zip: '8620', city: 'Kjellerup' });
+  assert.deepEqual({ name: client.name, address: client.address, apt: client.apt, zip: client.zip, city: client.city },
+    { name: 'LANGDAHL E-handel og service', address: 'Kong Knaps Vej 20', apt: '', zip: '8620', city: 'Kjellerup' });
+  assert.equal(client.legal_name, 'LANGDAHL E-handel og service');
 });
 
 test('复制全部文本一行一个字段，txt 文件名沿用原文件名', () => {
