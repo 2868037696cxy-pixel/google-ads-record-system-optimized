@@ -30,8 +30,8 @@
     "node": ">=22.16.0"
   },
   "dependencies": {
-    "@file-viewer/renderer-pdf": "3.2.2",
-    "@file-viewer/web": "3.2.2",
+    "@file-viewer/renderer-pdf": "3.3.3",
+    "@file-viewer/web": "3.3.3",
     "esbuild": "0.25.12",
     "fastify": "^5.2.0",
     "pdfjs-dist": "^6.4.299"
