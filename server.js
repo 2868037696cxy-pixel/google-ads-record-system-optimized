@@ -428,6 +428,47 @@ function parseAdspowerBlocks(text) {
   return { emails, proxies };
 }
 
+// 工作台导出的混合记录：账号、域名、邮箱凭据、代理等字段用 Tab 分隔。
+// 邮箱不必位于整行首列；命中的邮箱字段内部仍按「邮箱——密码——2FA」解析。
+function parseMixedRecordLine(line) {
+  const fields = String(line || '').split('\t').map((field) => field.trim());
+  if (fields.length < 2) return null;
+  let email = null;
+  let emailIndex = -1;
+  for (let i = 0; i < fields.length; i++) {
+    const credentials = fields[i].split(/\s*——\s*/);
+    const user = String(credentials[0] || '').trim().replace(/^["']+|["']+$/g, '');
+    if (credentials.length >= 2 && EMAIL_RE.test(user)) {
+      email = { user, pass: String(credentials[1] || '').trim(), fakey: credentials.slice(2).join('——').trim() };
+    } else {
+      email = parseEmailLine(fields[i]);
+    }
+    if (email) { emailIndex = i; break; }
+  }
+  // 首列就是邮箱时仍走原解析器，保留「邮箱 Tab 密码 Tab 2FA」等已有格式。
+  if (!email || emailIndex === 0) return null;
+
+  let proxy = null;
+  const credential = (value) => {
+    const v = String(value || '').trim();
+    if (!v || /\s/.test(v) || /^\d{12,19}$/.test(v.replace(/[ -]/g, ''))) return '';
+    return v;
+  };
+  for (let i = emailIndex + 1; i < fields.length - 1; i++) {
+    if (!/^\d{1,5}$/.test(fields[i + 1])) continue;
+    const host = fields[i];
+    const endpoint = host.includes(':') && !host.startsWith('[') ? `[${host}]:${fields[i + 1]}` : `${host}:${fields[i + 1]}`;
+    const one = parseProxyStr(endpoint);
+    if (!one) continue;
+    proxy = {
+      sn: '', type: '', country: '', ip: '', ...one,
+      user: credential(fields[i + 2]), pass: credential(fields[i + 3]),
+    };
+    break;
+  }
+  return { email, proxy };
+}
+
 // 智能自动识别：AdsPower TXT / 邮箱行（分隔符或标签）/ 一行代理 / 代理商文本块，可任意混合
 function parseAuto(text) {
   const raw = String(text || '');
@@ -443,6 +484,12 @@ function parseAuto(text) {
   for (const line of lines) {
     const t = line.trim();
     if (!t || isSep(line) || isKv(line)) continue;
+    const mixed = parseMixedRecordLine(t);
+    if (mixed) {
+      emails.push(mixed.email);
+      if (mixed.proxy) proxies.push(mixed.proxy);
+      continue;
+    }
     const e = parseEmailLine(t);
     if (e) {
       emails.push(e);
