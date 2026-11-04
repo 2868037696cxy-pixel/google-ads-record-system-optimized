@@ -10,8 +10,13 @@ function wipeSecrets(value) {
   }
 }
 async function lockSensitive() {
+  ++state.sensitiveEpoch;
   clearTimeout(secretTimer);state.unlockedUntil=0;state.reveal=false;
-  wipeSecrets(state.pools);wipeSecrets(state.records);
+  // Abort in-flight revealed queries as well as clearing already-rendered values.
+  ++refreshRequestSeq;
+  invalidateRecordQuery();
+  state.recordsPhase='ready';state.recordError='';
+  wipeSecrets(state.pools);wipeSecrets(state.records);wipeSecrets(state.recentRecords);
   // 审计 F02：render() 只重绘主区域，弹窗不在其中 —— 锁定后 state.reveal 已是 false、
   // 两个池也已脱敏，但弹窗 input 里仍然是明文，而编辑弹窗恰恰是最集中显示明文的地方。
   // 因此锁定时直接关掉弹窗，并把编辑态表单里的敏感字段一并擦掉。
@@ -22,10 +27,12 @@ async function lockSensitive() {
   await api('/api/security/lock',{method:'POST',keepalive:true}).catch(()=>{});
 }
 async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u7801\u3002\u6388\u6743\u6709\u6548\u671f60\u79d2\uff0c\u4ec5\u53ef\u67e5\u770b\u672c\u4eba\u8d44\u6599\u3002') {
+  const epoch = state.sensitiveEpoch;
   if(state.unlockedUntil>Date.now()+1000) return true;
   if(window.desktop) {
     const result=await api('/api/security/unlock',{method:'POST',body:{}});
-    state.unlockedUntil=result.unlocked_until;secretTimer=setTimeout(lockSensitive,60000);return true;
+    if(epoch !== state.sensitiveEpoch) return false;
+    state.unlockedUntil=result.unlocked_until;clearTimeout(secretTimer);secretTimer=setTimeout(lockSensitive,Math.max(0,result.unlocked_until-Date.now()));return true;
   }
   return new Promise(resolve=>{
     openModal(`<div class="modal-head"><h3>\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c</h3><button class="modal-close" data-action="close-modal" aria-label="\u5173\u95ed">\u00d7</button></div>
@@ -38,7 +45,8 @@ async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u780
       e.preventDefault();const button=form.querySelector('[type=submit]');if(button.disabled)return;button.disabled=true;
       try {
         const result=await api('/api/security/unlock',{method:'POST',body:{password:document.getElementById('unlock-password').value}});
-        document.getElementById('unlock-password').value='';
+        if(!form.isConnected||done||epoch !== state.sensitiveEpoch)return;
+        form.querySelector('#unlock-password').value='';
         state.unlockedUntil=result.unlocked_until;clearTimeout(secretTimer);secretTimer=setTimeout(lockSensitive,Math.max(0,result.unlocked_until-Date.now()));
         done=true;observer.disconnect();closeModal();resolve(true);
       } catch(error){if(form.isConnected){document.getElementById('unlock-error').textContent=error.message;button.disabled=false;}}
@@ -47,11 +55,12 @@ async function ensureSensitive(reason='\u8bf7\u9a8c\u8bc1\u767b\u5f55\u5bc6\u780
 }
 async function showMyAudit() {
   openModal(`<div class="modal-head"><h3>\u6211\u7684\u5b89\u5168\u64cd\u4f5c\u8bb0\u5f55</h3><button class="modal-close" data-action="close-modal" aria-label="\u5173\u95ed">\u00d7</button></div><div class="modal-body" id="my-audit">\u52a0\u8f7d\u4e2d\u2026</div>`);
+  const box=document.getElementById('my-audit');
   try {
-    const {events}=await api('/api/audit');const box=document.getElementById('my-audit');if(!box)return;
-    const labels={'secrets.unlock':'\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c','export.credentials':'\u5bfc\u51fa\u51ed\u636e','backup.export':'\u5bfc\u51fa\u52a0\u5bc6\u5907\u4efd','backup.restore':'\u6062\u590d\u5907\u4efd','password.change':'\u4fee\u6539\u5bc6\u7801','records.create':'\u521b\u5efa\u8bb0\u5f55'};
+    const {events}=await api('/api/audit');if(!box.isConnected)return;
+    const labels={'backup.package.create':'建立大文件备份','backup.package.upload':'建立恢复上传','backup.package.download':'下载加密文件','backup.package.restore':'恢复大文件备份','records.integrity.repair':'修复记录关联','secrets.unlock':'\u9a8c\u8bc1\u654f\u611f\u64cd\u4f5c','export.credentials':'\u5bfc\u51fa\u51ed\u636e','backup.export':'\u5bfc\u51fa\u52a0\u5bc6\u5907\u4efd','backup.restore':'\u6062\u590d\u5907\u4efd','password.change':'\u4fee\u6539\u5bc6\u7801','records.create':'\u521b\u5efa\u8bb0\u5f55'};
     box.innerHTML=events.length?`<p>\u4ec5\u663e\u793a\u672c\u4eba\u6700\u8fd1100\u6761\u8bb0\u5f55\uff0c\u4e0d\u5305\u542b\u5bc6\u7801\u539f\u6587\u3002</p><table><thead><tr><th>\u64cd\u4f5c</th><th>\u6570\u91cf</th><th>\u65f6\u95f4</th></tr></thead><tbody>${events.map(e=>`<tr><td>${esc(labels[e.action]||e.action)}</td><td>${esc(e.subject)}</td><td>${esc(new Date(e.created_at).toLocaleString())}</td></tr>`).join('')}</tbody></table>`:'<p>\u6682\u65e0\u64cd\u4f5c\u8bb0\u5f55</p>';
-  }catch(e){toast(e.message,'error');}
+  }catch(e){if(box.isConnected)box.innerHTML=WorkbenchUI.emptyState({title:'暂时无法读取操作记录',description:e.message,action:'my-audit',actionLabel:'重新加载'});}
 }
 function showChangePassword() {
   openModal(`<div class="modal-head"><h3>\u4fee\u6539\u767b\u5f55\u5bc6\u7801</h3><button class="modal-close" data-action="close-modal">\u00d7</button></div><form id="password-form"><div class="modal-body stack">
@@ -65,9 +74,14 @@ function showChangePassword() {
       if(next!==document.getElementById('repeat-password').value) throw new Error('\u4e24\u6b21\u65b0\u5bc6\u7801\u4e0d\u4e00\u81f4');
       await api('/api/account/password',{method:'POST',body:{current_password:document.getElementById('old-password').value,new_password:next}});
       location.replace('/login.html');
-    }catch(error){document.getElementById('password-error').textContent=error.message;button.disabled=false;}
+    }catch(error){if(form.isConnected){form.querySelector('#password-error').textContent=error.message;button.disabled=false;}}
   };
 }
 document.addEventListener('visibilitychange',()=>{if(document.hidden && state.unlockedUntil) void lockSensitive();});
-window.addEventListener('offline',()=>{if(state.unlockedUntil) void lockSensitive();const el=document.getElementById('connectionStatus');if(el){el.textContent='\u7f51\u7edc\u65ad\u5f00\uff0c\u65b0\u63d0\u4ea4\u5c1a\u672a\u4fdd\u5b58';el.className='connection-status disconnected';}});
+window.addEventListener('offline',()=>{
+  if(state.unlockedUntil) void lockSensitive();
+  state.connectionPhase='error';
+  state.syncError='网络已断开。恢复网络后会自动更新；未确认的提交请先核对结果。';
+  renderSyncNotice();
+});
 window.addEventListener('online',()=>{void connect();});

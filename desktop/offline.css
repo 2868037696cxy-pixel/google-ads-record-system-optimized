@@ -1,1 +1,15 @@
-*{box-sizing:border-box}body{margin:0;background:#0d1118;color:#e9eef6;font:15px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;min-height:100vh;display:grid;place-items:center}main{max-width:640px;padding:48px;text-align:center}.mark{margin:auto;width:64px;height:64px;display:grid;place-items:center;background:#c8f65d;color:#172009;border-radius:18px;font-size:22px;font-weight:800}h1{font-size:28px;margin:20px 0}p,small{color:#aebacb}.eyebrow{letter-spacing:.16em;font-size:12px}code,small{display:block;margin:20px 0}button{font:inherit;font-weight:650;background:#c8f65d;color:#172009;border:0;border-radius:10px;padding:12px 32px;cursor:pointer}button:focus-visible{outline:3px solid white;outline-offset:4px}button:disabled{opacity:.6}
+@layer components {
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100dvh; display: grid; place-items: center; background: var(--bg, #10151c); color: var(--text, #f1f5fa); font: var(--font-body, 14px)/var(--line-body, 1.55) var(--sans, system-ui); }
+  main { width: min(480px, calc(100vw - 48px)); padding: var(--ui-space-8) 0; text-align: center; }
+  .mark { width: 48px; height: 48px; margin: 0 auto var(--ui-space-4); display: grid; place-items: center; border-radius: var(--r-md); background: var(--accent-dim); color: var(--accent); font-weight: var(--weight-heading); font-size: var(--font-dialog); }
+  .eyebrow { margin: 0; font-size: var(--font-caption); font-weight: var(--weight-medium); letter-spacing: .08em; color: var(--accent); }
+  h1 { margin: var(--ui-space-5) 0 var(--ui-space-3); font-size: var(--font-title); line-height: var(--line-heading); font-weight: var(--weight-heading); }
+  p { margin: var(--ui-space-3) 0; color: var(--muted); }
+  code { display: block; margin: var(--ui-space-5) 0; overflow-wrap: anywhere; font: var(--font-label)/var(--line-body) var(--mono); color: var(--faint); }
+  button { min-height: var(--ui-control-height); padding: 9px 20px; border: 1px solid var(--action-fill); border-radius: var(--r-sm); background: var(--action-fill); color: var(--accent-ink); font: var(--weight-label) var(--font-label)/1.4 var(--sans); cursor: pointer; }
+  button:hover:not(:disabled) { background: var(--action-hover); border-color: var(--action-hover); }
+  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  button:disabled { opacity: .58; cursor: wait; }
+  small { display: block; margin-top: var(--ui-space-5); font-size: var(--font-caption); color: var(--faint); }
+}

@@ -1,0 +1,48 @@
+'use strict';
+const assert = require('node:assert/strict');
+module.exports = async function verifyProxyCapacity(page, shot = async () => {}) {
+  await page.evaluate(async () => {
+    await api('/api/import/proxies', { method: 'POST', body: { items: [1,2].map(n => ({ host: `192.0.2.${220+n}`, port: '1080' })) } }); await refresh(); render();
+  });
+  await page.locator('#nav [data-page="proxies"]').click();
+  await page.locator('.head-actions [data-action="proxy-limits"]').click();
+  assert.match(await page.locator('#proxy-limit-form').innerText(), /当前页，共 2 个 IP/);
+  await page.locator('[data-limit="5"]').click();
+  assert.equal(await page.locator('#proxy-usage-limit').inputValue(), '5');
+  assert.equal(await page.locator('[data-limit="5"]').getAttribute('aria-pressed'), 'true');
+  await shot('batch-five');
+  await page.locator('#proxy-limit-form [type="submit"]').click();
+  await page.locator('#proxy-limit-form').waitFor({ state: 'detached' });
+  await page.waitForFunction(() => state.pools.proxies.every(item => item.usage_limit === 5));
+  assert.ok(await page.evaluate(() => state.pools.proxies.every(item => item.usage_limit === 5)));
+  const id = await page.evaluate(() => state.pools.proxies[0].id);
+  await page.locator(`[data-action="proxy-limits"][data-id="${id}"]`).click();
+  await page.locator('#proxy-usage-limit').fill('7');
+  assert.equal(await page.locator('[data-limit][aria-pressed="true"]').count(), 0);
+  await page.locator('#proxy-limit-form [type="submit"]').click();
+  await page.locator('#proxy-limit-form').waitFor({ state: 'detached' });
+  await page.waitForFunction(id => state.pools.proxies.find(item => item.id === id)?.usage_limit === 7, id);
+  await page.evaluate(async id => {
+    await api('/api/records', { method: 'POST', body: { count: 2, fp_prefix: 'quota-ui-', proxy_mode: 'shared', proxy_id: id } }); await refresh(); render();
+  }, id);
+  await page.locator(`[data-action="proxy-limits"][data-id="${id}"]`).click();
+  assert.equal(await page.locator('[data-limit="1"]').isDisabled(), true);
+  assert.equal(await page.locator('#proxy-usage-limit').getAttribute('min'), '2');
+  await shot('custom-seven'); await page.keyboard.press('Escape');
+  await page.locator('#nav [data-page="create"]').click();
+  await page.locator('[data-action="open-picker"][data-kind="proxies"]').click();
+  const checkbox = page.locator(`.picker-item[data-val="${id}"] input`);
+  assert.equal(await checkbox.isDisabled(), false); await checkbox.check();
+  assert.match(await page.locator(`.picker-item[data-val="${id}"]`).innerText(), /剩余 5 次/);
+  await page.locator('#picker-ok').click();
+  assert.ok(await page.evaluate(id => state.picked.proxies.has(id), id));
+  await page.evaluate(async () => { await refresh(); render(); });
+  assert.ok(await page.evaluate(id => state.picked.proxies.has(id), id), 'refresh preserves a selected IP while it still has capacity');
+  await page.locator('#nav [data-page="proxies"]').click(); await shot('ip-list');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[data-action="proxy-limits"][data-id="${id}"]`).click();
+  assert.equal(await page.locator('#proxy-usage-limit').isVisible(), true);
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  await shot('mobile'); await page.keyboard.press('Escape');
+  console.log('PASS IP batch presets, custom quota, occupied slots, reusable picker, responsive dialog');
+};

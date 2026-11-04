@@ -24,10 +24,31 @@ jobs:
       - run: npm ci
       - run: npm audit --omit=dev --audit-level=high
       - run: npm test
+      - name: Verify responsive workspace, command navigation, resource combinations and PDF review
+        run: npm run test:workspace
+      - name: Verify native design system and complete workbench interactions
+        run: npm run test:ux
+      - name: Verify encrypted backup tasks, native download, resume and restore safeguards
+        run: npm run test:backup-ui
       - run: npm run test:desktop
       - run: npm run test:desktop:remote
-      - name: Build preconfigured Windows application
-        run: npm run build:win
+      - name: Picker cancellation, maintenance response and saved-refresh regression
+        run: npm run test:round73
+      - name: Server-paged records, cross-page selection and off-page resource occupancy
+        run: npm run test:f15
+      - name: Verify desktop typography and layout foundations
+        run: npm run test:design
+      - name: Prepare Windows application for packaged runtime verification
+        run: npm run build:dir
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify packaged Windows client backup and restore against isolated HTTPS
+        timeout-minutes: 5
+        run: npm run test:backup-ui
+        env:
+          WORKBENCH_TEST_EXECUTABLE: ${{ github.workspace }}/dist/win-unpacked/AdsWorkbench.exe
+      - name: Assemble EXE and ZIP from the verified Windows application without publishing
+        run: npm run build:win:from-dir
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       - name: Hash installable artifacts

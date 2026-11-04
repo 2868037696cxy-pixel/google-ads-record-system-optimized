@@ -3,17 +3,15 @@ const {app,BrowserWindow,Menu,dialog,ipcMain,session,shell,screen}=require('elec
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
-const {pathToFileURL}=require('node:url');
+const trustedSender=require('./trusted-sender');
 const {resolveConfiguration}=require('./config');
 app.setName('AdsWorkbench');
 const dataDirectory=process.env.ADS_DESKTOP_DATA_DIR||path.join(app.getPath('appData'),'AdsWorkbench');
 app.setPath('userData',dataDirectory);
 let window,service,origin,configuration,quitting=false,busy=false;
 const offlineFile=path.join(__dirname,'offline.html');
-const offlineUrl=pathToFileURL(offlineFile).href;
 function validSender(event,allowOffline=false) {
-  if(!window || event.sender!==window.webContents || event.senderFrame!==window.webContents.mainFrame) return false;
-  try {return new URL(event.senderFrame.url).origin===origin || (allowOffline && event.senderFrame.url===offlineUrl);}catch{return false;}
+  return trustedSender(event,{webContents:window?.webContents,origin,offlineFile,allowOffline});
 }
 function nativeAction(fn) {
   return async()=>{
@@ -80,7 +78,7 @@ async function openWindow() {
     const url=item.getURL();
     if(wc!==window.webContents||!(url.startsWith(origin+'/')||url.startsWith('blob:'+origin+'/'))) {event.preventDefault();return;}
     const name=path.basename(item.getFilename()).replace(/[<>:"/\\|?*\x00-\x1f]/g,'_');
-    if(!/\.(pdf|json|csv|txt)$/i.test(name)){event.preventDefault();return;}
+    if(!/\.(pdf|json|csv|txt|awbp)$/i.test(name)){event.preventDefault();return;}
     item.setSaveDialogOptions({title:'\u4fdd\u5b58\u5de5\u4f5c\u53f0\u6587\u4ef6',defaultPath:path.join(app.getPath('downloads'),name)});
     item.once('done',(_event,status)=>{if(status==='interrupted' && window && !window.isDestroyed())dialog.showMessageBox(window,{type:'error',message:'\u6587\u4ef6\u4e0b\u8f7d\u672a\u5b8c\u6210\uff0c\u8bf7\u91cd\u8bd5'});});
   });

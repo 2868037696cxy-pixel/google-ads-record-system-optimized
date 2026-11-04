@@ -1,0 +1,108 @@
+'use strict';
+const assert = require('node:assert/strict');
+
+// Run against a disposable server only; leave the caller on the login page.
+module.exports = async function authIdentityUI(page) {
+  const username = '测试';
+  const password = 'Identity-Test-987!';
+  await page.locator('#tabRegister').waitFor({ state: 'visible' });
+
+  // A gateway's HTML 200 is not evidence of a session or a successful login.
+  const html = route => route.fulfill({ status: 200, contentType: 'text/html', body: '<html>Waking up</html>' });
+  await page.route('**/api/auth/me', html);
+  await page.evaluate(() => checkSession());
+  assert.equal(await page.locator('#loginUsername').isVisible(), true);
+  await page.unroute('**/api/auth/me', html);
+  await page.locator('#loginUsername').fill('transport-test');
+  await page.locator('#loginPassword').fill(password);
+  await page.route('**/api/auth/login', html);
+  await page.locator('#loginSubmit').click();
+  await page.locator('#authAlert').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#authAlert').innerText(), /登录状态尚未确认/);
+  assert.equal(await page.locator('#loginUsername').isVisible(), true);
+  await page.unroute('**/api/auth/login', html);
+  const noCookie = route => route.fulfill({ json: { user: { id: 9999, username: 'transport-test' } } });
+  await page.route('**/api/auth/login', noCookie);
+  await page.locator('#loginSubmit').click();
+  await page.waitForFunction(() => !document.getElementById('loginSubmit').disabled);
+  assert.match(await page.locator('#authAlert').innerText(), /登录状态尚未确认/);
+  assert.equal(await page.locator('#loginUsername').isVisible(), true, 'an unconfirmed cookie cannot trigger workspace navigation');
+  await page.unroute('**/api/auth/login', noCookie);
+
+  await page.locator('#tabRegister').click();
+  assert.equal(await page.locator('#regUsernameHint').innerText(), '2–32 个字符');
+  assert.match(await page.locator('#regUsername').getAttribute('placeholder'), /中文/);
+  await page.locator('#regPassword').fill(password);
+  await page.locator('#regConfirm').fill(password);
+  await page.locator('#regUsername').fill('测');
+  await page.locator('#regSubmit').click();
+  assert.match(await page.locator('#regUsernameErr').innerText(), /至少 2 个字符/);
+  assert.equal(await page.locator('#regUsername').evaluate(element => element === document.activeElement), true);
+  await page.locator('#regUsername').fill('测🙂');
+  await page.locator('#regSubmit').click();
+  assert.match(await page.locator('#regUsernameErr').innerText(), /仅支持中文/);
+  await page.locator('#regUsername').fill('a'.repeat(33));
+  await page.locator('#regSubmit').click();
+  assert.match(await page.locator('#regUsernameErr').innerText(), /最多 32 个字符/);
+  await page.locator('#regUsername').fill('𠀀'.repeat(32));
+  assert.equal(Array.from(await page.locator('#regUsername').inputValue()).length, 32, 'extended Han names are not prematurely truncated by HTML maxlength');
+  await page.locator('#regUsername').fill(username);
+
+  await page.route('**/api/auth/register', html);
+  await page.locator('#regSubmit').click();
+  await page.locator('#panelLogin').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#authAlert').innerText(), /注册结果尚未确认.*不要重复注册/);
+  assert.equal(await page.locator('#loginUsername').inputValue(), username);
+  assert.equal(await page.locator('#loginPassword').evaluate(element => element === document.activeElement), true);
+  await page.unroute('**/api/auth/register', html);
+
+  await page.locator('#tabRegister').click();
+  await page.locator('#regPassword').fill(password);
+  await page.locator('#regConfirm').fill(password);
+  const dropped = route => route.abort('failed');
+  await page.route('**/api/auth/register', dropped);
+  await page.locator('#regSubmit').click();
+  await page.locator('#panelLogin').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#authAlert').innerText(), /无法确认注册结果.*不要重复注册/);
+  assert.equal(await page.locator('#loginUsername').inputValue(), username);
+  await page.unroute('**/api/auth/register', dropped);
+
+  await page.locator('#tabRegister').click();
+  await page.locator('#regPassword').fill(password);
+  await page.locator('#regConfirm').fill(password);
+  await page.locator('#regUsername').fill('校验');
+  const unavailable = route => route.fulfill({ status: 503, json: { error: 'maintenance' } });
+  await page.route('**/api/auth/me', unavailable);
+  await page.locator('#regSubmit').click();
+  await page.locator('#panelLogin').waitFor({ state: 'visible' });
+  assert.match(await page.locator('#authAlert').innerText(), /注册结果尚未确认/);
+  assert.equal(await page.locator('#loginUsername').inputValue(), '校验');
+  await page.unroute('**/api/auth/me', unavailable);
+  await page.locator('#loginPassword').fill(password);
+  await page.locator('#loginSubmit').click();
+  await page.locator('#main[data-connection="ready"]').waitFor();
+  assert.equal(await page.evaluate(() => state.user.username), '校验', 'a committed registration survives a failed session check and can log in without registering again');
+  await page.locator('[data-action="logout"]').click();
+  await page.locator('#tabRegister').waitFor({ state: 'visible' });
+  await page.locator('#tabRegister').click();
+  await page.locator('#regUsername').fill(username);
+  await page.locator('#regPassword').fill(password);
+  await page.locator('#regConfirm').fill(password);
+  await page.locator('#regSubmit').click();
+  await page.locator('#main[data-connection="ready"]').waitFor();
+  assert.equal(await page.locator('#accountName').innerText(), username);
+  await page.reload();
+  await page.locator('#main[data-connection="ready"]').waitFor();
+  assert.equal(await page.evaluate(() => state.user.username), username, 'reopening retains the active session');
+  await page.locator('[data-action="logout"]').click();
+  await page.locator('#loginUsername').waitFor();
+  await page.locator('#loginUsername').fill(username);
+  await page.locator('#loginPassword').fill(password);
+  await page.locator('#loginSubmit').click();
+  await page.locator('#main[data-connection="ready"]').waitFor();
+  assert.equal(await page.locator('#accountAvatar').innerText(), '测');
+  assert.equal(await page.evaluate(() => state.user.username), username);
+  await page.locator('[data-action="logout"]').click();
+  await page.locator('#loginUsername').waitFor();
+  console.log('PASS auth response and session verification; Chinese username validation, two-character registration, reopening, logout and another login');
+};

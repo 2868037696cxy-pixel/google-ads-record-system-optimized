@@ -106,7 +106,7 @@ test('HTTP 导入层面同样拒绝（审计的证据是接口返回 200）', as
     const patched = await fetch(`${origin}/api/pool/cards/1`, {
       method: 'PATCH',
       headers: { 'content-type': 'application/json', 'x-workbench': '1', cookie },
-      body: JSON.stringify({ number: '4111\t1111\t1111\t1111' }),
+      body: JSON.stringify({ number: '4111\t1111\t1111\t1111', version: data.pools.cards[0].version }),
     });
     assert.equal(patched.status, 400,
       `编辑路径返回 ${patched.status}，应拒绝夹带完整卡号的别名`);

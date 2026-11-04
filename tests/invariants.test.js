@@ -189,7 +189,8 @@ test('被记录占用的资源不能再被别的记录选用、不能删除、�
   assert.match(removed.body.error, /仍关联记录/);
 
   // 不能标记为「未使用」
-  const freed = await api('a', 'PATCH', `/api/pool/emails/${email.id}`, { body: { status: '未使用' } });
+  const occupiedEmail = boot1.pools.emails.find((e) => e.id === email.id);
+  const freed = await api('a', 'PATCH', `/api/pool/emails/${email.id}`, { body: { status: '未使用', version: occupiedEmail.version } });
   assert.equal(freed.status, 400, encode(freed.body));
   assert.match(freed.body.error, /不能标记为未使用/);
 
@@ -198,7 +199,8 @@ test('被记录占用的资源不能再被别的记录选用、不能删除、�
     const del = await api('a', 'DELETE', `/api/pool/${kind}/${id}`);
     assert.equal(del.status, 400, `${kind} 被占用时不能删除：${encode(del.body)}`);
     assert.match(del.body.error, /仍关联记录/);
-    const free = await api('a', 'PATCH', `/api/pool/${kind}/${id}`, { body: { status: '未使用' } });
+    const occupied = boot1.pools[kind].find((row) => row.id === id);
+    const free = await api('a', 'PATCH', `/api/pool/${kind}/${id}`, { body: { status: '未使用', version: occupied.version } });
     assert.equal(free.status, 400, `${kind} 被占用时不能标记为未使用：${encode(free.body)}`);
     assert.match(free.body.error, /不能标记为未使用/);
   }
@@ -260,10 +262,11 @@ test('畸形的数量与资源编号会被拒绝，且没有部分写入', async
   });
   assert.equal(created.status, 200, encode(created.body));
   const recordId = created.body.created[0].id;
+  const recordVersion = (await api('a', 'GET', '/api/bootstrap')).body.records.find((row) => row.id === recordId).version;
 
   for (const cardId of [true, [], {}, '1invalid', 1.5, 0, -1]) {
     const patch = await api('a', 'PATCH', `/api/records/${recordId}`, {
-      body: { card_id: cardId, country: '必须不变' },
+      body: { card_id: cardId, country: '必须不变', version: recordVersion },
     });
     assert.equal(patch.status, 400, `card_id=${encode(cardId)} 应被拒绝：${encode(patch.body)}`);
   }
@@ -278,7 +281,7 @@ test('畸形的数量与资源编号会被拒绝，且没有部分写入', async
 
 test('共享代理要等最后一条记录删除后才释放', async () => {
   const proxyRes = await api('a', 'POST', '/api/import/proxies', {
-    body: { items: [{ host: 'shared.proxy.example', port: '1080', user: 'shared' }] },
+    body: { items: [{ host: 'shared.proxy.example', port: '1080', user: 'shared', usage_limit: 2 }] },
   });
   assert.equal(proxyRes.status, 200, encode(proxyRes.body));
   const boot = (await api('a', 'GET', '/api/bootstrap')).body;
@@ -312,7 +315,7 @@ test('编辑资源时重复值被拒绝，正常改名会同步到记录的导�
 
   // 把第二条邮箱改成与第一条重复（大小写不同）→ 拒绝
   const dup = await api('a', 'PATCH', `/api/pool/emails/${res.emails[1].id}`, {
-    body: { user: res.emails[0].user.toUpperCase() },
+    body: { user: res.emails[0].user.toUpperCase(), version: res.emails[1].version },
   });
   assert.equal(dup.status, 400, encode(dup.body));
   assert.match(dup.body.error, /重复/);
@@ -328,14 +331,17 @@ test('编辑资源时重复值被拒绝，正常改名会同步到记录的导�
   assert.equal(created.status, 200, encode(created.body));
   const recordId = created.body.created[0].id;
 
-  // 正常改名（不重复）→ 200
+  // 正常改名（不重复）→ 200。创建记录已经改变资源状态，所以重新读取当前 version。
+  const editPool = (await api('a', 'GET', '/api/bootstrap')).body.pools;
+  const currentEmail = editPool.emails.find((row) => row.id === res.emails[0].id);
+  const currentLicense = editPool.licenses.find((row) => row.id === res.licenses[0].id);
   const renamedEmail = await api('a', 'PATCH', `/api/pool/emails/${res.emails[0].id}`, {
-    body: { pass: 'new-email-pass' },
+    body: { pass: 'new-email-pass', version: currentEmail.version },
   });
   assert.equal(renamedEmail.status, 200, encode(renamedEmail.body));
   const newName = `Renamed Company ${++uniq} ApS`;
   const renamedLicense = await api('a', 'PATCH', `/api/pool/licenses/${res.licenses[0].id}`, {
-    body: { name: newName },
+    body: { name: newName, version: currentLicense.version },
   });
   assert.equal(renamedLicense.status, 200, encode(renamedLicense.body));
 
@@ -395,7 +401,7 @@ test('CSV 防公式注入且不包含完整卡号或 CVV', async () => {
 test('AdsPower 导出会转义字段里的换行，不会多出注入行', async () => {
   const res = await seed(1, 'adspower');
   const injected = 'secret\nname=injected';
-  const patched = await api('a', 'PATCH', `/api/pool/emails/${res.emails[0].id}`, { body: { pass: injected } });
+  const patched = await api('a', 'PATCH', `/api/pool/emails/${res.emails[0].id}`, { body: { pass: injected, version: res.emails[0].version } });
   assert.equal(patched.status, 200, encode(patched.body));
 
   const created = await api('a', 'POST', '/api/records', {

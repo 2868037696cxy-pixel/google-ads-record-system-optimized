@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 [[ $(id -u) == 0 ]] || { echo 'Run with sudo bash scripts/deploy-ubuntu.sh'; exit 1; }
 SOURCE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-for tool in git tar python3 systemctl runuser; do command -v "$tool" >/dev/null || { echo "Missing tool: $tool"; exit 1; }; done
+for tool in git tar python3 systemctl runuser flock; do command -v "$tool" >/dev/null || { echo "Missing tool: $tool"; exit 1; }; done
 NODE=''
 for candidate in /usr/local/bin/node "$(command -v node || true)" /usr/bin/node; do
   if [[ -x "$candidate" ]] && "$candidate" -e 'const s=require("node:sqlite");if(!s.backup)process.exit(1)' >/dev/null 2>&1; then NODE="$candidate"; break; fi
@@ -27,19 +27,36 @@ if shutil.disk_usage(base).free < size*4+2*1024**3:
  raise SystemExit('Insufficient disk space for a safe staged upgrade and rollback. No service changes made.')
 PYSPACE
 UNIT=/etc/systemd/system/adsworkbench.service
+BACKUP_UNIT=/etc/systemd/system/adsworkbench-backup.service
+BACKUP_TIMER=/etc/systemd/system/adsworkbench-backup.timer
 ENVFILE=/etc/adsworkbench.env
+CURRENT=/opt/adsworkbench-current
 id adsworkbench >/dev/null 2>&1 || useradd --system --home "$DATA" --create-home --shell /usr/sbin/nologin adsworkbench
 install -d -m 700 -o adsworkbench -g adsworkbench "$DATA" "$BACKUPS"
+LOCKFILE="$DATA/.maintenance.lock"
+touch "$LOCKFILE"; chown adsworkbench:adsworkbench "$LOCKFILE"; chmod 600 "$LOCKFILE"
+exec 9>"$LOCKFILE"
+flock -n 9 || { echo 'Another Ads Workbench deployment/backup operation is already running; no changes made.'; exit 1; }
 install -d -m 755 /opt/adsworkbench-releases
 install -d -m 755 "$RELEASE"
 # The archive excludes all live databases, keys, development dependencies and artifacts.
 tar -C "$SOURCE" --exclude=.git --exclude=node_modules --exclude=data --exclude=dist --exclude=backups --exclude='*.sqlite*' --exclude='*.log' -cf - . | tar -C "$RELEASE" -xf -
+# tar restores the source root's mode onto '.', including mktemp's 0700.
+# Keep the release traversable after ownership returns to root below.
+chmod 755 "$RELEASE"
 chown -R adsworkbench:adsworkbench "$RELEASE"
 cd "$RELEASE"
-runuser -u adsworkbench -- env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts --cache "$RELEASE/.npm-cache"
+# Public dependency files must remain readable after the release becomes root-owned.
+# Limit the relaxed mask to installation; sensitive deployment files retain 0077.
+(
+  umask 022
+  runuser -u adsworkbench -- env PATH="$PATH" "$NPM" ci --omit=dev --ignore-scripts --umask=0022 --cache "$RELEASE/.npm-cache"
+)
 runuser -u adsworkbench -- env -u ADS_SECRETS_KEY_FILE -u PUBLIC_ORIGIN NODE_ENV=test PATH="$PATH" "$NODE" --test --test-concurrency=1 tests/*.test.js
 rm -rf -- "$RELEASE/.npm-cache"
 chown -R root:root "$RELEASE"
+# Check the final runtime identity/ownership before changing live config or stopping the service.
+runuser -u adsworkbench -- env PATH="$PATH" "$NODE" -e 'for (const name of Object.keys(require("./package.json").dependencies || {})) require.resolve(name); require("fastify"); console.log("Root-owned release dependencies are readable by the service user.");'
 install -d -m 750 -o root -g adsworkbench /etc/adsworkbench
 KEY=/etc/adsworkbench/secret.key
 # Reuse the existing key, including a previously configured external key file.
@@ -65,15 +82,34 @@ if [[ ! -f "$KEY" ]]; then
 fi
 chmod 640 "$KEY";chown root:adsworkbench "$KEY"
 "$NODE" -e 'const f=require("node:fs"),c=require("node:crypto");const k=f.readFileSync(process.argv[1],"utf8").trim();if(!/^[a-f0-9]{64}$/i.test(k))throw new Error("Invalid encryption key");const p=process.argv[2];if(f.existsSync(p)){const d=new(require("node:sqlite").DatabaseSync)(p,{readOnly:true});if(d.prepare("SELECT name FROM sqlite_master WHERE type=? AND name=?").get("table","meta")){const m=d.prepare("SELECT value FROM meta WHERE key=?").get("vault_key_id");if(m&&m.value!==c.createHash("sha256").update(Buffer.from(k,"hex")).digest("hex"))throw new Error("Encryption key does not match existing database");}d.close();}' "$KEY" "$DATA/workbench.sqlite"
-[[ -f "$ENVFILE" ]] && cp -p "$ENVFILE" "/etc/adsworkbench/env-before-$STAMP" || true
-[[ -f "$UNIT" ]] && cp -p "$UNIT" "/etc/adsworkbench/unit-before-$STAMP" || true
+ENV_EXISTED=0; UNIT_EXISTED=0; BACKUP_UNIT_EXISTED=0; BACKUP_TIMER_EXISTED=0; CURRENT_EXISTED=0
+[[ -f "$ENVFILE" ]] && { ENV_EXISTED=1; cp -p "$ENVFILE" "/etc/adsworkbench/env-before-$STAMP"; }
+[[ -f "$UNIT" ]] && { UNIT_EXISTED=1; cp -p "$UNIT" "/etc/adsworkbench/unit-before-$STAMP"; }
+[[ -f "$BACKUP_UNIT" ]] && { BACKUP_UNIT_EXISTED=1; cp -p "$BACKUP_UNIT" "/etc/adsworkbench/backup-unit-before-$STAMP"; }
+[[ -f "$BACKUP_TIMER" ]] && { BACKUP_TIMER_EXISTED=1; cp -p "$BACKUP_TIMER" "/etc/adsworkbench/backup-timer-before-$STAMP"; }
+CURRENT_TARGET=''
+if [[ -L "$CURRENT" ]]; then CURRENT_EXISTED=1; CURRENT_TARGET=$(readlink "$CURRENT")
+elif [[ -e "$CURRENT" ]]; then echo "$CURRENT exists but is not a symlink; refusing upgrade."; exit 1
+fi
 ROLLBACK=''
-WAS_ACTIVE=0
+wait_for_health() {
+  for n in $(seq 1 30); do
+    if "$NODE" -e 'fetch("http://127.0.0.1:4317/api/healthz").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))' >/dev/null 2>&1; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
+WAS_ACTIVE=0; WAS_ENABLED=0; WAS_TIMER_ACTIVE=0; WAS_TIMER_ENABLED=0
 systemctl is-active --quiet adsworkbench && WAS_ACTIVE=1
+systemctl is-enabled --quiet adsworkbench 2>/dev/null && WAS_ENABLED=1
+systemctl is-active --quiet adsworkbench-backup.timer && WAS_TIMER_ACTIVE=1
+systemctl is-enabled --quiet adsworkbench-backup.timer 2>/dev/null && WAS_TIMER_ENABLED=1
 rollback() {
   trap - ERR
   set +e
   echo 'Upgrade failed; retaining release and restoring the previous service/data when available.'
+  systemctl stop adsworkbench-backup.timer || true
+  systemctl stop adsworkbench-backup.service || true
   systemctl stop adsworkbench || true
   if [[ -n "$ROLLBACK" && -f "$ROLLBACK" ]]; then
     "$NODE" "$RELEASE/scripts/backup.cjs" restore "$ROLLBACK" "$DATA/rollback-$STAMP.sqlite" || { echo "Automatic data restoration failed; service remains stopped. Preserve original database and key."; return 1; }
@@ -81,10 +117,27 @@ rollback() {
     rm -f -- "$DATA/workbench.sqlite-wal" "$DATA/workbench.sqlite-shm"
     mv "$DATA/rollback-$STAMP.sqlite" "$DATA/workbench.sqlite";chown adsworkbench:adsworkbench "$DATA/workbench.sqlite"
   fi
-  [[ -f "/etc/adsworkbench/env-before-$STAMP" ]] && cp -p "/etc/adsworkbench/env-before-$STAMP" "$ENVFILE" || true
-  [[ -f "/etc/adsworkbench/unit-before-$STAMP" ]] && cp -p "/etc/adsworkbench/unit-before-$STAMP" "$UNIT" || true
+  if [[ "$ENV_EXISTED" == 1 ]]; then cp -p "/etc/adsworkbench/env-before-$STAMP" "$ENVFILE"; else rm -f -- "$ENVFILE"; fi
+  if [[ "$UNIT_EXISTED" == 1 ]]; then cp -p "/etc/adsworkbench/unit-before-$STAMP" "$UNIT"; else rm -f -- "$UNIT"; fi
+  if [[ "$BACKUP_UNIT_EXISTED" == 1 ]]; then cp -p "/etc/adsworkbench/backup-unit-before-$STAMP" "$BACKUP_UNIT"; else rm -f -- "$BACKUP_UNIT"; fi
+  if [[ "$BACKUP_TIMER_EXISTED" == 1 ]]; then cp -p "/etc/adsworkbench/backup-timer-before-$STAMP" "$BACKUP_TIMER"; else rm -f -- "$BACKUP_TIMER"; fi
+  if [[ "$CURRENT_EXISTED" == 1 ]]; then ln -sfn "$CURRENT_TARGET" "$CURRENT"; else rm -f -- "$CURRENT"; fi
   systemctl daemon-reload
-  if [[ "$WAS_ACTIVE" == 1 ]]; then systemctl start adsworkbench || true; fi
+  if [[ "$WAS_ENABLED" == 1 ]]; then systemctl enable adsworkbench >/dev/null 2>&1 || true; else systemctl disable adsworkbench >/dev/null 2>&1 || true; fi
+  if [[ "$WAS_TIMER_ENABLED" == 1 ]]; then systemctl enable adsworkbench-backup.timer >/dev/null 2>&1 || true; else systemctl disable adsworkbench-backup.timer >/dev/null 2>&1 || true; fi
+  if [[ "$WAS_TIMER_ACTIVE" == 1 ]]; then systemctl start adsworkbench-backup.timer || true; else systemctl stop adsworkbench-backup.timer || true; fi
+  if [[ "$WAS_ACTIVE" == 1 ]]; then
+    systemctl start adsworkbench || true
+    wait_for_health || { echo 'Rollback restored files/data but the previous service did not become healthy; leaving it for operator inspection.'; return 1; }
+  else
+    systemctl stop adsworkbench || true
+  fi
+}
+failpoint() {
+  if [[ "${ADS_DEPLOY_TEST_FAILPOINT:-}" == "$1" ]]; then
+    echo "Injected deployment failure at $1 (test hook)."
+    return 1
+  fi
 }
 trap 'rollback; exit 1' ERR
 # Preserve existing invitation and unrelated values; never echo secrets.
@@ -136,8 +189,9 @@ for n in $(seq 1 30); do
   sleep 1
 done
 if [[ $GOOD != 1 ]]; then rollback; exit 1; fi
-ln -sfn "$RELEASE" /opt/adsworkbench-current
-cat > /etc/systemd/system/adsworkbench-backup.service <<EOF
+ln -sfn "$RELEASE" "$CURRENT"
+failpoint after-current-link
+cat > "$BACKUP_UNIT" <<EOF
 [Unit]
 Description=Encrypted Ads Workbench database backup
 [Service]
@@ -145,14 +199,14 @@ Type=oneshot
 User=adsworkbench
 Group=adsworkbench
 EnvironmentFile=$ENVFILE
-ExecStart=$NODE $RELEASE/scripts/backup.cjs create $BACKUPS
+ExecStart=/usr/bin/flock -w 300 $LOCKFILE $NODE $RELEASE/scripts/backup.cjs create $BACKUPS
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$DATA $BACKUPS
 PrivateTmp=yes
 UMask=0077
 EOF
-cat > /etc/systemd/system/adsworkbench-backup.timer <<'EOF'
+cat > "$BACKUP_TIMER" <<'EOF'
 [Unit]
 Description=Daily Ads Workbench encrypted backup
 [Timer]
@@ -162,8 +216,9 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 EOF
-systemctl daemon-reload;systemctl enable --now adsworkbench-backup.timer
-systemctl start adsworkbench-backup.service
+systemctl daemon-reload
+systemctl enable --now adsworkbench-backup.timer
+failpoint after-backup-units
 trap - ERR
 echo "Upgrade verified. Release: $RELEASE"
 echo 'Only adsworkbench was restarted. Keep the encryption key separate from off-site backups.'
