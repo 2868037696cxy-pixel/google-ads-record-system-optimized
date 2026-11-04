@@ -355,7 +355,10 @@
 .batch-auto input, .bundle-choice input { flex-shrink: 0; margin-top: 5px; }
 #batch-summary { color: var(--muted); font-size: 13px; }
 #batch-editor h4 { margin: 0 0 8px; overflow-wrap: anywhere; }
-.batch-entry-status { color: var(--muted); font-size: 12px; line-height: 1.7; }
+.batch-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.batch-editor-head h4 { margin: 0; }
+.batch-editor-head .btn { flex: 0 0 auto; }
+.batch-entry-status { color: var(--muted); font-size: 12px; line-height: 1.7; margin: 8px 0 0; }
 #batch-save-one { margin-top: 16px; }
 .setup-readiness { padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface-2); font-size: 13px; line-height: 1.7; }
 .setup-fields { display: flex; flex-direction: column; margin: 12px 0 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
@@ -409,6 +412,22 @@
 .license-value-copy:hover { background: var(--accent-soft); }
 .license-value-copy:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .license-value-empty { color: var(--muted); font-size: 12px; }
+/* 提取结果浮层：叠在当前弹窗上，关闭后批量校对进度不丢失。 */
+.extract-sheet { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 20px; background: rgba(5, 7, 11, .55); }
+.extract-card { display: flex; flex-direction: column; width: min(560px, 100%); max-height: calc(100dvh - 40px); overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--surface-2); box-shadow: 0 32px 80px -16px rgba(0, 0, 0, .7); }
+.extract-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding: 16px 20px; border-bottom: 1px solid var(--line); }
+.extract-head h3 { margin: 4px 0 0; font-size: 17px; letter-spacing: -.02em; }
+.extract-file { margin: 6px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.extract-body { display: flex; flex-direction: column; gap: 10px; padding: 16px 20px; overflow-y: auto; }
+.extract-body .detail-table { width: 100%; }
+.extract-body .detail-table th { width: 42%; padding: 7px 10px 7px 0; color: var(--muted); font-size: 12px; font-weight: 400; vertical-align: top; text-align: left; }
+.extract-body .detail-table td { padding: 3px 0; overflow-wrap: anywhere; }
+.extract-foot { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--surface-2); }
+@media (max-width: 600px) {
+  .extract-sheet { padding: 12px; }
+  .extract-card { max-height: calc(100dvh - 24px); }
+  .extract-head, .extract-body, .extract-foot { padding-left: 16px; padding-right: 16px; }
+}
 .document-fields .license-document { margin-top: 24px; padding: 14px; }
 .document-fields .license-document strong { overflow-wrap: anywhere; font-size: 12px; }
 .modal:has(#batch-files) { width: min(1580px, 97vw); }

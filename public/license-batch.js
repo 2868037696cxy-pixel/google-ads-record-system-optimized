@@ -3,7 +3,7 @@
 /** Files are read lazily, one at a time. Each document has its own review and commit. */
 function openLicenseBatch(files) {
   if (files.length > 100) return toast('每批最多 100 份 PDF，可分批继续添加', 'warn');
-  const entries = files.map((file, index) => ({ id: index, file, item: {}, phase: 'queued', message: '等待识别', selected: true, revision: 0 }));
+  const entries = files.map((file, index) => ({ id: index, file, item: {}, text: '', phase: 'queued', message: '等待识别', selected: true, revision: 0 }));
   const labels = Object.fromEntries(LICENSE_FIELDS.map(([key, label]) => [key, label]));
   let currentId = 0, running = true, writing = false, changed = false, timer, checkController;
   openModal(`<div class="modal-head"><div><span class="license-eyebrow">企业文件池</span><h3>批量导入与校对</h3></div><button class="modal-close" data-action="close-modal" aria-label="关闭">✕</button></div>
@@ -46,7 +46,8 @@ function openLicenseBatch(files) {
   function showEditor(entry) {
     currentId = entry.id;
     if (previewId !== entry.id) { previewId = entry.id; void preview.show({ file: entry.file, name: entry.file.name }); }
-    editor.innerHTML = `<h4>${esc(entry.file.name)}</h4><p class="batch-entry-status" id="batch-entry-status" role="status" aria-live="polite">${esc(entry.message)}</p>
+    const extracted = Boolean(entry.item && Object.values(entry.item).some(Boolean));
+    editor.innerHTML = `<div class="batch-editor-head"><h4>${esc(entry.file.name)}</h4><button type="button" class="btn btn-ghost btn-sm" id="batch-extract" ${extracted && !['queued', 'parsing'].includes(entry.phase) ? '' : 'disabled'}>提取</button></div><p class="batch-entry-status" id="batch-entry-status" role="status" aria-live="polite">${esc(entry.message)}</p>
       <form id="batch-fields" class="license-form" autocomplete="off">${LICENSE_FIELDS.map(([key, label, mandatory]) => `<div class="field ${['address', 'cvr'].includes(key) ? 'license-wide' : ''}"><label for="batch-${key}">${label}${mandatory ? ' *' : ''}</label><input id="batch-${key}" name="${key}" maxlength="512" value="${esc(entry.item[key] || '')}" ${['saved','saving','parsing','queued'].includes(entry.phase) ? 'disabled' : ''} aria-describedby="batch-entry-status"></div>`).join('')}</form>
       <button type="button" class="btn btn-primary" id="batch-save-one" ${entry.phase === 'ready' && !writing && !running ? '' : 'disabled'}>保存当前资料</button>`;
     editor.querySelector('form').oninput = event => {
@@ -56,6 +57,10 @@ function openLicenseBatch(files) {
       timer = setTimeout(() => check(entry), 350);
     };
     editor.querySelector('#batch-save-one').onclick = () => saveEntries([entry]);
+    editor.querySelector('#batch-extract').onclick = () => {
+      if (!entry.item || !Object.values(entry.item).some(Boolean)) return toast('这份文件还没有提取到内容', 'warn');
+      WorkbenchLicenseExtract.open(entry.item, entry.file.name, entry.text);
+    };
     paint();
   }
   function updateEditorStatus(entry) {
@@ -121,7 +126,7 @@ function openLicenseBatch(files) {
         const pdf = await readPdf(entry.file);
         const result = await api('/api/parse/licenses-pdf', { method: 'POST', body: { pdf }, signal });
         if (!alive()) return;
-        entry.item = { ...(result.items[0] || {}) }; entry.revision++;
+        entry.item = { ...(result.items[0] || {}) }; entry.text = result.text || ''; entry.revision++;
         if (result.extraction?.ambiguous) { entry.phase = 'review'; entry.message = '文件包含多个企业或个人编号，请人工选择企业编号'; }
         else await check(entry);
       } catch (error) {

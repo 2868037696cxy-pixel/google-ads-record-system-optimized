@@ -64,7 +64,7 @@ function openLicenseImport(existing = null) {
       <p class="license-help">输入时自动查重，保存时再次核对。巴西填写 CNPJ，克罗地亚填写企业 OIB；相同编号的空格、分隔符和大小写不影响判重。未识别出编号的 PDF，请手动补齐；扫描图片暂不支持自动识别。其他成员的资料不会显示。</p>
       </section></div>
     </div>
-    <div class="modal-foot"><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="license-import">确认保存</button></div>
+    <div class="modal-foot"><button class="btn btn-ghost" id="license-extract-fields">提取</button><span class="grow"></span><button class="btn btn-ghost" data-action="close-modal">取消</button><button class="btn btn-primary" id="license-import">确认保存</button></div>
   `, { large: true });
   const preview = WorkbenchDocumentViewer.attach(document.querySelector('.document-preview'), WorkbenchUI.dialog.signal());
   if (existing?.document_id) void preview.show({ id: existing.id, name: existing.document_name });
@@ -76,6 +76,7 @@ function openLicenseImport(existing = null) {
   const parseText = document.getElementById('license-parse-text');
   const checkStatus = document.getElementById('license-duplicate-status');
   let attachment = null;
+  let sourceText = '';
   let revision = 0;
   let saving = false;
   let parsing = false;
@@ -156,7 +157,7 @@ function openLicenseImport(existing = null) {
     document.getElementById('license-conflict')?.remove();
     void preview.show(file ? { file, name: file.name } : null);
     if (!file) { status.textContent = '也可以不上传文件，直接填写资料。'; scheduleCheck(); return; }
-    fill({}); text.value = '';
+    fill({}); text.value = ''; sourceText = '';
     showCheck('empty', '识别到企业编号后将自动查重。');
     if (file.size > 10 * 1024 * 1024) { status.textContent = '文件超过 10 MB，请选择较小的 PDF'; fileInput.value = ''; return; }
     status.textContent = '正在识别 PDF…';
@@ -172,6 +173,7 @@ function openLicenseImport(existing = null) {
       const first = result.items[0] || {};
       fill(first);
       text.value = result.text || '';
+      sourceText = result.text || '';
       status.textContent = first.cvr ? '已提取企业编号，请核对并补齐资料。原 PDF 将一并保存。' : '未识别出唯一企业编号，请手动填写。扫描版或含多个编号的文件需人工核对。';
     } catch (error) {
       if (current === revision && form.isConnected) {
@@ -201,6 +203,7 @@ function openLicenseImport(existing = null) {
       if (current !== revision || !form.isConnected || source !== text.value) return;
       if (result.items.length !== 1) return toast('请一次填写一份组织资料，或直接在上方校对字段', 'warn');
       fill(result.items[0]);
+      sourceText = source;
     } catch (error) { if (current === revision && form.isConnected) status.textContent = error.message; }
     finally {
       if (current === revision && form.isConnected) {
@@ -210,6 +213,12 @@ function openLicenseImport(existing = null) {
         await checkNow();
       }
     }
+  };
+  document.getElementById('license-extract-fields').onclick = () => {
+    if (parsing) return;
+    const item = readItem();
+    if (!Object.values(item).some(Boolean)) return toast('还没有可提取的内容，先选择 PDF 或填写资料', 'warn');
+    WorkbenchLicenseExtract.open(item, fileInput.files?.[0]?.name || existing?.document_name || '企业资料', sourceText);
   };
   submit.onclick = async () => {
     if (saving || submit.disabled) return;
