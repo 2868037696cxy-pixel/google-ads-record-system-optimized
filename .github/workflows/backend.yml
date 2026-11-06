@@ -3,7 +3,7 @@ on:
   pull_request:
   workflow_dispatch:
   push:
-    branches: ["feat/team-console-ui-data-architecture"]
+    branches: ["feat/team-console-ui-data-architecture", "deploy/render-workbench"]
 permissions:
   contents: read
 concurrency:
